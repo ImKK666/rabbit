@@ -1,8 +1,8 @@
 <template>
   <div class="image-style-panel">
-    <div 
+    <div
       class="origin-image"
-      :style="{ backgroundImage: `url(${handleImageElement.src})` }"
+      :style="{ backgroundImage: `url(${resolveAssetUrl(handleImageElement.src)})` }"
     ></div>
 
     <ElementFlip />
@@ -76,6 +76,7 @@ import type { PPTImageElement, SlideBackground } from '@/types/slides'
 import { CLIPPATHS } from '@/configs/imageClip'
 import useHistorySnapshot from '@/hooks/useHistorySnapshot'
 import useImageHandler from '@/hooks/useImageHandler'
+import { resolveAssetUrl } from '@/utils/assetUrl'
 
 import ElementOutline from '../common/ElementOutline.vue'
 import ElementShadow from '../common/ElementShadow.vue'
@@ -253,6 +254,8 @@ const setBackgroundImage = () => {
     ...currentSlide.value.background,
     type: 'image',
     image: {
+      // R-11: 写回 deck 的必须是 asset:// 原串，不能是 resolveAssetUrl() 的结果 ——
+      // 存进解析后的地址就等于把 deck 钉死在某台服务器上，内容寻址的好处全没了
       src: _handleElement.src,
       size: 'cover'
     },

@@ -51,7 +51,7 @@
     <div class="background-image-wrapper" v-if="background.type === 'image'">
       <FileInput @change="files => uploadBackgroundImage(files)">
         <div class="background-image">
-          <div class="content" :style="{ backgroundImage: `url(${background.image?.src})` }">
+          <div class="content" :style="{ backgroundImage: `url(${resolveAssetUrl(background.image?.src || '')})` }">
             <i-icon-park-outline:plus />
           </div>
         </div>
@@ -336,6 +336,7 @@ import useHistorySnapshot from '@/hooks/useHistorySnapshot'
 import useSlideTheme from '@/hooks/useSlideTheme'
 import { getImageDataURL } from '@/utils/image'
 import { toFixed } from '@/utils/common'
+import { resolveAssetUrl } from '@/utils/assetUrl'
 
 import ThemeStylesExtract from './ThemeStylesExtract.vue'
 import ThemeColorsSetting from './ThemeColorsSetting.vue'

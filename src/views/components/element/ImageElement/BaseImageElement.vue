@@ -22,16 +22,19 @@
         <ImageOutline :elementInfo="elementInfo" />
 
         <div class="image-content" :style="{ clipPath: clipShape.style }">
-          <img 
-            :src="elementInfo.src" 
-            :draggable="false" 
+          <!-- R-11: 资产生成中，先用骨架屏占住最终形态（含裁剪形状与圆角） -->
+          <div class="rb-asset-skeleton" v-if="asset.kind === 'pending'"></div>
+          <img
+            v-else-if="asset.url"
+            :src="asset.url"
+            :draggable="false"
             :style="{
               top: imgPosition.top,
               left: imgPosition.left,
               width: imgPosition.width,
               height: imgPosition.height,
               filter: filter,
-            }" 
+            }"
             alt=""
           />
           <div class="color-mask"
@@ -51,6 +54,7 @@ import { computed } from 'vue'
 import type { PPTImageElement } from '@/types/slides'
 import useElementShadow from '@/views/components/element/hooks/useElementShadow'
 import useElementFlip from '@/views/components/element/hooks/useElementFlip'
+import { parseAssetUrl } from '@/utils/assetUrl'
 import useClipImage from './useClipImage'
 import useFilter from './useFilter'
 
@@ -72,6 +76,9 @@ const { clipShape, imgPosition } = useClipImage(imageElement)
 
 const filters = computed(() => props.elementInfo.filters)
 const { filter } = useFilter(filters)
+
+// R-11: src 统一经 asset:// 解析器收口，deck 里存的始终是 asset:// 原串
+const asset = computed(() => parseAssetUrl(props.elementInfo.src))
 </script>
 
 <style lang="scss" scoped>

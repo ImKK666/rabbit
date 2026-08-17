@@ -15,7 +15,7 @@
     >
       <ImageClipHandler
         v-if="isCliping"
-        :src="elementInfo.src"
+        :src="asset.url"
         :clipData="elementInfo.clip"
         :width="elementInfo.width"
         :height="elementInfo.height"
@@ -39,16 +39,19 @@
         <ImageOutline :elementInfo="elementInfo" />
 
         <div class="image-content" :style="{ clipPath: clipShape.style }">
-          <img 
-            :src="elementInfo.src" 
-            :draggable="false" 
+          <!-- R-11: 资产生成中，先用骨架屏占住最终形态（含裁剪形状与圆角） -->
+          <div class="rb-asset-skeleton" v-if="asset.kind === 'pending'"></div>
+          <img
+            v-else-if="asset.url"
+            :src="asset.url"
+            :draggable="false"
             :style="{
               top: imgPosition.top,
               left: imgPosition.left,
               width: imgPosition.width,
               height: imgPosition.height,
               filter: filter,
-            }" 
+            }"
             @dragstart.prevent
             alt=""
           />
@@ -74,6 +77,7 @@ import type { ContextmenuItem } from '@/components/Contextmenu/types'
 import useElementShadow from '@/views/components/element/hooks/useElementShadow'
 import useElementFlip from '@/views/components/element/hooks/useElementFlip'
 import useHistorySnapshot from '@/hooks/useHistorySnapshot'
+import { parseAssetUrl } from '@/utils/assetUrl'
 import useClipImage from './useClipImage'
 import useFilter from './useFilter'
 
@@ -106,6 +110,9 @@ const { clipShape, imgPosition } = useClipImage(imageElement)
 
 const filters = computed(() => props.elementInfo.filters)
 const { filter } = useFilter(filters)
+
+// R-11: src 统一经 asset:// 解析器收口，deck 里存的始终是 asset:// 原串
+const asset = computed(() => parseAssetUrl(props.elementInfo.src))
 
 const handleSelectElement = (e: MouseEvent | TouchEvent) => {
   if (props.elementInfo.lock) return

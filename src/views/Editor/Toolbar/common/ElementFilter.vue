@@ -12,7 +12,7 @@
     <template v-if="hasFilters">
       <div class="presets">
         <div class="preset-item" v-for="(item, index) in presetFilters" :key="index" @click="applyPresetFilters(item.values)">
-          <img :src="handleImageElement.src" alt="" :style="{ filter: filters2Style(item.values) }">
+          <img :src="resolveAssetUrl(handleImageElement.src)" alt="" :style="{ filter: filters2Style(item.values) }">
           <span class="preset-label">{{ item.label }}</span>
         </div>
       </div>
@@ -39,6 +39,7 @@ import { storeToRefs } from 'pinia'
 import { useMainStore, useSlidesStore } from '@/store'
 import type { ImageElementFilterKeys, ImageElementFilters, PPTImageElement } from '@/types/slides'
 import useHistorySnapshot from '@/hooks/useHistorySnapshot'
+import { resolveAssetUrl } from '@/utils/assetUrl'
 
 import Switch from '@/components/Switch.vue'
 import Slider from '@/components/Slider.vue'

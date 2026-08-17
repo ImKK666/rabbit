@@ -72,8 +72,8 @@ PPTist 自带的文档已并入 [`docs/upstream/`](./upstream/)（`AI_PPT_SCHEMA
 
 | ID | 位置 | 改什么 | 状态 |
 |---|---|---|---|
-| **R-10** | `src/utils/assetUrl.ts`（新） | `asset://<sha256>` 解析器，统一收口 | ○ |
-| **R-11** | `views/components/element/ImageElement/index.vue`<br>`.../BaseImageElement.vue`<br>`hooks/useSlideBackgroundStyle.ts` | 所有 `src` 消费点接 R-10；`asset://pending/<id>` 渲染骨架屏 | ○ |
+| **R-10** | `src/utils/assetUrl.ts`（新） | `asset://<sha256>` 解析器，统一收口 | ● |
+| **R-11** | `views/components/element/ImageElement/index.vue`<br>`.../BaseImageElement.vue`<br>`hooks/useSlideBackgroundStyle.ts`<br>`Toolbar/.../ImageStylePanel.vue`<br>`Toolbar/common/ElementFilter.vue`<br>`Toolbar/SlideDesignPanel/index.vue` | 所有 `src` 消费点接 R-10；`asset://pending/<id>` 渲染骨架屏 | ● |
 
 ### 旧 AI 路径
 
@@ -113,8 +113,13 @@ PPTist 自带的文档已并入 [`docs/upstream/`](./upstream/)（`AI_PPT_SCHEMA
 验证结果：`npm run type-check` exit 0 零错误；`npm run build` exit 0（5.56s）；
 12 个自定义动画类全部确认进入产物 CSS。
 
-**第二批 · 资产层**
+**第二批 · 资产层 —— ✅ 已完成（2026-08-17）**
 `R-10` → `R-11`
+
+验证结果：`npm run type-check` exit 0 零错误；`npm run build` exit 0（5.29s）；
+`rbAssetShimmer` keyframes 与 `.rb-asset-skeleton` 类确认进入产物 CSS；
+`asset://` 协议字面量确认进入产物 JS。
+共 8 个文件：1 个解析器（新）、1 个骨架屏样式（新）、6 个消费点接入。
 
 **第三批 · 后端接管**
 `R-01` → `R-02` → `R-06` → `R-12`
