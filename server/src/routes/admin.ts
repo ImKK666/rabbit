@@ -2,13 +2,14 @@ import { Hono } from 'hono'
 import { zValidator } from '@hono/zod-validator'
 import { z } from 'zod'
 import { eq } from 'drizzle-orm'
+import { getJwtPayload } from '@server/auth/jwt'
 import { db } from '@server/db'
 import { modelProviders, modelConfigs, roleDefaults, type AgentRole } from '@server/db/schema'
 
 const admin = new Hono()
 
 admin.use('*', async (c, next) => {
-  const payload = c.get('jwtPayload')
+  const payload = getJwtPayload(c)
   if (payload.role !== 'admin') return c.json({ error: '需要管理员权限' }, 403)
   await next()
 })

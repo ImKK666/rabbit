@@ -2,13 +2,14 @@ import { Hono } from 'hono'
 import { zValidator } from '@hono/zod-validator'
 import { z } from 'zod'
 import { eq, and } from 'drizzle-orm'
+import { getJwtPayload } from '@server/auth/jwt'
 import { db } from '@server/db'
 import { decks } from '@server/db/schema'
 
 const deck = new Hono()
 
 deck.get('/', async (c) => {
-  const { userId } = c.get('jwtPayload')
+  const { userId } = getJwtPayload(c)
   const result = await db.select({
     id: decks.id,
     title: decks.title,
@@ -20,7 +21,7 @@ deck.get('/', async (c) => {
 })
 
 deck.get('/:id', async (c) => {
-  const { userId } = c.get('jwtPayload')
+  const { userId } = getJwtPayload(c)
   const id = parseInt(c.req.param('id'))
   const result = await db.select().from(decks)
     .where(and(eq(decks.id, id), eq(decks.userId, userId))).get()
@@ -35,7 +36,7 @@ const createSchema = z.object({
 })
 
 deck.post('/', zValidator('json', createSchema), async (c) => {
-  const { userId } = c.get('jwtPayload')
+  const { userId } = getJwtPayload(c)
   const data = c.req.valid('json')
   const result = await db.insert(decks).values({ ...data, userId }).returning().get()
   return c.json({ deck: result }, 201)
@@ -49,7 +50,7 @@ const updateSchema = z.object({
 })
 
 deck.put('/:id', zValidator('json', updateSchema), async (c) => {
-  const { userId } = c.get('jwtPayload')
+  const { userId } = getJwtPayload(c)
   const id = parseInt(c.req.param('id'))
 
   const existing = await db.select().from(decks)
@@ -71,7 +72,7 @@ deck.put('/:id', zValidator('json', updateSchema), async (c) => {
 })
 
 deck.delete('/:id', async (c) => {
-  const { userId } = c.get('jwtPayload')
+  const { userId } = getJwtPayload(c)
   const id = parseInt(c.req.param('id'))
   await db.delete(decks).where(and(eq(decks.id, id), eq(decks.userId, userId)))
   return c.json({ ok: true })

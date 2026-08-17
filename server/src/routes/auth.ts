@@ -4,7 +4,7 @@ import { z } from 'zod'
 import { eq } from 'drizzle-orm'
 import { db } from '@server/db'
 import { users } from '@server/db/schema'
-import { signToken } from '@server/auth/jwt'
+import { signToken, getJwtPayload } from '@server/auth/jwt'
 
 const auth = new Hono()
 
@@ -47,7 +47,7 @@ auth.post('/login', zValidator('json', loginSchema), async (c) => {
 })
 
 auth.get('/me', async (c) => {
-  const payload = c.get('jwtPayload')
+  const payload = getJwtPayload(c)
   return c.json({ user: { id: payload.userId, username: payload.username, role: payload.role } })
 })
 

@@ -1,4 +1,5 @@
 import { sign, verify } from 'hono/jwt'
+import type { Context } from 'hono'
 
 const JWT_SECRET = process.env.JWT_SECRET || 'rabbit-dev-secret-change-in-production'
 const JWT_EXPIRES_IN = 7 * 24 * 60 * 60 // 7 days in seconds
@@ -19,7 +20,12 @@ export const signToken = async (payload: Omit<JwtPayload, 'exp'>): Promise<strin
 }
 
 export const verifyToken = async (token: string): Promise<JwtPayload> => {
-  return verify(token, JWT_SECRET) as Promise<JwtPayload>
+  const payload = await verify(token, JWT_SECRET, 'HS256')
+  return payload as unknown as JwtPayload
 }
 
 export const getJwtSecret = () => JWT_SECRET
+
+export const getJwtPayload = (c: Context): JwtPayload => {
+  return c.get('jwtPayload') as JwtPayload
+}
