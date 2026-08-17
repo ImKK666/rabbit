@@ -62,9 +62,9 @@ PPTist 自带的文档已并入 [`docs/upstream/`](./upstream/)（`AI_PPT_SCHEMA
 | ID | 位置 | 改什么 | 状态 |
 |---|---|---|---|
 | **R-08** | `src/hooks/useExport.ts` | **保留 pptxgenjs 不动**，仅在每次 `addText` / `addImage` / `addShape` / … 时补 `objectName: el.id`（用于 `elId → spid` 映射），导出末尾接入 OOXML 后处理 | ● |
-| **R-17** | `src/utils/ooxml/`（新） | 自研 OOXML writer：jszip 解包 → 注入 `<p:timing>` → 重新打包。核心是纯函数 `buildTimingXml(animations, spidMap)` | ○ |
+| **R-17** | `src/utils/ooxml/`（新） | 自研 OOXML writer：jszip 解包 → 注入 `<p:timing>` → 重新打包。核心是纯函数 `buildTimingXml(animations, spidMap)` | ◐ |
 | **R-23** | `package.json` | `jszip` 提升为直接依赖（现在只是 pptxgenjs 的传递依赖） | ● |
-| **R-24** | 工程 | 引入 vitest —— OOXML 正确性无法肉眼检查，必须对地面真相做快照测试 | ○ |
+| **R-24** | 工程 | 引入 vitest —— OOXML 正确性无法肉眼检查，必须对地面真相做快照测试 | ● |
 
 > `useExport.ts` 里的 `toAST`（富文本解析）、`toPoints`（SVG 转几何）、latex 渲染成图、表格主题色推导、`special` 形状退化 —— **这些全部原样保留**，这正是不迁 Python 的主要理由。
 
