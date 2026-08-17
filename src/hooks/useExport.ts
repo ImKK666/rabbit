@@ -1,24 +1,30 @@
-// TODO(R-08): PPTX 导出整条迁到 Python 后端，移除 pptxgenjs。
+// TODO(R-08): 接入 OOXML 后处理，补 pptxgenjs 缺失的动画导出。
+//   完整方案见 docs/05-pptx-export.md（分 E1~E6 六期）。
 //
-// 原因：pptxgenjs 没有动画 API（README 只提到 animated GIFs），而我们要输出
-//   原生 PowerPoint 动画。TS 生态没有合适的 OOXML 写库，Python 有成熟的
-//   python-pptx + lxml（可直接操作 XML 树注入 <p:timing>）。
-//   Presenton 走的就是这条：python-pptx>=1.0.2 + PyInstaller 打成平台二进制。
+// pptxgenjs@3.12.0 完全不写动画 —— 其产物里 `grep -c "p:timing"` 为 0，
+// `p:transition` 同样为 0。但它把 9 种元素的几何与样式做得很好，
+// 本文件里这些坑都已经解决过，**全部保留，不重写**：
+//   - toAST（utils/htmlParser）        文本 content 是 HTML 字符串 → 富文本 run
+//   - toPoints（utils/svgPathParser）  shape 是 SVG path → pptx 几何
+//   - BaseLatexElement                 latex 元素靠渲染成图导出
+//   - encrypt（utils/crypto）           导出时的加密处理
+//   - getTableSubThemeColor            表格主题色推导
+//   - special: true 的 shape           难解析路径退化成图片
 //
-// 迁移边界：
-//   PPTX  → 后端（前端只发请求 + 下载）
-//   图片   → 保留在前端（html-to-image 现成，不需要 OOXML）
-//   PDF   → 保留在前端
+// 所以方案是 pptxgenjs 生成 + 我们后处理注入，而不是换掉它：
+//   ① write({ outputType: 'arraybuffer' }) 拿字节流
+//   ② jszip 解包，在每页 slideN.xml 的 </p:clrMapOvr> 之后插入 <p:timing>
+//      （符合 ECMA-376 对 CT_Slide 的顺序约束：cSld → clrMapOvr → transition → timing）
+//   ③ 重新打包 → saveAs
 //
-// ⚠️ 迁移时逐项对照，别漏了这些已在本文件解决的问题：
-//   - toAST（utils/htmlParser）  文本 content 是 HTML 字符串，要解析成富文本 run
-//   - toPoints（utils/svgPathParser）  shape 是 SVG path，要转 pptx 几何
-//   - BaseLatexElement            latex 元素靠渲染成图导出
-//   - encrypt（utils/crypto）      导出时的加密处理
-//   - getTableSubThemeColor        表格主题色推导
-//   - special: true 的 shape       难解析路径退化成图片
+// ★ 本文件要改的只有一处：每次 addText / addImage / addShape / … 时补
+//   `objectName: el.id`。它会落到 <p:cNvPr id="{idx+2}" name="{objectName}">，
+//   是把 PPTist 的 elId 翻译成 OOXML spid 的**唯一可靠依据** ——
+//   不要去依赖 id = idx + 2 那个序号规律，映射错了不报错，只会让动画作用在
+//   错误的元素上。查不到映射时应跳过该动画并告警。
 //
-// 配套后端任务见 R-17。
+// 图片 / PDF 导出不受影响，继续用 html-to-image。
+// writer 本体见 R-17（src/utils/ooxml/）。
 import { createVNode, render, computed, ref } from 'vue'
 import { storeToRefs } from 'pinia'
 import { saveAs } from 'file-saver'

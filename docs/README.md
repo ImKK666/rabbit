@@ -13,6 +13,7 @@
 | [02-decision.md](./02-decision.md) | 首轮选型结论（**路线已被 03 修正**） | 想知道当初为什么那么选 |
 | [03-architecture.md](./03-architecture.md) | **实机核对后的路线修正 · Deck Kernel 设计 · 图片与动画方案 · 决策 A~E** | 准备写第一行代码 |
 | [04-changes.md](./04-changes.md) | **前端底座改动清单**（代码里 `TODO(R-NN)` 与此一一对应）+ 进度 | 要动前端代码 |
+| [05-pptx-export.md](./05-pptx-export.md) | PPTX 导出与**自研 OOXML writer** —— pptxgenjs 能力边界、`elId → spid` 映射、动画树结构、E1~E6 分期 | 要做导出 |
 | [upstream/](./upstream/) | 上游 PPTist 自带文档，其中 [`AI_PPT_SCHEMA.md`](./upstream/AI_PPT_SCHEMA.md) 是面向 AI 生成的元素级契约 | 要产出符合底座 schema 的数据 |
 
 ## 一页速览

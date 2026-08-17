@@ -19,6 +19,7 @@ prompt 整份重来。
 | [02-decision.md](./docs/02-decision.md) | 首轮选型结论（**路线已被 03 修正**） |
 | [03-architecture.md](./docs/03-architecture.md) | 实机核对后的路线修正 · Deck Kernel 设计 · 图片与动画方案 · 决策 A~E |
 | [04-changes.md](./docs/04-changes.md) | 前端底座的改动清单（代码里的 `TODO(R-NN)` 与此一一对应） |
+| [05-pptx-export.md](./docs/05-pptx-export.md) | PPTX 导出与自研 OOXML writer 的设计与分期 |
 
 [`docs/upstream/`](./docs/upstream/) 是上游 PPTist 自带的文档，其中
 [`AI_PPT_SCHEMA.md`](./docs/upstream/AI_PPT_SCHEMA.md) 是面向 AI 生成的元素级契约，值得先看。

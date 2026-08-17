@@ -13,7 +13,7 @@ PPTist 自带的文档已并入 [`docs/upstream/`](./upstream/)（`AI_PPT_SCHEMA
 | | 问题 | 结论 |
 |---|---|---|
 | Q1 | 动画词表约束层级 | **前端也砍**，92 → 26，`effect` 收窄成联合类型，编译期拦非法值 |
-| Q2 | PPTX 动画导出 | **换掉 pptxgenjs**，PPTX 导出迁到 Python 后端（python-pptx + lxml 注入动画）。图片 / PDF 导出留在前端 ⚠️ 细化方案待确认 |
+| Q2 | PPTX 动画导出 | **保留 pptxgenjs 做基础生成，自研 OOXML writer 注入 `<p:timing>` 动画树。导出留在前端，不迁 Python。** 完整方案见 [05-pptx-export.md](./05-pptx-export.md) |
 | Q3 | 旧 AI 路径 | **保留并改造成 agent 工具** `fillFromTemplate`，自由式失败时可回退 |
 | Q4 | 变更下发方式 | **整份 deck 替换**（`setSlides`），MVP 不做细粒度 patch |
 
@@ -57,10 +57,16 @@ PPTist 自带的文档已并入 [`docs/upstream/`](./upstream/)（`AI_PPT_SCHEMA
 
 | ID | 位置 | 改什么 | 状态 |
 |---|---|---|---|
-| **R-08** | `src/hooks/useExport.ts` | **PPTX 导出整条迁到 Python 后端**。移除 `pptxgenjs`；前端只负责发请求 + 下载。图片 / PDF 导出保留（`html-to-image` 现成） | ○ |
-| **R-17** | 后端（新） | `deck JSON → python-pptx → lxml 注入 <p:timing>` 写 OOXML 动画 | ○ |
+**方案见 [05-pptx-export.md](./05-pptx-export.md)**（分 E1~E6 六期，含已核实的 pptxgenjs 能力边界）。
 
-> `useExport.ts` 里的 `toAST`（HTML 解析）、`toPoints`（SVG path 转换）、latex 转图片这些逻辑在 Python 侧一样要重做 —— 迁移时逐项对照，别漏。
+| ID | 位置 | 改什么 | 状态 |
+|---|---|---|---|
+| **R-08** | `src/hooks/useExport.ts` | **保留 pptxgenjs 不动**，仅在每次 `addText` / `addImage` / `addShape` / … 时补 `objectName: el.id`（用于 `elId → spid` 映射），导出末尾接入 OOXML 后处理 | ○ |
+| **R-17** | `src/utils/ooxml/`（新） | 自研 OOXML writer：jszip 解包 → 注入 `<p:timing>` → 重新打包。核心是纯函数 `buildTimingXml(animations, spidMap)` | ○ |
+| **R-23** | `package.json` | `jszip` 提升为直接依赖（现在只是 pptxgenjs 的传递依赖） | ○ |
+| **R-24** | 工程 | 引入 vitest —— OOXML 正确性无法肉眼检查，必须对地面真相做快照测试 | ○ |
+
+> `useExport.ts` 里的 `toAST`（富文本解析）、`toPoints`（SVG 转几何）、latex 渲染成图、表格主题色推导、`special` 形状退化 —— **这些全部原样保留**，这正是不迁 Python 的主要理由。
 
 ### 资产
 
@@ -121,6 +127,8 @@ PPTist 自带的文档已并入 [`docs/upstream/`](./upstream/)（`AI_PPT_SCHEMA
 
 ## 待确认
 
-- [ ] **Q2 细化**：PPTX 导出迁 Python（推荐，Presenton 用的就是 `python-pptx>=1.0.2` + PyInstaller）还是在 TS 里自研 OOXML writer
-- [ ] **决策 C**：AGPL-3.0 授权 —— 需联系 PPTist 作者询价
-- [ ] `pptxgenjs` 无动画 API 这一判断，基于 README 只提到「animated GIFs」。动手前值得再翻一遍它的 API 文档 ⚠️
+- [x] ~~**Q2 细化**~~ —— 已定：保留 pptxgenjs + 自研 OOXML writer，见 [05-pptx-export.md](./05-pptx-export.md)
+- [x] ~~`pptxgenjs` 是否真无动画 API~~ —— 已核实：产物里 `grep -c "p:timing"` = **0**，`p:transition` 同样为 0，确认零支持
+- [ ] **决策 C**：AGPL-3.0 授权 —— 需联系 PPTist 作者询价。**这是当前唯一可能导致推倒重来的风险**
+- [ ] `objectName` 是否对图表 / 表格生效（走 graphicFrame，属性位置可能不同）⚠️ 见 05 的 E2
+- [ ] 上游 `pptxtojson` 导入时是否解析动画 ⚠️
