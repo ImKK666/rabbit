@@ -34,5 +34,9 @@ pnpm-debug.log*
 # Claude Code 本机配置
 .claude/settings.local.json
 
+# 后端运行时数据
+server/data/
+server/node_modules/
+
 # 参考项目（外部仓库 clone，不纳入本仓库）
 refs/
