@@ -139,6 +139,13 @@ jszip 的 `/// <reference types="node" />` 污染全局 setTimeout 返回类型�
 5 处上游代码 `setTimeout` → `window.setTimeout` 修正；`tsconfig.app.json` 加
 `skipLibCheck: true`。
 
+R-17 writer 实现（E4 级别）：`buildTimingXml` 纯函数覆盖全部 25 个效果 ——
+fade / fade-up~right / slide-up~right / scale-in / zoom-in / spin-in / fly-in / wipe（入场）
+pulse-soft~strong / grow-shrink-soft~strong（强调，含 rebound p:seq）
+exit-fade / exit-scale / exit-zoom / exit-wipe / exit-fly（退出）。
+spidMap 解析器 + 31 个 buildTimingXml 测试 + 8 个 spidMap 测试 + 19 个 assetUrl 测试
+= 58 tests green。尚未接入 useExport.ts 注入链路（需 E3 地面真相验证后再接）。
+
 **第五批 · Agent**
 `R-09` `R-18` `R-15` `R-16` → `R-13`
 
