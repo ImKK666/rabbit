@@ -62,7 +62,7 @@ PPTist 自带的文档已并入 [`docs/upstream/`](./upstream/)（`AI_PPT_SCHEMA
 | ID | 位置 | 改什么 | 状态 |
 |---|---|---|---|
 | **R-08** | `src/hooks/useExport.ts` | **保留 pptxgenjs 不动**，仅在每次 `addText` / `addImage` / `addShape` / … 时补 `objectName: el.id`（用于 `elId → spid` 映射），导出末尾接入 OOXML 后处理 | ● |
-| **R-17** | `src/utils/ooxml/`（新） | 自研 OOXML writer：jszip 解包 → 注入 `<p:timing>` → 重新打包。核心是纯函数 `buildTimingXml(animations, spidMap)` | ◐ |
+| **R-17** | `src/utils/ooxml/`（新） | 自研 OOXML writer：jszip 解包 → 注入 `<p:timing>` → 重新打包。核心是纯函数 `buildTimingXml(animations, spidMap)` | ● |
 | **R-23** | `package.json` | `jszip` 提升为直接依赖（现在只是 pptxgenjs 的传递依赖） | ● |
 | **R-24** | 工程 | 引入 vitest —— OOXML 正确性无法肉眼检查，必须对地面真相做快照测试 | ● |
 
@@ -144,7 +144,8 @@ fade / fade-up~right / slide-up~right / scale-in / zoom-in / spin-in / fly-in / 
 pulse-soft~strong / grow-shrink-soft~strong（强调，含 rebound p:seq）
 exit-fade / exit-scale / exit-zoom / exit-wipe / exit-fly（退出）。
 spidMap 解析器 + 31 个 buildTimingXml 测试 + 8 个 spidMap 测试 + 19 个 assetUrl 测试
-= 58 tests green。尚未接入 useExport.ts 注入链路（需 E3 地面真相验证后再接）。
+= 58 tests green。E5 注入链路已接入 useExport.ts：解包后逐页 buildSpidMap → buildTimingXml →
+注入 `</p:sld>` 前 → 重新打包。E6 跳过告警：allSkipped 汇总后 console.warn。
 
 **第五批 · Agent**
 `R-09` `R-18` `R-15` `R-16` → `R-13`

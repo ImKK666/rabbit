@@ -30,6 +30,8 @@ import { storeToRefs } from 'pinia'
 import { saveAs } from 'file-saver'
 import JSZip from 'jszip'
 import pptxgen from 'pptxgenjs'
+import { buildSpidMap } from '@/utils/ooxml/spidMap'
+import { buildTimingXml, type SkippedAnimation } from '@/utils/ooxml/buildTimingXml'
 import tinycolor from 'tinycolor2'
 import { toPng, toJpeg } from 'html-to-image'
 import { useSlidesStore } from '@/store'
@@ -1027,12 +1029,40 @@ export default () => {
       }
     }
 
-    // E1: pptxgenjs → arraybuffer → jszip 解包 → (将来 E4+ 在此注入 <p:timing>) → 重新打包
-    // E2: 上面每个 addXxx 都已补 objectName: el.id，解包后可按 name 反查 spid 建映射表
+    // E1+E5: pptxgenjs → arraybuffer → jszip 解包 → 注入 <p:timing> → 重新打包
+    // E2: 上面每个 addXxx 都已补 objectName: el.id，解包后按 name 反查 spid 建映射表
+    // E6: web-only / spid 查不到 / preset 不存在 → 跳过并汇总告警
     setTimeout(() => {
       pptx.write({ outputType: 'arraybuffer' })
         .then(async (buffer) => {
           const zip = await JSZip.loadAsync(buffer as ArrayBuffer)
+
+          const allSkipped: SkippedAnimation[] = []
+
+          for (let i = 0; i < _slides.length; i++) {
+            const slide = _slides[i]
+            if (!slide.animations?.length) continue
+
+            const slideFile = zip.file(`ppt/slides/slide${i + 1}.xml`)
+            if (!slideFile) continue
+
+            const slideXml = await slideFile.async('string')
+            const spidMap = buildSpidMap(slideXml)
+            const { xml: timingXml, skipped } = buildTimingXml(slide.animations, spidMap)
+            allSkipped.push(...skipped)
+
+            if (timingXml) {
+              const injected = slideXml.replace('</p:sld>', `${timingXml}</p:sld>`)
+              zip.file(`ppt/slides/slide${i + 1}.xml`, injected)
+            }
+          }
+
+          if (allSkipped.length) {
+            const reasons = [...new Set(allSkipped.map(s => s.reason))]
+            // eslint-disable-next-line no-console
+            console.warn(`[PPTX 导出] ${allSkipped.length} 个动画被跳过：`, reasons)
+          }
+
           const repackedBuffer = await zip.generateAsync({
             type: 'arraybuffer',
             compression: 'DEFLATE',
