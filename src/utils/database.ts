@@ -8,10 +8,14 @@ export interface writingBoardImg {
   dataURL: string
 }
 
+export type SnapshotSource = 'user' | 'agent'
+
 export interface Snapshot {
   id: number
   index: number
   slides: Slide[]
+  source?: SnapshotSource
+  actionLabel?: string
 }
 
 const databaseNamePrefix = 'PPTist'

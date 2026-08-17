@@ -41,6 +41,7 @@ export interface SlidesState {
   theme: SlideTheme
   slides: Slide[]
   slideIndex: number
+  version: number
   viewportSize: number
   viewportRatio: number
   templates: SlideTemplate[]
@@ -68,9 +69,7 @@ export const useSlidesStore = defineStore('slides', {
     }, // 主题样式
     slides: [], // 幻灯片页面数据
     slideIndex: 0, // 当前页面索引
-    // TODO(R-06): 加 version: number，每次变更自增。
-    // 用途：与服务端 Deck Kernel 对齐、agent 整份替换时防覆盖用户的本地新改动
-    // （Q4 定的是整份 deck 替换，没有版本号就无法判断该不该覆盖）。
+    version: 0, // R-06: 每次变更自增，用于与服务端对齐、agent 整份替换时防覆盖
     viewportSize: 1000, // 可视区域宽度基数（逻辑画布宽，非像素非 EMU）
     viewportRatio: 0.5625, // 可视区域比例，默认16:9 → 逻辑画布 1000 × 562.5
     templates: [
@@ -136,23 +135,28 @@ export const useSlidesStore = defineStore('slides', {
     setTitle(title: string) {
       if (!title) this.title = '未命名演示文稿'
       else this.title = title
+      this.version++
     },
 
     setTheme(themeProps: Partial<SlideTheme>) {
       this.theme = { ...this.theme, ...themeProps }
+      this.version++
     },
-  
+
     setViewportSize(size: number) {
       this.viewportSize = size
+      this.version++
     },
-  
+
     setViewportRatio(viewportRatio: number) {
       this.viewportRatio = viewportRatio
+      this.version++
     },
-  
+
     setSlides(slides: Slide[], themeProps?: Partial<SlideTheme>) {
       this.slides = slides
       if (themeProps) this.setTheme(themeProps)
+      else this.version++
     },
   
     setTemplates(templates: SlideTemplate[]) {
@@ -168,16 +172,18 @@ export const useSlidesStore = defineStore('slides', {
       const addIndex = this.slideIndex + 1
       this.slides.splice(addIndex, 0, ...slides)
       this.slideIndex = addIndex
+      this.version++
     },
-  
+
     updateSlide(props: Partial<Slide>, slideId?: string) {
       const slideIndex = slideId ? this.slides.findIndex(item => item.id === slideId) : this.slideIndex
       this.slides[slideIndex] = { ...this.slides[slideIndex], ...props }
       // R-05: elements 被整体替换时清理孤儿动画。UI 的元素删除走这条路
       // （hooks/useDeleteElement.ts 调的是 updateSlide({ elements }) 而非 deleteElement）
       if ('elements' in props) pruneOrphanAnimations(this.slides[slideIndex])
+      this.version++
     },
-  
+
     removeSlideProps(data: RemovePropData) {
       const { id, propName } = data
 
@@ -185,8 +191,9 @@ export const useSlidesStore = defineStore('slides', {
         return slide.id === id ? omit(slide, propName) : slide
       }) as Slide[]
       this.slides = slides
+      this.version++
     },
-  
+
     deleteSlide(slideId: string | string[]) {
       const slidesId = Array.isArray(slideId) ? slideId : [slideId]
       const slides: Slide[] = JSON.parse(JSON.stringify(this.slides))
@@ -214,17 +221,19 @@ export const useSlidesStore = defineStore('slides', {
   
       this.slideIndex = newIndex
       this.slides = slides
+      this.version++
     },
-  
+
     updateSlideIndex(index: number) {
       this.slideIndex = index
     },
-  
+
     addElement(element: PPTElement | PPTElement[]) {
       const elements = Array.isArray(element) ? element : [element]
       const currentSlideEls = this.slides[this.slideIndex].elements
       const newEls = [...currentSlideEls, ...elements]
       this.slides[this.slideIndex].elements = newEls
+      this.version++
     },
 
     deleteElement(elementId: string | string[]) {
@@ -232,8 +241,9 @@ export const useSlidesStore = defineStore('slides', {
       const slide = this.slides[this.slideIndex]
       slide.elements = slide.elements.filter(item => !elementIdList.includes(item.id))
       pruneOrphanAnimations(slide) // R-05
+      this.version++
     },
-  
+
     updateElement(data: UpdateElementData) {
       const { id, props, slideId } = data
       const elIdList = typeof id === 'string' ? [id] : id
@@ -244,18 +254,20 @@ export const useSlidesStore = defineStore('slides', {
         return elIdList.includes(el.id) ? { ...el, ...props } : el
       })
       this.slides[slideIndex].elements = (elements as PPTElement[])
+      this.version++
     },
-  
+
     removeElementProps(data: RemovePropData) {
       const { id, propName } = data
       const propsNames = typeof propName === 'string' ? [propName] : propName
-  
+
       const slideIndex = this.slideIndex
       const slide = this.slides[slideIndex]
       const elements = slide.elements.map(el => {
         return el.id === id ? omit(el, propsNames) : el
       })
       this.slides[slideIndex].elements = (elements as PPTElement[])
+      this.version++
     },
   },
 })

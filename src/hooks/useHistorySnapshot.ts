@@ -9,6 +9,11 @@ export default () => {
     snapshotStore.addSnapshot()
   }, 300, { trailing: true })
 
+  // R-12: agent 整份替换 deck 后调此方法 —— 不走防抖，一次 agent 动作 = 一个快照
+  const addAgentSnapshot = (actionLabel?: string) => {
+    snapshotStore.addAgentSnapshot(actionLabel)
+  }
+
   // 重做
   const redo = throttle(function() {
     snapshotStore.reDo()
@@ -21,6 +26,7 @@ export default () => {
 
   return {
     addHistorySnapshot,
+    addAgentSnapshot,
     redo,
     undo,
   }

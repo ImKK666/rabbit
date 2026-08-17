@@ -41,7 +41,7 @@ PPTist 自带的文档已并入 [`docs/upstream/`](./upstream/)（`AI_PPT_SCHEMA
 | ID | 位置 | 改什么 | 状态 |
 |---|---|---|---|
 | **R-05** | `src/store/slides.ts` | 级联删除孤儿动画。新增 `pruneOrphanAnimations()`，在 **`updateSlide` 和 `deleteElement` 两处**都调<br>⚠️ **踩坑记录**：UI 的元素删除**不走 `deleteElement`**，走的是 `updateSlide({ elements })`（`hooks/useDeleteElement.ts:28`）。只修 `deleteElement` 会完全漏掉真实路径 | ● |
-| **R-06** | `src/store/slides.ts` | 加 `version: number`，每次变更自增，用于和服务端对齐、防覆盖 | ○ |
+| **R-06** | `src/store/slides.ts` | 加 `version: number`，每次变更自增，用于和服务端对齐、防覆盖 | ● |
 
 ### 动画
 
@@ -87,7 +87,7 @@ PPTist 自带的文档已并入 [`docs/upstream/`](./upstream/)（`AI_PPT_SCHEMA
 
 | ID | 位置 | 改什么 | 状态 |
 |---|---|---|---|
-| **R-12** | `src/store/snapshot.ts` | 一次 agent 动作 = 一个整份快照（配合 Q4 的整份替换）。撤销 = 整体回退一次 agent 动作。上限 20 可能要调 | ○ |
+| **R-12** | `src/store/snapshot.ts` | 一次 agent 动作 = 一个整份快照（配合 Q4 的整份替换）。撤销 = 整体回退一次 agent 动作。上限 20 可能要调 | ● |
 
 ### Agent UI（新增）
 
@@ -121,8 +121,12 @@ PPTist 自带的文档已并入 [`docs/upstream/`](./upstream/)（`AI_PPT_SCHEMA
 `asset://` 协议字面量确认进入产物 JS。
 共 8 个文件：1 个解析器（新）、1 个骨架屏样式（新）、6 个消费点接入。
 
-**第三批 · 后端接管**
+**第三批 · 后端接管（R-06 / R-12 已完成 2026-08-17，R-01 / R-02 待后端就绪）**
 `R-01` → `R-02` → `R-06` → `R-12`
+
+R-06：`SlidesState.version` 计数器，11 个变更 action 均自增，`setSlides` + `setTheme` 复合
+调用不重复计。R-12：快照表加 `source: 'user' | 'agent'` 和 `actionLabel`，新增
+`addAgentSnapshot()` 不走 300ms 防抖。`npm run build` exit 0（5.20s）。
 
 **第四批 · 导出迁移（工作量最大）**
 `R-08` → `R-17`
