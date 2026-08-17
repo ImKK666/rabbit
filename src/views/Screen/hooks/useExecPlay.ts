@@ -220,7 +220,7 @@ export default () => {
   const autoPlay = () => {
     closeAutoPlay()
     message.success('开始自动放映')
-    autoPlayTimer.value = setInterval(execNext, autoPlayInterval.value)
+    autoPlayTimer.value = window.setInterval(execNext, autoPlayInterval.value)
   }
 
   const setAutoPlayInterval = (interval: number) => {

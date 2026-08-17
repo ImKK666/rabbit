@@ -28,6 +28,7 @@
 import { createVNode, render, computed, ref } from 'vue'
 import { storeToRefs } from 'pinia'
 import { saveAs } from 'file-saver'
+import JSZip from 'jszip'
 import pptxgen from 'pptxgenjs'
 import tinycolor from 'tinycolor2'
 import { toPng, toJpeg } from 'html-to-image'
@@ -603,6 +604,7 @@ export default () => {
           if (el.paragraphSpace !== undefined) options.paraSpaceBefore = el.paragraphSpace / ratioPx2Pt.value
           if (el.vertical) options.vert = 'eaVert'
           if (!el.fixedHeight) options.fit = 'resize'
+          options.objectName = el.id
 
           pptxSlide.addText(textProps, options)
         }
@@ -646,6 +648,7 @@ export default () => {
               h: (endY - startY) / ratioPx2Inch.value * originH / ratioPx2Inch.value,
             }
           }
+          options.objectName = el.id
 
           pptxSlide.addImage(options)
         }
@@ -675,6 +678,7 @@ export default () => {
               const linkOption = getLinkOption(el.link)
               if (linkOption) options.hyperlink = linkOption
             }
+            options.objectName = el.id
 
             pptxSlide.addImage(options)
           }
@@ -713,6 +717,7 @@ export default () => {
               const linkOption = getLinkOption(el.link)
               if (linkOption) options.hyperlink = linkOption
             }
+            options.objectName = el.id
 
             pptxSlide.addShape('custGeom' as pptxgen.ShapeType, options)
           }
@@ -782,6 +787,7 @@ export default () => {
             points,
           }
           if (el.shadow) options.shadow = getShadowOption(el.shadow)
+          options.objectName = el.id
 
           pptxSlide.addShape('custGeom' as pptxgen.ShapeType, options)
         }
@@ -876,6 +882,7 @@ export default () => {
             options.holeSize = 60
           }
           
+          options.objectName = el.id
           pptxSlide.addChart(type, chartData, options)
         }
 
@@ -956,6 +963,7 @@ export default () => {
             h: el.height / ratioPx2Inch.value,
             colW: el.colWidths.map(item => el.width * item / ratioPx2Inch.value),
           }
+          options.objectName = el.id
           if (el.theme) options.fill = { color: '#ffffff' }
           if (el.outline.width && el.outline.color) {
             options.border = {
@@ -989,10 +997,11 @@ export default () => {
             const linkOption = getLinkOption(el.link)
             if (linkOption) options.hyperlink = linkOption
           }
+          options.objectName = el.id
 
           pptxSlide.addImage(options)
         }
-        
+
         else if (!ignoreMedia && (el.type === 'video' || el.type === 'audio')) {
           const options: pptxgen.MediaProps = {
             x: el.left / ratioPx2Inch.value,
@@ -1011,17 +1020,31 @@ export default () => {
           const videoExts = ['avi', 'mp4', 'm4v', 'mov', 'wmv']
           const audioExts = ['mp3', 'm4a', 'mp4', 'wav', 'wma']
           if (options.extn && [...videoExts, ...audioExts].includes(options.extn)) {
+            options.objectName = el.id
             pptxSlide.addMedia(options)
           }
         }
       }
     }
 
+    // E1: pptxgenjs → arraybuffer → jszip 解包 → (将来 E4+ 在此注入 <p:timing>) → 重新打包
+    // E2: 上面每个 addXxx 都已补 objectName: el.id，解包后可按 name 反查 spid 建映射表
     setTimeout(() => {
-      pptx.writeFile({ fileName: `${title.value}.pptx` }).then(() => exporting.value = false).catch(() => {
-        exporting.value = false
-        message.error('导出失败')
-      })
+      pptx.write({ outputType: 'arraybuffer' })
+        .then(async (buffer) => {
+          const zip = await JSZip.loadAsync(buffer as ArrayBuffer)
+          const repackedBuffer = await zip.generateAsync({
+            type: 'arraybuffer',
+            compression: 'DEFLATE',
+            compressionOptions: { level: 6 },
+          })
+          saveAs(new Blob([repackedBuffer], { type: 'application/vnd.openxmlformats-officedocument.presentationml.presentation' }), `${title.value}.pptx`)
+          exporting.value = false
+        })
+        .catch(() => {
+          exporting.value = false
+          message.error('导出失败')
+        })
     }, 200)
   }
 

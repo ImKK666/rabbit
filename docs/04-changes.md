@@ -61,9 +61,9 @@ PPTist 自带的文档已并入 [`docs/upstream/`](./upstream/)（`AI_PPT_SCHEMA
 
 | ID | 位置 | 改什么 | 状态 |
 |---|---|---|---|
-| **R-08** | `src/hooks/useExport.ts` | **保留 pptxgenjs 不动**，仅在每次 `addText` / `addImage` / `addShape` / … 时补 `objectName: el.id`（用于 `elId → spid` 映射），导出末尾接入 OOXML 后处理 | ○ |
+| **R-08** | `src/hooks/useExport.ts` | **保留 pptxgenjs 不动**，仅在每次 `addText` / `addImage` / `addShape` / … 时补 `objectName: el.id`（用于 `elId → spid` 映射），导出末尾接入 OOXML 后处理 | ● |
 | **R-17** | `src/utils/ooxml/`（新） | 自研 OOXML writer：jszip 解包 → 注入 `<p:timing>` → 重新打包。核心是纯函数 `buildTimingXml(animations, spidMap)` | ○ |
-| **R-23** | `package.json` | `jszip` 提升为直接依赖（现在只是 pptxgenjs 的传递依赖） | ○ |
+| **R-23** | `package.json` | `jszip` 提升为直接依赖（现在只是 pptxgenjs 的传递依赖） | ● |
 | **R-24** | 工程 | 引入 vitest —— OOXML 正确性无法肉眼检查，必须对地面真相做快照测试 | ○ |
 
 > `useExport.ts` 里的 `toAST`（富文本解析）、`toPoints`（SVG 转几何）、latex 渲染成图、表格主题色推导、`special` 形状退化 —— **这些全部原样保留**，这正是不迁 Python 的主要理由。
@@ -128,8 +128,16 @@ R-06：`SlidesState.version` 计数器，11 个变更 action 均自增，`setSli
 调用不重复计。R-12：快照表加 `source: 'user' | 'agent'` 和 `actionLabel`，新增
 `addAgentSnapshot()` 不走 300ms 防抖。`npm run build` exit 0（5.20s）。
 
-**第四批 · 导出迁移（工作量最大）**
+**第四批 · 导出迁移（E1/E2 已完成 2026-08-17，E3~E6 待地面真相采样）**
 `R-08` → `R-17`
+
+E1（jszip 打包链路脚手架）+ E2（objectName 映射）+ R-23（jszip 直接依赖）已完成。
+exportPPTX 改为 `write({outputType:'arraybuffer'})` → jszip 解包重打包 → `saveAs`。
+9 种元素类型全部补 `objectName: el.id`（text / image / shape(special+normal) /
+line / chart / table / latex / media）。`npm run build` exit 0（5.14s）。
+jszip 的 `/// <reference types="node" />` 污染全局 setTimeout 返回类型，
+5 处上游代码 `setTimeout` → `window.setTimeout` 修正；`tsconfig.app.json` 加
+`skipLibCheck: true`。
 
 **第五批 · Agent**
 `R-09` `R-18` `R-15` `R-16` → `R-13`

@@ -93,14 +93,14 @@ const start = () => {
   clearTimer()
 
   if (isCountdown.value) {
-    timer.value = setInterval(() => {
+    timer.value = window.setInterval(() => {
       time.value = time.value - 1
 
       if (time.value <= 0) reset()
     }, 1000)
   }
   else {
-    timer.value = setInterval(() => {
+    timer.value = window.setInterval(() => {
       time.value = time.value + 1
 
       if (time.value > 36000) pause()
