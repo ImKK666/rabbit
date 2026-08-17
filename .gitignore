@@ -1,10 +1,38 @@
+# 依赖与构建产物
+node_modules
+dist
+dist-ssr
+coverage
+*.tsbuildinfo
+*.local
+
+# 日志
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
+
+# 测试产物
+/cypress/videos/
+/cypress/screenshots/
+
 # macOS
 .DS_Store
 
 # 编辑器
-.vscode/
-.idea/
-*.swp
+.idea
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+# .vscode 只提交共享的推荐插件清单（沿用上游规则）
+.vscode/*
+!.vscode/extensions.json
 
 # Claude Code 本机配置
 .claude/settings.local.json
+
+# 参考项目（外部仓库 clone，不纳入本仓库）
+refs/
