@@ -1,3 +1,21 @@
+// TODO(R-09): 保留本文件，包装成 agent 工具 fillFromTemplate。
+//
+// 这是 PPTist 原生的「模板填充」路径，LLM 只产极简语义结构（types/AIPPT.ts 的
+// AIPPTSlide：cover / contents / transition / content / end），从不直接写坐标 ——
+// 这正是它排版不崩的原因。作为 agent 自由式生成失败时的**可靠回退路径**保留。
+//
+//   fillFromTemplate(slideType, content, templateId?) → 合法 Slide
+//     内部：getUseableTemplates 按内容条目数匹配版式
+//           checkTextType 按 textType 塞内容
+//           getAdaptedFontsize 缩字号保证放得下
+//
+// ★ getAdaptedFontsize（本文件 :71-112，canvas measureText 逐级缩字号，下限 10px）
+//   无论如何都要留 —— 这是「文字溢出框」这一项唯一不需要 VLM 的现成解法。
+//   其余几何检查（重叠 / 越界 / 空元素 / 对比度）在 JSON 模型下都是纯几何计算。
+//
+// ⚠️ getFontInfo（:113-125）用两条正则从 HTML 字符串里抠 font-size / font-family。
+//   对付人写的 HTML 尚可，对付 agent 反复改写会累积脏数据 —— 见 03-architecture.md
+//   决策 B，agent 侧要建 text-run 结构化视图，不直接碰 HTML 字符串。
 import { ref } from 'vue'
 import { nanoid } from 'nanoid'
 import type { ImageClipDataRange, PPTElement, PPTImageElement, PPTShapeElement, PPTTextElement, Slide, TextType } from '@/types/slides'

@@ -3,7 +3,7 @@ import { throttle } from 'lodash'
 import { storeToRefs } from 'pinia'
 import { useSlidesStore } from '@/store'
 import { KEYS } from '@/configs/hotkey'
-import { ANIMATION_CLASS_PREFIX } from '@/configs/animation'
+import { ANIMATION_CLASS_PREFIX, getAnimationCssClass } from '@/configs/animation'
 import message from '@/utils/message'
 import type { Slide } from '@/types/slides'
 
@@ -77,8 +77,9 @@ export default () => {
         continue
       }
 
-      const animationName = `${ANIMATION_CLASS_PREFIX}${animation.effect}`
-      
+      // R-07: effect 是语义值（如 fade-up），不再等于 CSS 类名，须经词表解析
+      const animationName = getAnimationCssClass(animation.effect)
+
       // 执行动画前先清除原有的动画状态（如果有）
       elRef.style.removeProperty('--animate-duration')
       for (const classname of elRef.classList) {
@@ -125,7 +126,7 @@ export default () => {
         if (animation.type !== 'out') continue
         const elRef: HTMLElement | null = document.querySelector(`#screen-element-${animation.elId} [class^=base-element-]`)
         if (!elRef) continue
-        const animationName = `${ANIMATION_CLASS_PREFIX}${animation.effect}`
+        const animationName = getAnimationCssClass(animation.effect) // R-07
         elRef.style.setProperty('--animate-duration', '0ms')
         elRef.classList.add(animationName, `${ANIMATION_CLASS_PREFIX}animated`)
       }

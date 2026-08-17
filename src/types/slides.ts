@@ -672,6 +672,39 @@ export type AnimationType = 'in' | 'out' | 'attention'
 export type AnimationTrigger = 'click' | 'meantime' | 'auto'
 
 /**
+ * R-04 · 动画效果词表
+ *
+ * 只收「网页能演」∩「PowerPoint OOXML 能表达」的交集，共 25 个。
+ * 原 PPTist 用裸 string + animate.css 全集（92 个），导出 PPTX 时全部静默丢失。
+ *
+ * 方向命名约定：**方向指元素「从哪里来」**（与 animate.css 一致）。
+ * 例如 fade-left = 从左侧淡入。改动画表时务必对齐这一点 ——
+ * 参考实现 refs/oh-my-ppt 的命名是「往哪里去」，左右和本表相反。
+ *
+ * 每个值到 OOXML preset 的映射见 configs/animation.ts 的 ANIMATION_DEFS。
+ * 未收录：motion path（PPTist 无运动路径概念）。
+ */
+export type AnimationEffect =
+  // 入场（14）
+  | 'fade' | 'fade-up' | 'fade-down' | 'fade-left' | 'fade-right'
+  | 'slide-up' | 'slide-down' | 'slide-left' | 'slide-right'
+  | 'scale-in' | 'zoom-in' | 'spin-in' | 'fly-in' | 'wipe'
+  // 强调（6）
+  | 'pulse-soft' | 'pulse' | 'pulse-strong'
+  | 'grow-shrink-soft' | 'grow-shrink' | 'grow-shrink-strong'
+  // 退场（5）
+  | 'exit-fade' | 'exit-scale' | 'exit-zoom' | 'exit-wipe' | 'exit-fly'
+
+/**
+ * 动画的导出行为
+ *
+ * native   —— 导出 PPTX 时写成原生 PowerPoint 动画（词表内默认都是这个）
+ * web-only —— 仅网页演示，导出时丢弃。选它意味着**主动接受**损失
+ * flatten  —— 导出时压平成动画的终态（不动，但保留最终视觉）
+ */
+export type AnimationExportBehavior = 'native' | 'web-only' | 'flatten'
+
+/**
  * 元素动画
  * 
  * id: 动画id
@@ -686,13 +719,18 @@ export type AnimationTrigger = 'click' | 'meantime' | 'auto'
  * 
  * trigger: 动画触发方式(click - 单击时、meantime - 与上一动画同时、auto - 上一动画之后)
  */
+// 注：animations 是 Slide 上的**有序数组**，trigger 把条目串成时间线
+//   （click = 新一步、meantime = 与上条同时、auto = 上条之后）。
+//   它是序列不是集合 → 插入位置有语义，agent 不应拿到裸数组，见 R-15 / R-16。
 export interface PPTAnimation {
   id: string
   elId: string
-  effect: string
+  effect: AnimationEffect // R-04: 原为裸 string
   type: AnimationType
   duration: number
   trigger: AnimationTrigger
+  /** R-03: 缺省视为 'native'。显式标注让导出损失是声明的，而非导出时才发现 */
+  exportBehavior?: AnimationExportBehavior
 }
 
 export type SlideBackgroundType = 'solid' | 'image' | 'gradient'

@@ -1,3 +1,24 @@
+// TODO(R-08): PPTX 导出整条迁到 Python 后端，移除 pptxgenjs。
+//
+// 原因：pptxgenjs 没有动画 API（README 只提到 animated GIFs），而我们要输出
+//   原生 PowerPoint 动画。TS 生态没有合适的 OOXML 写库，Python 有成熟的
+//   python-pptx + lxml（可直接操作 XML 树注入 <p:timing>）。
+//   Presenton 走的就是这条：python-pptx>=1.0.2 + PyInstaller 打成平台二进制。
+//
+// 迁移边界：
+//   PPTX  → 后端（前端只发请求 + 下载）
+//   图片   → 保留在前端（html-to-image 现成，不需要 OOXML）
+//   PDF   → 保留在前端
+//
+// ⚠️ 迁移时逐项对照，别漏了这些已在本文件解决的问题：
+//   - toAST（utils/htmlParser）  文本 content 是 HTML 字符串，要解析成富文本 run
+//   - toPoints（utils/svgPathParser）  shape 是 SVG path，要转 pptx 几何
+//   - BaseLatexElement            latex 元素靠渲染成图导出
+//   - encrypt（utils/crypto）      导出时的加密处理
+//   - getTableSubThemeColor        表格主题色推导
+//   - special: true 的 shape       难解析路径退化成图片
+//
+// 配套后端任务见 R-17。
 import { createVNode, render, computed, ref } from 'vue'
 import { storeToRefs } from 'pinia'
 import { saveAs } from 'file-saver'

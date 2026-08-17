@@ -32,7 +32,7 @@
                       :class="[
                         `${ANIMATION_CLASS_PREFIX}animated`,
                         `${ANIMATION_CLASS_PREFIX}fast`,
-                        hoverPreviewAnimation === item.value && `${ANIMATION_CLASS_PREFIX}${item.value}`,
+                        hoverPreviewAnimation === item.value && getAnimationCssClass(item.value),
                       ]"
                     >{{item.name}}</div>
                   </div>
@@ -122,14 +122,15 @@ import { computed, ref, watch } from 'vue'
 import { nanoid } from 'nanoid'
 import { storeToRefs } from 'pinia'
 import { useMainStore, useSlidesStore } from '@/store'
-import type { AnimationTrigger, AnimationType, PPTAnimation } from '@/types/slides'
-import { 
+import type { AnimationEffect, AnimationTrigger, AnimationType, PPTAnimation } from '@/types/slides'
+import {
   ENTER_ANIMATIONS,
   EXIT_ANIMATIONS,
   ATTENTION_ANIMATIONS,
   ANIMATION_DEFAULT_DURATION,
   ANIMATION_DEFAULT_TRIGGER,
   ANIMATION_CLASS_PREFIX,
+  getAnimationCssClass,
 } from '@/configs/animation'
 import { ELEMENT_TYPE_ZH } from '@/configs/element'
 import useHistorySnapshot from '@/hooks/useHistorySnapshot'
@@ -241,10 +242,10 @@ const handleDragEnd = (eventData: { newIndex: number; oldIndex: number }) => {
 }
 
 // 执行动画预览
-const runAnimation = (elId: string, effect: string, duration: number) => {
+const runAnimation = (elId: string, effect: AnimationEffect, duration: number) => {
   const elRef = document.querySelector(`#editable-element-${elId} [class^=editable-element-]`)
   if (elRef) {
-    const animationName = `${ANIMATION_CLASS_PREFIX}${effect}`
+    const animationName = getAnimationCssClass(effect) // R-07
     document.documentElement.style.setProperty('--animate-duration', `${duration}ms`)
     elRef.classList.add(`${ANIMATION_CLASS_PREFIX}animated`, animationName)
 
@@ -291,7 +292,7 @@ const updateElementAnimationTrigger = (id: string, trigger: AnimationTrigger) =>
 }
 
 // 修改元素动画，并执行一次预览
-const updateElementAnimation = (type: AnimationType, effect: string) => {
+const updateElementAnimation = (type: AnimationType, effect: AnimationEffect) => {
   const animations = currentSlideAnimations.value.map(item => {
     if (item.id === handleAnimationId.value) return { ...item, type, effect }
     return item
@@ -310,7 +311,7 @@ const updateElementAnimation = (type: AnimationType, effect: string) => {
 
 const handleAnimationId = ref('')
 // 添加元素动画，并执行一次预览
-const addAnimation = (type: AnimationType, effect: string) => {
+const addAnimation = (type: AnimationType, effect: AnimationEffect) => {
   if (handleAnimationId.value) {
     updateElementAnimation(type, effect)
     return

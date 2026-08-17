@@ -4,6 +4,7 @@ import App from './App.vue'
 
 import 'prosemirror-view/style/prosemirror.css'
 import 'animate.css'
+import '@/assets/styles/animation-extra.scss' // R-07: 补齐 animate.css 缺失的 12 个效果，须在 animate.css 之后
 import '@/assets/styles/prosemirror.scss'
 import '@/assets/styles/global.scss'
 import '@/assets/styles/font.scss'

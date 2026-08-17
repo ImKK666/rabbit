@@ -1,19 +1,19 @@
 {
-  "name": "pptist",
-  "version": "2.0.0",
+  "name": "rabbit-editor",
+  "version": "0.1.0",
   "private": true,
   "type": "module",
+  "license": "AGPL-3.0",
+  "description": "Rabbit 的渲染与编辑底座 —— fork 自 PPTist v2.0.0，详见 NOTICE",
   "scripts": {
     "dev": "vite",
     "build": "run-p type-check \"build-only {@}\" --",
     "preview": "vite preview",
     "build-only": "vite build",
     "type-check": "vue-tsc --build --force",
-    "lint": "eslint . --ext .vue,.js,.jsx,.cjs,.mjs,.ts,.tsx,.cts,.mts --fix --ignore-path .gitignore",
-    "prepare": "husky install"
+    "lint": "eslint . --ext .vue,.js,.jsx,.cjs,.mjs,.ts,.tsx,.cts,.mts --fix --ignore-path .gitignore"
   },
-  "author": "pipipi_pikachu@163.com",
-  "homepage": "https://github.com/pipipi-pikachu/PPTist",
+  "homepage": "https://github.com/ImKK666/rabbit",
   "dependencies": {
     "animate.css": "^4.1.1",
     "axios": "^1.7.9",

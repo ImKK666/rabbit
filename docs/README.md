@@ -2,7 +2,7 @@
 
 一个「深度调研 → 生成 PPT → 可视化逐页用 AI 调整」的 agent 系统。
 
-当前状态：**选型调研完成，待动手实现。**
+当前状态：**架构设计完成，前端底座已并入仓库根目录，第一批改动已落地。**
 
 ## 怎么读
 
@@ -10,7 +10,10 @@
 |---|---|---|
 | [00-vision.md](./00-vision.md) | 最初的想法、实现目标、验收标准 | 想知道我们到底要做什么 |
 | [01-landscape.md](./01-landscape.md) | 开源项目全量调研与对比 | 想知道轮子有没有人造过 |
-| [02-decision.md](./02-decision.md) | 选型结论、整合架构、技术决策 | 准备写第一行代码 |
+| [02-decision.md](./02-decision.md) | 首轮选型结论（**路线已被 03 修正**） | 想知道当初为什么那么选 |
+| [03-architecture.md](./03-architecture.md) | **实机核对后的路线修正 · Deck Kernel 设计 · 图片与动画方案 · 决策 A~E** | 准备写第一行代码 |
+| [04-changes.md](./04-changes.md) | **前端底座改动清单**（代码里 `TODO(R-NN)` 与此一一对应）+ 进度 | 要动前端代码 |
+| [upstream/](./upstream/) | 上游 PPTist 自带文档，其中 [`AI_PPT_SCHEMA.md`](./upstream/AI_PPT_SCHEMA.md) 是面向 AI 生成的元素级契约 | 要产出符合底座 schema 的数据 |
 
 ## 一页速览
 
@@ -22,9 +25,11 @@
 - [Presenton](https://github.com/presenton/presenton) 后半段最强：拖拽画布 + 一整套作用在幻灯片数据上的 agent 工具集
 - 两者之间没人打通
 
-**当前选型**：以 Presenton 为底座（Apache-2.0，后半段现成），把深度调研和高质量文档解析作为独立能力挂进去。详见 [02-decision.md](./02-decision.md)。
+**当前选型**：以 **PPTist** 为渲染与编辑底座，在其 JSON 元素模型之上自建 **Deck Kernel**（纯函数的变更 + 校验 + 事务层），agent 只能通过工具改 deck、且全部经 kernel 校验。详见 [03-architecture.md](./03-architecture.md)。
 
-**最大的技术风险**：自由式生成的成品率。没有「渲染 → 看 → 回改」这一环，排版会大面积溢出错位。这是必须在 MVP 里就做掉的部分，不能留到后面。
+> 02 原本选的是 Presenton 打底。四个项目源码都读过、Presenton 也本地跑过之后改掉了 —— 它装完 1.8G、chat agent 单目录 11,807 行、实测效果一般。改选 PPTist 的关键理由是它的 JSON 元素模型带**语义标注**（`textType` / `slideType`），且**坐标是显式数字**，让「重叠 / 越界 / 空元素」这类检查从「渲染 + VLM」退化成纯几何计算。
+
+**最大的技术风险**：不再是排版成品率（JSON 模型下大部分校验变成静态 lint），而是 **PPTist 的 AGPL-3.0 授权** —— 深度集成构成衍生作品，且 AGPL 传染覆盖网络服务。这条不解决可能推倒重来。
 
 ---
 

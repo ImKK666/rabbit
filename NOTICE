@@ -1,0 +1,87 @@
+Rabbit
+======
+
+本仓库包含 **PPTist 的修改版本（fork）** 作为其渲染与编辑底座，按 GNU Affero
+General Public License v3.0 的条款分发。完整许可条款见同目录下的 LICENSE 文件。
+
+本文件用于满足 AGPL-3.0 第 5 条对「修改版本须显著标明已被修改及修改日期」
+的要求。
+
+
+上游原作
+--------
+
+  项目      PPTist
+  作者      pipipi-pikachu <pipipi_pikachu@163.com>
+  地址      https://github.com/pipipi-pikachu/PPTist
+  版本      v2.0.0
+  基线提交  e491258（2026-08-16）
+  许可      AGPL-3.0
+
+原作的著作权归原作者所有。本 fork 不主张对上游代码的任何著作权。
+
+
+本修改版本
+----------
+
+  项目      Rabbit
+  地址      https://github.com/ImKK666/rabbit
+  fork 日期 2026-08-17
+
+无担保声明：本程序不提供任何担保，具体条款见 LICENSE 第 15、16 条。
+
+
+修改记录
+--------
+
+改动的权威清单见仓库的 docs/04-changes.md，代码中的 `TODO(R-NN)` 注释与该
+清单编号一一对应。以下为已落地的改动摘要。
+
+### 2026-08-17
+
+R-05  修复孤儿动画
+      src/store/slides.ts —— 新增 pruneOrphanAnimations()，在 updateSlide
+      与 deleteElement 两条路径上级联清理已删除元素的动画条目。
+      原实现仅在 getter currentSlideAnimations 中读时过滤，animations
+      数组本身会持续累积失效引用。
+
+R-07  动画词表收窄（92 → 25）
+      src/configs/animation.ts 整体重写。原词表为 animate.css 全集
+      （入场 40 + 退场 40 + 强调 12），仅在网页演示模式生效，导出 PPTX
+      时全部丢失。新词表只保留可映射到 PowerPoint OOXML preset 的效果，
+      每项同时携带网页类名（cssClass）与导出 preset（pptx）。
+      新增 ANIMATION_DEFS 扁平查找表、getAnimationCssClass()、
+      isAnimationEffect()。
+
+R-03  src/types/slides.ts —— PPTAnimation 新增可选字段 exportBehavior
+R-04  src/types/slides.ts —— PPTAnimation.effect 由 string 收窄为
+      AnimationEffect 联合类型；新增 AnimationEffect、
+      AnimationExportBehavior 类型定义
+
+新增  src/assets/styles/animation-extra.scss
+      补齐 animate.css 无法表达的 12 个效果（擦除、缩放强度分级、
+      旋转进入、强调强度分级），在 src/main.ts 中于 animate.css 之后引入。
+
+调整  src/views/Screen/hooks/useExecPlay.ts
+      src/views/Editor/Toolbar/ElementAnimationPanel.vue
+      动画类名由拼接 effect 改为经 getAnimationCssClass() 解析；
+      addAnimation / updateElementAnimation / runAnimation 的 effect
+      参数类型随之收窄。
+
+工程  package.json 更名为 rabbit-editor，版本重置为 0.1.0，移除
+      husky 相关的 prepare 脚本；删除上游自带的 .github/ 与 .husky/；
+      上游自带文档移至 docs/upstream/，上游 README 保留为
+      docs/upstream/README.upstream.md。
+
+
+第三方参考
+----------
+
+本 fork 的部分设计参考了以下项目，但未直接复制其代码：
+
+  Oh My PPT     https://github.com/arcsin1/oh-my-ppt        Apache-2.0
+                （动画 → OOXML preset 映射的取值与词表范围）
+  Presenton     https://github.com/presenton/presenton      Apache-2.0
+                （agent 工具集的分类与粒度设计）
+  PPTAgent      https://github.com/icip-cas/PPTAgent        MIT
+                （多 agent 角色划分与渲染后反思思路）

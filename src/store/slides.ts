@@ -18,6 +18,24 @@ interface FormatedAnimation {
   autoNext: boolean
 }
 
+/**
+ * R-05 · 清理孤儿动画（就地修改）
+ *
+ * animations 是 Slide 上的独立数组，靠 elId 引用元素。删除元素时若不同步清理，
+ * 条目会永久留在数组里 —— 原实现只在 getters currentSlideAnimations 里读时过滤，
+ * 数组本身一直是脏的。人手操作影响有限，agent 反复增删会迅速累积。
+ *
+ * 在所有会替换 elements 的写入路径上调用，保证引用完整性。
+ * 注意：UI 的删除路径走 updateSlide 而不是 deleteElement（见 hooks/useDeleteElement.ts:28），
+ * 所以两处都要调，只修一处会漏掉真正的路径。
+ */
+const pruneOrphanAnimations = (slide: Slide) => {
+  if (!slide.animations?.length) return
+  const elementIds = new Set(slide.elements.map(el => el.id))
+  const animations = slide.animations.filter(item => elementIds.has(item.elId))
+  if (animations.length !== slide.animations.length) slide.animations = animations
+}
+
 export interface SlidesState {
   title: string
   theme: SlideTheme
@@ -50,8 +68,11 @@ export const useSlidesStore = defineStore('slides', {
     }, // 主题样式
     slides: [], // 幻灯片页面数据
     slideIndex: 0, // 当前页面索引
-    viewportSize: 1000, // 可视区域宽度基数
-    viewportRatio: 0.5625, // 可视区域比例，默认16:9
+    // TODO(R-06): 加 version: number，每次变更自增。
+    // 用途：与服务端 Deck Kernel 对齐、agent 整份替换时防覆盖用户的本地新改动
+    // （Q4 定的是整份 deck 替换，没有版本号就无法判断该不该覆盖）。
+    viewportSize: 1000, // 可视区域宽度基数（逻辑画布宽，非像素非 EMU）
+    viewportRatio: 0.5625, // 可视区域比例，默认16:9 → 逻辑画布 1000 × 562.5
     templates: [
       { name: '山河映红', id: 'template_1', cover: './imgs/template_1.webp', origin: '官方制作' },
       { name: '都市蓝调', id: 'template_2', cover: './imgs/template_2.webp', origin: '官方制作' },
@@ -152,6 +173,9 @@ export const useSlidesStore = defineStore('slides', {
     updateSlide(props: Partial<Slide>, slideId?: string) {
       const slideIndex = slideId ? this.slides.findIndex(item => item.id === slideId) : this.slideIndex
       this.slides[slideIndex] = { ...this.slides[slideIndex], ...props }
+      // R-05: elements 被整体替换时清理孤儿动画。UI 的元素删除走这条路
+      // （hooks/useDeleteElement.ts 调的是 updateSlide({ elements }) 而非 deleteElement）
+      if ('elements' in props) pruneOrphanAnimations(this.slides[slideIndex])
     },
   
     removeSlideProps(data: RemovePropData) {
@@ -205,9 +229,9 @@ export const useSlidesStore = defineStore('slides', {
 
     deleteElement(elementId: string | string[]) {
       const elementIdList = Array.isArray(elementId) ? elementId : [elementId]
-      const currentSlideEls = this.slides[this.slideIndex].elements
-      const newEls = currentSlideEls.filter(item => !elementIdList.includes(item.id))
-      this.slides[this.slideIndex].elements = newEls
+      const slide = this.slides[this.slideIndex]
+      slide.elements = slide.elements.filter(item => !elementIdList.includes(item.id))
+      pruneOrphanAnimations(slide) // R-05
     },
   
     updateElement(data: UpdateElementData) {

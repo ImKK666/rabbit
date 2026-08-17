@@ -1,0 +1,104 @@
+// R-07 · 补齐 animate.css 缺失的动画
+//
+// configs/animation.ts 的 25 个效果里，13 个能直接用 animate.css
+// （fadeIn / fadeInUp / slideInUp / backInUp / pulse / fadeOut / backOutDown ...），
+// 剩下 12 个 animate.css 表达不了，在这里自定义：
+//
+//   缩放强度分级  scaleIn / zoomInSoft / scaleOut / zoomOutSoft
+//                （animate.css 的 zoomIn 固定 scale(.3)，太重且无法分级）
+//   旋转进入      spinIn
+//   擦除          wipeIn / wipeOut（animate.css 完全没有擦除）
+//   强调分级      pulseSoft / pulseStrong / growShrinkSoft / growShrink / growShrinkStrong
+//                （animate.css 只有一个固定 1.05 的 pulse）
+//
+// 类名一律挂在 animate__ 前缀下（ANIMATION_CLASS_PREFIX），原因：
+// views/Screen/hooks/useExecPlay.ts 清理时按前缀匹配移除类名
+// （`classname.indexOf(ANIMATION_CLASS_PREFIX) !== -1`），换前缀会导致清理失效。
+//
+// 时长由 animate.css 的 .animate__animated 统一施加
+// （animation-duration: var(--animate-duration)），所以这里只声明 animation-name。
+// 缩放百分比与 configs/animation.ts 里的 scaleFrom / scaleTo 一一对应，改一处要同步改另一处。
+
+// ---------------------------------------------------------------------------
+// 入场
+// ---------------------------------------------------------------------------
+
+@keyframes rbScaleIn {
+  from { opacity: 0; transform: scale(0.85); }
+  to   { opacity: 1; transform: scale(1); }
+}
+.animate__scaleIn { animation-name: rbScaleIn; }
+
+@keyframes rbZoomInSoft {
+  from { opacity: 0; transform: scale(0.75); }
+  to   { opacity: 1; transform: scale(1); }
+}
+.animate__zoomInSoft { animation-name: rbZoomInSoft; }
+
+@keyframes rbSpinIn {
+  from { opacity: 0; transform: scale(0.92) rotate(-12deg); }
+  to   { opacity: 1; transform: scale(1) rotate(0deg); }
+}
+.animate__spinIn { animation-name: rbSpinIn; }
+
+// 自左向右擦除
+@keyframes rbWipeIn {
+  from { clip-path: inset(0 100% 0 0); }
+  to   { clip-path: inset(0 0 0 0); }
+}
+.animate__wipeIn { animation-name: rbWipeIn; }
+
+// ---------------------------------------------------------------------------
+// 退场
+// ---------------------------------------------------------------------------
+
+@keyframes rbScaleOut {
+  from { opacity: 1; transform: scale(1); }
+  to   { opacity: 0; transform: scale(0.85); }
+}
+.animate__scaleOut { animation-name: rbScaleOut; }
+
+@keyframes rbZoomOutSoft {
+  from { opacity: 1; transform: scale(1); }
+  to   { opacity: 0; transform: scale(0.75); }
+}
+.animate__zoomOutSoft { animation-name: rbZoomOutSoft; }
+
+@keyframes rbWipeOut {
+  from { clip-path: inset(0 0 0 0); }
+  to   { clip-path: inset(0 0 0 100%); }
+}
+.animate__wipeOut { animation-name: rbWipeOut; }
+
+// ---------------------------------------------------------------------------
+// 强调（都要回到原状，靠中点做峰值）
+// ---------------------------------------------------------------------------
+
+@mixin pulse-keyframes($peak) {
+  from { transform: scale(1); }
+  50%  { transform: scale($peak); }
+  to   { transform: scale(1); }
+}
+
+@keyframes rbPulseSoft   { @include pulse-keyframes(1.03); }
+@keyframes rbPulse       { @include pulse-keyframes(1.06); }
+@keyframes rbPulseStrong { @include pulse-keyframes(1.10); }
+
+.animate__pulseSoft   { animation-name: rbPulseSoft; }
+.animate__pulseStrong { animation-name: rbPulseStrong; }
+
+// grow-shrink 先缩后放，比 pulse 多一次收缩，强调感更强
+@mixin grow-shrink-keyframes($low, $high) {
+  from { transform: scale(1); }
+  30%  { transform: scale($low); }
+  70%  { transform: scale($high); }
+  to   { transform: scale(1); }
+}
+
+@keyframes rbGrowShrinkSoft   { @include grow-shrink-keyframes(0.95, 1.04); }
+@keyframes rbGrowShrink       { @include grow-shrink-keyframes(0.90, 1.08); }
+@keyframes rbGrowShrinkStrong { @include grow-shrink-keyframes(0.85, 1.12); }
+
+.animate__growShrinkSoft   { animation-name: rbGrowShrinkSoft; }
+.animate__growShrink       { animation-name: rbGrowShrink; }
+.animate__growShrinkStrong { animation-name: rbGrowShrinkStrong; }

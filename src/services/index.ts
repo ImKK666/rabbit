@@ -1,6 +1,12 @@
 import axios from './axios'
 import fetchRequest from './fetch'
 
+// TODO(R-01): 改指自建后端。server.pptist.cn 是 PPTist 作者的托管服务，
+//   其服务端不开源。下面 4 个端点是本项目要接管的全部接口面。
+// TODO(R-02): 新增 agent 通道，至少三个：
+//   POST /agent/task        提交任务（含选中元素 id 作为上下文）
+//   GET  /agent/events      SSE 事件流（工具调用进度 · pending 资产 · 错误）
+//   GET  /agent/deck        整份 deck 下发（Q4 定的是整份替换，不做细粒度 patch）
 // export const SERVER_URL = 'http://localhost:5000'
 export const SERVER_URL = (import.meta.env.MODE === 'development') ? '/api' : 'https://server.pptist.cn'
 
