@@ -1,5 +1,6 @@
 import type { ServerWebSocket } from 'bun'
 import { verifyToken, type JwtPayload } from '@server/auth/jwt'
+import { runAgentTask, cancelAgentTask } from '@server/agent/orchestrator'
 
 export interface WsUserData {
   userId: number
@@ -7,7 +8,6 @@ export interface WsUserData {
   role: 'admin' | 'user'
 }
 
-// TODO: agent 消息协议
 export type ClientMessage =
   | { type: 'agent.task', deckId: number, prompt: string, selectedElementIds?: string[] }
   | { type: 'agent.cancel' }
@@ -35,27 +35,28 @@ export const authenticateWs = async (url: URL): Promise<JwtPayload | null> => {
 
 export const handleWsMessage = async (
   ws: ServerWebSocket<WsUserData>,
-  raw: string | Buffer,
+  raw: string,
 ) => {
   try {
-    const msg: ClientMessage = JSON.parse(typeof raw === 'string' ? raw : raw.toString())
+    const msg: ClientMessage = JSON.parse(raw)
 
     switch (msg.type) {
       case 'agent.task':
-        // TODO: 启动 agent 编排
+        runAgentTask(ws, msg.deckId, msg.prompt, msg.selectedElementIds)
+        break
+
+      case 'agent.cancel': {
+        const cancelled = cancelAgentTask(ws.data.userId)
         ws.send(JSON.stringify({
           type: 'agent.status',
-          status: 'thinking',
-          message: '正在处理...',
+          status: cancelled ? 'error' : 'done',
+          message: cancelled ? '任务已取消' : '没有正在执行的任务',
         } satisfies ServerMessage))
         break
-
-      case 'agent.cancel':
-        // TODO: 取消当前任务
-        break
+      }
 
       case 'agent.confirm':
-        // TODO: 用户确认 agent 提问
+        // TODO: 用户确认 agent 提问（需要后续实现 agent 中途暂停等待机制）
         break
 
       default:
