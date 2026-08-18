@@ -1,104 +1,187 @@
 import axios from './axios'
 import fetchRequest from './fetch'
 
-// TODO(R-01): 改指自建后端。server.pptist.cn 是 PPTist 作者的托管服务，
-//   其服务端不开源。下面 4 个端点是本项目要接管的全部接口面。
-// TODO(R-02): 新增 agent 通道，至少三个：
-//   POST /agent/task        提交任务（含选中元素 id 作为上下文）
-//   GET  /agent/events      SSE 事件流（工具调用进度 · pending 资产 · 错误）
-//   GET  /agent/deck        整份 deck 下发（Q4 定的是整份替换，不做细粒度 patch）
-// export const SERVER_URL = 'http://localhost:5000'
-export const SERVER_URL = (import.meta.env.MODE === 'development') ? '/api' : 'https://server.pptist.cn'
+// R-01: 改指自建后端。开发模式走 vite proxy，生产模式需配环境变量。
+export const SERVER_URL = import.meta.env.VITE_API_URL || '/api'
 
-interface ImageSearchPayload {
-  query: string;
-  orientation?: 'landscape' | 'portrait' | 'square' | 'all';
-  locale?: 'zh' | 'en';
-  order?: 'popular' | 'latest';
-  size?: 'large' | 'medium' | 'small';
-  image_type?: 'all' | 'photo' | 'illustration' | 'vector';
-  page?: number;
-  per_page?: number;
+const TOKEN_KEY = 'rabbit_token'
+
+export const getToken = (): string | null => localStorage.getItem(TOKEN_KEY)
+export const setToken = (token: string) => localStorage.setItem(TOKEN_KEY, token)
+export const clearToken = () => localStorage.removeItem(TOKEN_KEY)
+
+// ---------------------------------------------------------------------------
+// 带 JWT 的 axios 实例
+// ---------------------------------------------------------------------------
+
+const api = axios
+api.interceptors.request.use(config => {
+  const token = getToken()
+  if (token) config.headers.Authorization = `Bearer ${token}`
+  return config
+})
+
+// ---------------------------------------------------------------------------
+// Auth（公开，不需要 JWT）
+// ---------------------------------------------------------------------------
+
+export const authApi = {
+  register(username: string, password: string) {
+    return axios.post(`${SERVER_URL}/auth/register`, { username, password })
+  },
+  login(username: string, password: string) {
+    return axios.post(`${SERVER_URL}/auth/login`, { username, password })
+  },
+  me() {
+    return api.get(`${SERVER_URL}/auth/me`)
+  },
 }
 
-interface AIPPTOutlinePayload {
-  content: string
-  language: string
-  provider: string
-  model: string
+// ---------------------------------------------------------------------------
+// Deck
+// ---------------------------------------------------------------------------
+
+export const deckApi = {
+  list() {
+    return api.get(`${SERVER_URL}/decks`)
+  },
+  get(id: number) {
+    return api.get(`${SERVER_URL}/decks/${id}`)
+  },
+  create(data: { title?: string, slidesJson?: string, themeJson?: string }) {
+    return api.post(`${SERVER_URL}/decks`, data)
+  },
+  update(id: number, data: { title?: string, slidesJson?: string, themeJson?: string, version?: number }) {
+    return api.put(`${SERVER_URL}/decks/${id}`, data)
+  },
+  delete(id: number) {
+    return api.delete(`${SERVER_URL}/decks/${id}`)
+  },
 }
 
-interface AIPPTPayload {
-  content: string
-  language: string
-  style: string
-  provider: string
-  model: string
+// ---------------------------------------------------------------------------
+// User（普通用户）
+// ---------------------------------------------------------------------------
+
+export const userApi = {
+  models() {
+    return api.get(`${SERVER_URL}/user/models`)
+  },
+  preferences() {
+    return api.get(`${SERVER_URL}/user/preferences`)
+  },
+  setPreference(role: string, modelConfigId: number) {
+    return api.put(`${SERVER_URL}/user/preferences`, { role, modelConfigId })
+  },
+  changePassword(oldPassword: string, newPassword: string) {
+    return api.put(`${SERVER_URL}/user/password`, { oldPassword, newPassword })
+  },
 }
 
-interface AIWritingPayload {
-  content: string
-  command: string
+// ---------------------------------------------------------------------------
+// Admin
+// ---------------------------------------------------------------------------
+
+export const adminApi = {
+  // providers
+  listProviders() {
+    return api.get(`${SERVER_URL}/admin/providers`)
+  },
+  createProvider(data: { name: string, providerType: string, baseUrl: string, apiKey: string }) {
+    return api.post(`${SERVER_URL}/admin/providers`, data)
+  },
+  deleteProvider(id: number) {
+    return api.delete(`${SERVER_URL}/admin/providers/${id}`)
+  },
+
+  // models
+  listModels() {
+    return api.get(`${SERVER_URL}/admin/models`)
+  },
+  createModel(data: { providerId: number, modelName: string, displayName: string, supportsImages?: boolean, enabled?: boolean }) {
+    return api.post(`${SERVER_URL}/admin/models`, data)
+  },
+  updateModel(id: number, data: Record<string, unknown>) {
+    return api.patch(`${SERVER_URL}/admin/models/${id}`, data)
+  },
+  deleteModel(id: number) {
+    return api.delete(`${SERVER_URL}/admin/models/${id}`)
+  },
+
+  // role defaults
+  listRoleDefaults() {
+    return api.get(`${SERVER_URL}/admin/role-defaults`)
+  },
+  setRoleDefault(role: string, modelConfigId: number) {
+    return api.put(`${SERVER_URL}/admin/role-defaults`, { role, modelConfigId })
+  },
+
+  // users
+  listUsers() {
+    return api.get(`${SERVER_URL}/admin/users`)
+  },
+  updateUserRole(id: number, role: 'admin' | 'user') {
+    return api.patch(`${SERVER_URL}/admin/users/${id}`, { role })
+  },
+  deleteUser(id: number) {
+    return api.delete(`${SERVER_URL}/admin/users/${id}`)
+  },
 }
+
+// ---------------------------------------------------------------------------
+// Conversations
+// ---------------------------------------------------------------------------
+
+export const conversationApi = {
+  list(deckId?: number) {
+    const params = deckId ? `?deckId=${deckId}` : ''
+    return api.get(`${SERVER_URL}/conversations${params}`)
+  },
+  get(id: number) {
+    return api.get(`${SERVER_URL}/conversations/${id}`)
+  },
+  delete(id: number) {
+    return api.delete(`${SERVER_URL}/conversations/${id}`)
+  },
+}
+
+// ---------------------------------------------------------------------------
+// 兼容旧代码
+// getMockData 保留（模板列表等仍从 mocks/ 加载）。
+// 旧 PPTist 端点保留签名但标记废弃，后续 R-09 将由 agent 通道替代。
+// ---------------------------------------------------------------------------
 
 export default {
   getMockData(filename: string): Promise<any> {
     return axios.get(`./mocks/${filename}.json`)
   },
 
-  searchImage(body: ImageSearchPayload): Promise<any> {
-    return axios.post(`${SERVER_URL}/tools/img_search`, body)
+  /** @deprecated R-09 后由 agent 通道替代 */
+  searchImage(body: Record<string, unknown>): Promise<any> {
+    return api.post(`${SERVER_URL}/tools/img_search`, body)
   },
 
-  AIPPT_Outline({
-    content,
-    language,
-    provider,
-    model,
-  }: AIPPTOutlinePayload): Promise<any> {
+  /** @deprecated R-09 后由 agent 通道替代 */
+  AIPPT_Outline(body: Record<string, unknown>): Promise<any> {
     return fetchRequest(`${SERVER_URL}/tools/aippt_outline`, {
       method: 'POST',
-      body: JSON.stringify({
-        content,
-        language,
-        provider,
-        model,
-        stream: true,
-      }),
+      body: JSON.stringify({ ...body, stream: true }),
     })
   },
 
-  AIPPT({
-    content,
-    language,
-    style,
-    provider,
-    model,
-  }: AIPPTPayload): Promise<any> {
+  /** @deprecated R-09 后由 agent 通道替代 */
+  AIPPT(body: Record<string, unknown>): Promise<any> {
     return fetchRequest(`${SERVER_URL}/tools/aippt`, {
       method: 'POST',
-      body: JSON.stringify({
-        content,
-        language,
-        provider,
-        model,
-        style,
-        stream: true,
-      }),
+      body: JSON.stringify({ ...body, stream: true }),
     })
   },
 
-  AI_Writing({
-    content,
-    command,
-  }: AIWritingPayload): Promise<any> {
+  /** @deprecated R-09 后由 agent 通道替代 */
+  AI_Writing(body: Record<string, unknown>): Promise<any> {
     return fetchRequest(`${SERVER_URL}/tools/ai_writing`, {
       method: 'POST',
-      body: JSON.stringify({
-        content,
-        command,
-        stream: true,
-      }),
+      body: JSON.stringify({ ...body, stream: true }),
     })
   },
 }
