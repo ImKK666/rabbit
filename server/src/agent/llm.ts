@@ -63,6 +63,7 @@ export const resolveModelForRole = async (
     throw new Error(`模型提供商 #${config.providerId} 不存在`)
   }
 
+  console.log(`[llm] ${role} → provider="${provider.name}" type=${provider.providerType} model="${config.modelName}" baseUrl="${provider.baseUrl}"`)
   return createModel(provider.providerType, provider.baseUrl, provider.apiKey, config.modelName)
 }
 

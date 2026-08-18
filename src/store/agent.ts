@@ -45,6 +45,8 @@ export const useAgentStore = defineStore('agent', {
 
   actions: {
     init() {
+      if ((this as any)._wsInitialized) return
+      ;(this as any)._wsInitialized = true
       onMessage((msg: ServerMessage) => this.handleMessage(msg))
     },
 
