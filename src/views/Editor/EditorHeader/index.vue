@@ -92,9 +92,12 @@
       <div class="menu-item" v-tooltip="'导出'" @click="setDialogForExport('pptx')">
         <i-icon-park-outline:download class="icon" />
       </div>
-      <a class="github-link" v-tooltip="'Copyright © 2020-PRESENT pipipi-pikachu'" href="https://github.com/pipipi-pikachu/PPTist" target="_blank">
-        <div class="menu-item"><i-icon-park-outline:github class="icon" /></div>
-      </a>
+      <div class="menu-item" v-tooltip="'设置'" @click="emit('openSettings')">
+        <i-icon-park-outline:setting-two class="icon" />
+      </div>
+      <div class="menu-item" v-tooltip="'返回列表'" @click="emit('backToList')">
+        <i-icon-park-outline:home class="icon" />
+      </div>
     </div>
 
     <Drawer
@@ -169,6 +172,11 @@ const openMarkupPanel = () => {
 const openAIPPTDialog = () => {
   mainStore.setAIPPTDialogState(true)
 }
+
+const emit = defineEmits<{
+  (event: 'openSettings'): void
+  (event: 'backToList'): void
+}>()
 </script>
 
 <style lang="scss" scoped>

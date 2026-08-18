@@ -1,29 +1,51 @@
 <template>
-  <template v-if="slides.length">
+  <!-- 未登录 -->
+  <Auth v-if="!authStore.isLoggedIn" @success="onAuthSuccess" />
+
+  <!-- 已登录但未选 deck -->
+  <DeckList
+    v-else-if="!currentDeckId"
+    @select="openDeck"
+    @openSettings="showGlobalSettings = true"
+  />
+
+  <!-- 编辑器 -->
+  <template v-else-if="slides.length">
     <Screen v-if="screening" />
-    <Editor v-else-if="_isPC" />
+    <Editor v-else-if="_isPC" @backToList="closeDeck" />
     <Mobile v-else />
   </template>
-  <FullscreenSpin tip="数据初始化中，请稍等 ..." v-else  loading :mask="false" />
+
+  <FullscreenSpin tip="加载中..." v-else-if="currentDeckId" loading :mask="false" />
+
+  <!-- 全局设置（从 deck 列表页打开） -->
+  <Modal :visible="showGlobalSettings" :width="640" @closed="showGlobalSettings = false">
+    <SettingsDialog />
+  </Modal>
 </template>
 
 <script lang="ts" setup>
-import { onMounted } from 'vue'
+import { ref, provide, onMounted } from 'vue'
 import { storeToRefs } from 'pinia'
 import { nanoid } from 'nanoid'
-import { useScreenStore, useMainStore, useSnapshotStore, useSlidesStore } from '@/store'
+import { useScreenStore, useMainStore, useSnapshotStore, useSlidesStore, useAuthStore } from '@/store'
 import { LOCALSTORAGE_KEY_DISCARDED_DB } from '@/configs/storage'
 import { deleteDiscardedDB } from '@/utils/database'
 import { isPC } from '@/utils/common'
-import api from '@/services'
+import { deckApi } from '@/services'
 
+import Auth from './views/Auth/index.vue'
+import DeckList from './views/DeckList/index.vue'
 import Editor from './views/Editor/index.vue'
 import Screen from './views/Screen/index.vue'
 import Mobile from './views/Mobile/index.vue'
+import SettingsDialog from './views/Editor/SettingsDialog.vue'
 import FullscreenSpin from '@/components/FullscreenSpin.vue'
+import Modal from '@/components/Modal.vue'
 
 const _isPC = isPC()
 
+const authStore = useAuthStore()
 const mainStore = useMainStore()
 const slidesStore = useSlidesStore()
 const snapshotStore = useSnapshotStore()
@@ -32,36 +54,65 @@ const { databaseId } = storeToRefs(mainStore)
 const { slides } = storeToRefs(slidesStore)
 const { screening } = storeToRefs(screenStore)
 
+const currentDeckId = ref<number | null>(null)
+const showGlobalSettings = ref(false)
+provide('currentDeckId', currentDeckId)
+
 const isAudienceMode = new URLSearchParams(window.location.search).get('mode') === 'audience'
 
 if (import.meta.env.MODE !== 'development') {
   window.onbeforeunload = () => false
 }
 
-onMounted(async () => {
-  if (isAudienceMode) {
-    slidesStore.setSlides([{
-      id: nanoid(10),
-      elements: [],
-    }])
-    screenStore.setScreening(true)
-  }
-  else {
-    const slides = await api.getMockData('slides')
-    slidesStore.setSlides(slides)
+const onAuthSuccess = () => {
+  // login/register done, auth store is populated
+}
 
+const openDeck = async (deckId: number) => {
+  currentDeckId.value = deckId
+  try {
+    const res = await deckApi.get(deckId) as any
+    const deck = res.deck
+    const deckSlides = JSON.parse(deck.slidesJson || '[]')
+    if (deckSlides.length) {
+      slidesStore.setSlides(deckSlides)
+      if (deck.themeJson) {
+        const theme = JSON.parse(deck.themeJson)
+        slidesStore.setTheme(theme)
+      }
+    }
+    else {
+      slidesStore.setSlides([{ id: nanoid(10), elements: [] }])
+    }
+    slidesStore.setTitle(deck.title || '未命名演示文稿')
     await deleteDiscardedDB()
     snapshotStore.initSnapshotDatabase()
   }
+  catch {
+    slidesStore.setSlides([{ id: nanoid(10), elements: [] }])
+    await deleteDiscardedDB()
+    snapshotStore.initSnapshotDatabase()
+  }
+}
+
+const closeDeck = () => {
+  currentDeckId.value = null
+  slidesStore.setSlides([])
+}
+
+onMounted(async () => {
+  if (isAudienceMode) {
+    slidesStore.setSlides([{ id: nanoid(10), elements: [] }])
+    screenStore.setScreening(true)
+    return
+  }
+  await authStore.fetchMe()
 })
 
-// 应用注销时向 localStorage 中记录下本次 indexedDB 的数据库ID，用于之后清除数据库
 window.addEventListener('beforeunload', () => {
   const discardedDB = localStorage.getItem(LOCALSTORAGE_KEY_DISCARDED_DB)
   const discardedDBList: string[] = discardedDB ? JSON.parse(discardedDB) : []
-
   discardedDBList.push(databaseId.value)
-
   const newDiscardedDB = JSON.stringify(discardedDBList)
   localStorage.setItem(LOCALSTORAGE_KEY_DISCARDED_DB, newDiscardedDB)
 })

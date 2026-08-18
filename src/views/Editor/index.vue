@@ -1,6 +1,6 @@
 <template>
   <div class="pptist-editor">
-    <EditorHeader class="layout-header" />
+    <EditorHeader class="layout-header" @openSettings="showSettingsDialog = true" @backToList="emit('backToList')" />
     <div class="layout-content">
       <Thumbnails class="layout-content-left" />
       <div class="layout-content-center">
@@ -13,6 +13,7 @@
         />
       </div>
       <Toolbar class="layout-content-right" />
+      <AgentPanel class="layout-content-agent" :deckId="currentDeckId" />
     </div>
   </div>
 
@@ -34,7 +35,7 @@
   </Modal>
 
   <Modal
-    :visible="!!showAIPPTDialog" 
+    :visible="!!showAIPPTDialog"
     :width="720"
     :closeOnClickMask="false"
     :closeOnEsc="false"
@@ -44,12 +45,20 @@
   >
     <AIPPTDialog />
   </Modal>
+
+  <Modal
+    :visible="showSettingsDialog"
+    :width="640"
+    @closed="showSettingsDialog = false"
+  >
+    <SettingsDialog />
+  </Modal>
 </template>
 
 <script lang="ts" setup>
-import { ref } from 'vue'
+import { ref, inject } from 'vue'
 import { storeToRefs } from 'pinia'
-import { useMainStore } from '@/store'
+import { useMainStore, useAgentStore } from '@/store'
 import useGlobalHotkey from '@/hooks/useGlobalHotkey'
 import usePasteEvent from '@/hooks/usePasteEvent'
 
@@ -59,6 +68,8 @@ import CanvasTool from './CanvasTool/index.vue'
 import Thumbnails from './Thumbnails/index.vue'
 import Toolbar from './Toolbar/index.vue'
 import Remark from './Remark/index.vue'
+import AgentPanel from './AgentPanel.vue'
+import SettingsDialog from './SettingsDialog.vue'
 import ChartDataEditorDialog from './ChartDataEditorDialog.vue'
 import LatexEditorDialog from './LatexEditorDialog.vue'
 import ExportDialog from './ExportDialog/index.vue'
@@ -72,6 +83,9 @@ import AIPPTDialog from './AIPPTDialog.vue'
 import Modal from '@/components/Modal.vue'
 
 const mainStore = useMainStore()
+const agentStore = useAgentStore()
+agentStore.init()
+
 const {
   dialogForExport,
   showSelectPanel,
@@ -83,13 +97,21 @@ const {
   showAIPPTDialog,
 } = storeToRefs(mainStore)
 
+const currentDeckId = inject<number | null>('currentDeckId', null)
+
 const closeExportDialog = () => mainStore.setDialogForExport('')
 const closeAIPPTDialog = () => mainStore.setAIPPTDialogState(false)
+
+const showSettingsDialog = ref(false)
 
 const remarkHeight = ref(40)
 
 useGlobalHotkey()
 usePasteEvent()
+
+const emit = defineEmits<{
+  (event: 'backToList'): void
+}>()
 </script>
 
 <style lang="scss" scoped>
@@ -108,8 +130,12 @@ usePasteEvent()
   height: 100%;
   flex-shrink: 0;
 }
+.layout-content-agent {
+  flex-shrink: 0;
+}
 .layout-content-center {
-  width: calc(100% - 160px - 260px);
+  flex: 1;
+  min-width: 0;
 
   .center-top {
     height: 40px;
