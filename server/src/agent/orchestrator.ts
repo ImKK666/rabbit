@@ -131,10 +131,6 @@ const runRole = async (
     },
   })
 
-  if (result.text) {
-    send(ws, { type: 'agent.text', role, content: result.text })
-  }
-
   return { text: result.text, state }
 }
 
@@ -184,27 +180,34 @@ export const runAgentTask = async (
       state = genResult.state
       await saveMessage(conv.id, 'assistant', `[Generator] ${genResult.text}`)
 
-      const reviewPrompt = `请审查 Generator 刚才对演示文稿所做的修改。用户的原始需求是：${prompt}`
-      const reviewResult = await runRole('reviewer', userId, reviewPrompt, state, ws, abort.signal)
-      await saveMessage(conv.id, 'assistant', `[Reviewer] ${reviewResult.text}`)
-
-      let reviewPassed = true
       try {
-        const parsed = JSON.parse(reviewResult.text)
-        if (parsed.passed === false && parsed.issues?.length) {
-          reviewPassed = false
+        const reviewPrompt = `请审查 Generator 刚才对演示文稿所做的修改。用户的原始需求是：${prompt}`
+        const reviewResult = await runRole('reviewer', userId, reviewPrompt, state, ws, abort.signal)
+        await saveMessage(conv.id, 'assistant', `[Reviewer] ${reviewResult.text}`)
+
+        let reviewPassed = true
+        try {
+          const parsed = JSON.parse(reviewResult.text)
+          if (parsed.passed === false && parsed.issues?.length) {
+            reviewPassed = false
+          }
+        }
+        catch {
+          // Reviewer 输出不是 JSON，当做通过
+        }
+
+        if (!reviewPassed) {
+          send(ws, { type: 'agent.status', status: 'thinking', message: 'Reviewer 发现问题，Generator 正在修正...' })
+          const fixPrompt = `Reviewer 发现了以下问题，请修正：\n${reviewResult.text}`
+          const fixResult = await runRole('generator', userId, fixPrompt, state, ws, abort.signal)
+          state = fixResult.state
+          await saveMessage(conv.id, 'assistant', `[Generator 修正] ${fixResult.text}`)
         }
       }
-      catch {
-        // Reviewer 输出不是 JSON，当做通过
-      }
-
-      if (!reviewPassed) {
-        send(ws, { type: 'agent.status', status: 'thinking', message: 'Reviewer 发现问题，Generator 正在修正...' })
-        const fixPrompt = `Reviewer 发现了以下问题，请修正：\n${reviewResult.text}`
-        const fixResult = await runRole('generator', userId, fixPrompt, state, ws, abort.signal)
-        state = fixResult.state
-        await saveMessage(conv.id, 'assistant', `[Generator 修正] ${fixResult.text}`)
+      catch (reviewErr) {
+        const msg = reviewErr instanceof Error ? reviewErr.message : '审查阶段出错'
+        send(ws, { type: 'agent.text', role: 'reviewer', content: `⚠ 审查跳过: ${msg}` })
+        await saveMessage(conv.id, 'system', `Reviewer 跳过: ${msg}`)
       }
     }
 
