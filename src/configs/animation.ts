@@ -137,9 +137,18 @@ export interface AnimationDef {
   cssClass: string
   /**
    * 网页表现是否与 PPTX 精确一致。
-   * false 表示网页侧是近似 —— 百叶窗 / 棋盘 / 溶解这类逐块揭示的滤镜，
-   * CSS 只能用 mask 拼个形似的，节奏和分块数与 PowerPoint 不会一致。
-   * **PPTX 侧才是保真的那一边。**
+   *
+   * 判据（R-36 收紧）：**同一种机制、同一个方向、同一条物理量曲线**。
+   *   - 只是行程距离不同 → 仍算 exact。animate.css 的 fadeInLeft 位移
+   *     100% 自身宽度，PPTX 那边是 w/2，看着是同一个「从左边滑进来」
+   *   - 机制多一条或少一条 → 算近似。fly-in 网页侧是 backInUp，
+   *     除位移外还带缩放；PPTX 那边只有位移 + 淡入，没有缩放
+   *   - 逐块揭示的滤镜（百叶窗 / 棋盘 / 溶解 / 随机线条 / 阶梯）→ 一律近似，
+   *     CSS 只能用 mask 拼个形似的，分块数和节奏与 PowerPoint 不会一致
+   *
+   * **PPTX 侧才是保真的那一边**，网页只是预览，标 false 不是缺陷单。
+   *
+   * 45 个效果的实测数据见 `npm run lab` + scripts/measure-animation-lab.mjs。
    */
   cssExact: boolean
   pptx: PptxAnimationPreset
@@ -191,7 +200,12 @@ const ENTER_DEFS: AnimationDef[] = [
   { value: 'slide-right', name: '自右滑入', type: 'in', cssClass: 'slideInRight', cssExact: true,
     pptx: { presetId: 2, presetClass: 'entr', presetSubtype: SUB.fromRight, motion: 'fromRight' } },
 
-  { value: 'fly-in', name: '飞入', type: 'in', cssClass: 'backInUp', cssExact: true,
+  // 近似：网页用 animate.css 的 backInUp —— 位移 1200px 外还带 scale(0.7)→1，
+  // PPTX 侧只有「自下位移 h/2 + 淡入」，没有缩放这一路。
+  // 另注：fromTrace 在 buildTimingXml 里走的是和 fromBottom 同一个公式，
+  // 所以导出后 fly-in 和 fade-up 在 PowerPoint 里几乎是同一个效果，
+  // 网页上却明显不同 —— 差异就在这个缩放和更长的行程上。
+  { value: 'fly-in', name: '飞入', type: 'in', cssClass: 'backInUp', cssExact: false,
     pptx: { presetId: 2, presetClass: 'entr', motion: 'fromTrace', fade: true } },
 
   // --- 擦除 ---
@@ -286,7 +300,10 @@ const EXIT_DEFS: AnimationDef[] = [
   { value: 'exit-wipe', name: '擦除退出', type: 'out', cssClass: 'wipeOut', cssExact: true,
     pptx: { presetId: 22, presetClass: 'exit', presetSubtype: SUB.fromLeft,
       effectFilter: { name: 'wipe', subtype: 'right' }, transition: 'out' } },
-  { value: 'exit-fly', name: '飞出', type: 'out', cssClass: 'backOutDown', cssExact: true,
+  // 近似，和 fly-in 同源：backOutDown 除位移外还有 scale(0.7)，
+  // 而且末帧停在 opacity .7 而不是 0 —— 网页上元素是「飞出画布被裁掉」才看不见的
+  // （ScreenSlide 有 overflow: hidden 兜底），PPTX 侧是老老实实淡到全透明
+  { value: 'exit-fly', name: '飞出', type: 'out', cssClass: 'backOutDown', cssExact: false,
     pptx: { presetId: 2, presetClass: 'exit', motion: 'fromTrace', fade: true, transition: 'out' } },
 
   { value: 'exit-dissolve', name: '溶解退出', type: 'out', cssClass: 'dissolveOut', cssExact: false,

@@ -206,29 +206,42 @@ const buildBehaviorXml = (anim: EligibleAnimation): string => {
     )
   }
 
-  // 6. 强调缩放（去而复返，两段）
+  // 6. 强调缩放（去而复返）
+  //
+  //    脉冲   100% → peak → 100%，峰值在正中
+  //    缩放强调 100% → low → high → 100%，先收后放（多一次收缩，强调感更强）
+  //
+  //    关键是**第一段必须从 100000 起步**。第一版直接 `from=scaleFrom`，
+  //    grow-shrink 的 scaleFrom 是 95000，于是元素在 t=0 瞬间弹到 95% 再开始长 ——
+  //    网页侧的 @mixin grow-shrink-keyframes 是从 scale(1) 平滑收到 0.95 的，
+  //    两边对不上，而且那个瞬跳在 PowerPoint 里看着就是个 bug。
+  //
+  //    时间分配与 assets/styles/animation-extra.scss 的关键帧一一对应（30% / 70%），
+  //    改一处要同步改另一处。
   if (preset.scaleFrom !== undefined && preset.scaleTo !== undefined && isEmph) {
-    const halfDur = Math.floor(dur / 2)
-    parts.push(
-      `<p:animScale>` +
-        `<p:cBhvr>` +
-          `<p:cTn id="${nextId()}" dur="${halfDur}" accel="${accel}" decel="${decel}" fill="hold"/>` +
-          `<p:tgtEl><p:spTgt spid="${spid}"/></p:tgtEl>` +
-        `</p:cBhvr>` +
-        `<p:from x="${preset.scaleFrom}" y="${preset.scaleFrom}"/>` +
-        `<p:to x="${preset.scaleTo}" y="${preset.scaleTo}"/>` +
-      `</p:animScale>` +
-      `<p:animScale>` +
-        `<p:cBhvr>` +
-          `<p:cTn id="${nextId()}" dur="${dur - halfDur}" accel="${accel}" decel="${decel}" fill="remove">` +
-            `<p:stCondLst><p:cond delay="${halfDur}"/></p:stCondLst>` +
-          `</p:cTn>` +
-          `<p:tgtEl><p:spTgt spid="${spid}"/></p:tgtEl>` +
-        `</p:cBhvr>` +
-        `<p:from x="${preset.scaleTo}" y="${preset.scaleTo}"/>` +
-        `<p:to x="100000" y="100000"/>` +
-      `</p:animScale>`
-    )
+    const stops: [number, number][] = preset.scaleFrom === 100000
+      ? [[0, 100000], [0.5, preset.scaleTo], [1, 100000]]
+      : [[0, 100000], [0.3, preset.scaleFrom], [0.7, preset.scaleTo], [1, 100000]]
+
+    for (let i = 0; i < stops.length - 1; i++) {
+      const delay = Math.round(stops[i][0] * dur)
+      const segDur = Math.round(stops[i + 1][0] * dur) - delay
+      const isLast = i === stops.length - 2
+      parts.push(
+        `<p:animScale>` +
+          `<p:cBhvr>` +
+            `<p:cTn id="${nextId()}" dur="${segDur}" accel="${accel}" decel="${decel}"` +
+            ` fill="${isLast ? 'remove' : 'hold'}"` +
+            (delay > 0
+              ? `><p:stCondLst><p:cond delay="${delay}"/></p:stCondLst></p:cTn>`
+              : `/>`) +
+            `<p:tgtEl><p:spTgt spid="${spid}"/></p:tgtEl>` +
+          `</p:cBhvr>` +
+          `<p:from x="${stops[i][1]}" y="${stops[i][1]}"/>` +
+          `<p:to x="${stops[i + 1][1]}" y="${stops[i + 1][1]}"/>` +
+        `</p:animScale>`
+      )
+    }
   }
 
   // 7. 旋转

@@ -297,6 +297,54 @@ describe('buildTimingXml', () => {
       )
       expect(result.xml).not.toContain('style.visibility')
     })
+
+    // R-36：grow-shrink 的 scaleFrom 是 95000，第一版直接 from=95000 起手，
+    // PowerPoint 里元素会在 t=0 瞬间弹到 95% 再开始长。网页侧
+    // (@mixin grow-shrink-keyframes) 是从 scale(1) 平滑收下去的，两边对不上。
+    it('grow-shrink 从 100% 起步，收→放→回，三段', () => {
+      const result = buildTimingXml(
+        [makeAnim({ effect: 'grow-shrink', type: 'attention', duration: 1000 })],
+        makeMap(['el-1', 5]),
+      )
+      expect((result.xml.match(/<p:animScale>/g) || []).length).toBe(3)
+      // 100% → 90%（收）→ 108%（放）→ 100%（回）
+      expect(result.xml).toContain('<p:from x="100000" y="100000"/><p:to x="90000" y="90000"/>')
+      expect(result.xml).toContain('<p:from x="90000" y="90000"/><p:to x="108000" y="108000"/>')
+      expect(result.xml).toContain('<p:from x="108000" y="108000"/><p:to x="100000" y="100000"/>')
+    })
+
+    it('grow-shrink 三段的时间点与 CSS 关键帧 30% / 70% 对齐', () => {
+      const result = buildTimingXml(
+        [makeAnim({ effect: 'grow-shrink', type: 'attention', duration: 1000 })],
+        makeMap(['el-1', 5]),
+      )
+      expect(result.xml).toContain('<p:cond delay="300"/>')
+      expect(result.xml).toContain('<p:cond delay="700"/>')
+      expect(result.xml).toContain('dur="300"')
+      expect(result.xml).toContain('dur="400"')
+    })
+
+    it('pulse 仍是两段（scaleFrom 已经是 100%，不需要额外的收缩段）', () => {
+      const result = buildTimingXml(
+        [makeAnim({ effect: 'pulse-strong', type: 'attention', duration: 800 })],
+        makeMap(['el-1', 5]),
+      )
+      expect((result.xml.match(/<p:animScale>/g) || []).length).toBe(2)
+      expect(result.xml).toContain('<p:from x="100000" y="100000"/><p:to x="110000" y="110000"/>')
+      expect(result.xml).toContain('<p:cond delay="400"/>')
+    })
+
+    it('强调缩放的最后一段一定收在 100%，不能停在放大状态', () => {
+      for (const effect of ['pulse-soft', 'pulse', 'pulse-strong',
+        'grow-shrink-soft', 'grow-shrink', 'grow-shrink-strong'] as const) {
+        const result = buildTimingXml(
+          [makeAnim({ effect, type: 'attention' })],
+          makeMap(['el-1', 5]),
+        )
+        const lastTo = [...result.xml.matchAll(/<p:to x="(\d+)" y="\d+"\/><\/p:animScale>/g)].pop()
+        expect(lastTo?.[1], effect).toBe('100000')
+      }
+    })
   })
 
   describe('rotation', () => {

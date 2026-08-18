@@ -11,6 +11,13 @@
 > [09-powerpoint-verify.md](./09-powerpoint-verify.md)。
 >
 > 执行过程中与本文规划有出入的地方，见文末「九 · 执行回顾」。
+>
+> **补充（2026-08-19，R-36）**：第五节风险 E3 的**网页那一半已经验完** ——
+> 45 个效果在无头 Chromium 里逐帧采样过，查出并修掉 `plus-in`（终态停在十字形）
+> 和 `grow-shrink-*`（PPTX 侧起手瞬跳）两处，`fly-in` / `exit-fly` 的 `cssExact` 标注也改了。
+> 工具留在 `scripts/build-animation-lab.ts` + `scripts/measure-animation-lab.mjs`，
+> 结论见 [04-changes.md](./04-changes.md#2026-08-19-第七轮动画三方一致性核查r-36)。
+> **PowerPoint 那一半仍未做**，且新增一个只能靠它回答的问题（`in` / `out` 光圈方向）。
 
 前置阅读：[04-changes.md](./04-changes.md)（改动清单）· [05-pptx-export.md](./05-pptx-export.md)（导出方案）· [03-architecture.md](./03-architecture.md) 第六节（动画决策）
 

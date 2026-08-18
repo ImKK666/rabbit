@@ -338,11 +338,176 @@ chart / table 补了严格 Zod schema 并从 `PASSTHROUGH_ELEMENT_TYPES` 挪出�
 第四条「导出的动画在真实 PowerPoint 里能正常播放」只能人工验，
 样本和操作手册见 [09-powerpoint-verify.md](./09-powerpoint-verify.md)。
 
+### 2026-08-19 第七轮：动画三方一致性核查（R-36）
+
+上一轮 25 → 45 是**一次性批量扩容**，静态核过「45 个 cssClass 都有定义」，
+但**没有一个在浏览器里被看过**。这一轮把三方对齐逐条验完：网页真的动了吗 · 和 PPTX 是不是一回事 · agent 到底会用到哪些。
+
+#### 怎么验的 —— 把肉眼换成采样
+
+新增两个开发工具（都不参与打包）：
+
+| | 做什么 |
+|---|---|
+| `npm run lab` → `scripts/build-animation-lab.ts` | 生成 `samples/animation-lab.html`：自包含单页，只装 animate.css + animation-extra.scss，45 个类逐个套在色块上循环播。**词表走 `getAnimationCssClass`，不另抄一份** |
+| `scripts/measure-animation-lab.mjs` | 无头 Chromium 逐帧采样。需要一次性 `npm i --no-save playwright-core`，**刻意不进 devDependencies** |
+
+肉眼分不清「补间」和「30 步阶梯」，也分不清「元素从左边进来」和「往左边出去」，所以采样把每帧压成两个标量：
+
+- **coverage** 可见暗度占比 —— mask / clip-path / 透明度 / 缩放在这个标量上是同一件事
+- **centroid** 可见像素重心 —— 纯位移的 `slideInLeft` 全程不透明，只有重心在动
+
+两个都**相对「不加任何动画类时的静止态」**实测，不写死阈值。把动画 `pause()` 后 `seek` 到 0/0.1/…/1.0，
+整页各截一张图按卡片裁开，11 帧 × 45 个效果。
+
+判据：入场起点必须离静止态足够远、终点必须回到静止态；退场反过来且末帧必须真的看不见；
+强调首尾都必须在静止态、中途必须有变化；再加一条**补间检测**（中间帧全贴着两端 = 硬切换）。
+
+> **负对照做过**：把 `@property --rb-reveal` 的注册摘掉再跑，
+> 恰好 `blinds-h` / `blinds-v` / `randombar` / `exit-blinds` 四个被判「硬切换」，其余 41 个不受影响。
+> 这条才是这套采样值得信的理由 —— 全绿的检查器和没有检查器是一回事。
+
+#### 查出来的三件事
+
+**① `plus-in` 播完停在十字形上（已修）**
+
+`rbPlusIn` 的 `to` 关键帧是一个臂宽 30% 的十字，只盖住元素的 51%。
+动画播到 100% 时元素**四个角还被裁着**，直到 `useExecPlay` 摘掉类名才「啪」地补上 ——
+看着像动画结束后又闪了一下。实测 visible 曲线停在 0.51，是 45 个里唯一一个终态不等于常态的。
+
+改法是把终态的十字撑到臂宽 100%、臂长溢出到 ±150%，此时十字并集 ⊇ 整个盒子；
+中间帧仍是标准十字（所有点从中心按同一比例外扩），观感不变。修完 visible 走到 1.00。
+
+**② `grow-shrink-*` 在 PPTX 侧起手瞬跳（已修）**
+
+网页侧是 `scale(1) → 0.95 → 1.04 → 1`，而 `buildTimingXml` 直接 `from=95000`，
+PowerPoint 里元素会在 t=0 **瞬间弹到 95%** 再开始长。两边对不上，而且那个瞬跳看着就是个 bug。
+
+改成按 CSS 关键帧的 30% / 70% 切三段：`100% → low → high → 100%`。
+`pulse-*` 的 `scaleFrom` 本来就是 100%，仍走两段 50/50，XML 不变。
+
+**③ `fly-in` / `exit-fly` 的 `cssExact` 标错了（已改标注）**
+
+网页侧用的是 animate.css 的 `backInUp` / `backOutDown`，除位移外**还带一路 `scale(0.7)`**，
+PPTX 侧只有「位移 + 淡入」。而且 `backOutDown` 末帧停在 `opacity: .7` 而不是 0 ——
+网页上元素是「飞出画布被 `ScreenSlide` 的 `overflow: hidden` 裁掉」才看不见的，PPTX 侧是老老实实淡到全透明。
+
+顺带记一笔：`motion: 'fromTrace'` 在 `buildTimingXml` 里走的是和 `fromBottom` 同一个公式，
+所以 **`fly-in` 导出后和 `fade-up` 在 PowerPoint 里几乎是同一个效果**，网页上却明显不同。
+
+同时把 `cssExact` 的判据在注释里写死了，免得它退化成一个凭感觉打的勾：
+**同一种机制、同一个方向、同一条物理量曲线**；只是行程距离不同（animate.css 位移 100% 自身宽度、
+PPTX 是 w/2）仍算 exact，机制多一路或少一路才算近似。按这条判据近似的从 8 个变成 10 个。
+
+#### 45 个效果的三方对照
+
+网页表现：✅ 播得对 · ⚠️ 播得对但有一处值得知道的近似或依赖 · ❌ 有问题（本轮已清零）
+与 PPTX：✅ = `cssExact` · ≈ = 网页是近似，**PPTX 侧才是保真的那边**
+
+| effect | 网页表现 | 与 PPTX 一致 | agent 会不会用到 |
+|---|:--:|:--:|---|
+| `fade` 淡入 | ✅ | ✅ | **版式**：title-center |
+| `fade-up` 自下淡入 | ✅ | ✅ | **版式**：title-center / cards / timeline / stat / quote / end；**preset 默认** |
+| `fade-down` 自上淡入 | ✅ | ✅ | **版式**：cards / compare / timeline；**preset 标题** |
+| `fade-left` 自左淡入 | ✅ | ✅ | **版式**：title-split / section / bullets / stat / quote |
+| `fade-right` 自右淡入 | ✅ | ✅ | 仅 LLM 自选 |
+| `scale-in` 轻缩放进入 | ✅ | ✅ | **版式**：end |
+| `zoom-in` 放大进入 | ✅ | ✅ | **版式**：title-split / bullets / cards / timeline / stat / quote |
+| `spin-in` 旋转进入 | ✅ | ✅ | **版式**：end |
+| `slide-up` 自下滑入 | ✅ | ✅ | 仅 LLM 自选 |
+| `slide-down` 自上滑入 | ✅ | ✅ | 仅 LLM 自选 |
+| `slide-left` 自左滑入 | ✅ | ✅ | 仅 LLM 自选 |
+| `slide-right` 自右滑入 | ✅ | ✅ | 仅 LLM 自选 |
+| `fly-in` 飞入 | ⚠️ 行程 1200px 远超画布 | ≈ 多一路 scale(0.7)；导出后≈`fade-up` | 仅 LLM 自选 |
+| `wipe` 自左擦除 | ✅ | ✅ | **版式**：8 个版式都用（强调条 / 轴线 / 分隔条） |
+| `wipe-right` 自右擦除 | ✅ | ✅ | **版式**：title-split / compare |
+| `wipe-up` 自下擦除 | ✅ | ✅ | **版式**：title-center |
+| `wipe-down` 自上擦除 | ✅ | ✅ | **版式**：title-center / title-split / section / bullets / compare |
+| `blinds-h` 百叶窗（横） | ⚠️ mask 12 条 | ≈ 分块数与 PowerPoint 不同 | 仅 LLM 自选 |
+| `blinds-v` 百叶窗（竖） | ⚠️ mask 12 条 | ≈ 分块数与 PowerPoint 不同 | **版式**：stat（关键数字） |
+| `checkerboard` 棋盘 | ⚠️ 两段式，55% 处一次跳变 | ≈ 不是连续扫过 | 仅 LLM 自选 |
+| `dissolve-in` 溶解 | ⚠️ 整体透明度 steps(10) | ≈ 不是像素级溶解 | 仅 LLM 自选 |
+| `randombar` 随机线条 | ⚠️ steps(8)，末帧才补满 | ≈ 分块数与 PowerPoint 不同 | 仅 LLM 自选 |
+| `strips-in` 阶梯状 | ⚠️ 单条 45° 三角扫过 | ≈ PowerPoint 是多条斜纹 | 仅 LLM 自选 |
+| `box-in` 盒状展开 | ✅ | ✅ | 仅 LLM 自选 |
+| `circle-in` 圆形展开 | ✅ | ✅ | **版式**：title-center（大标题） |
+| `diamond-in` 菱形展开 | ✅ | ✅ | 仅 LLM 自选 |
+| `plus-in` 十字展开 | ✅ **本轮修复** | ✅ | 仅 LLM 自选 |
+| `wedge-in` 楔入 | ✅ 自顶部张开 | ✅ | **版式**：section（章节号） |
+| `wheel-in` 轮辐 | ✅ 4 辐，与 `wheel(4)` 对齐 | ✅ | 仅 LLM 自选 |
+| `pulse-soft` / `pulse` / `pulse-strong` | ✅ 首尾均回到原状 | ✅ | 仅 LLM 自选 |
+| `grow-shrink-soft` / `grow-shrink` / `grow-shrink-strong` | ✅ 首尾均回到原状 | ✅ **本轮修复 PPTX 侧** | 仅 LLM 自选 |
+| `spin` 陀螺旋转 | ✅ 转满一圈回原位 | ✅ | 仅 LLM 自选 |
+| `blink` 闪烁 | ✅ 暗到 .3 再回 1 | ✅ | 仅 LLM 自选 |
+| `exit-fade` 淡出 | ✅ | ✅ | 仅 LLM 自选 |
+| `exit-scale` 轻缩放退出 | ✅ | ✅ | 仅 LLM 自选 |
+| `exit-zoom` 缩小退出 | ✅ | ✅ | 仅 LLM 自选 |
+| `exit-wipe` 擦除退出 | ✅ 自左擦掉 | ✅ | 仅 LLM 自选 |
+| `exit-fly` 飞出 | ⚠️ 末帧 opacity .7，靠飞出画布 | ≈ 多一路 scale(0.7) | 仅 LLM 自选 |
+| `exit-dissolve` 溶解退出 | ⚠️ 整体透明度 steps(10) | ≈ 不是像素级溶解 | 仅 LLM 自选 |
+| `exit-blinds` 百叶窗退出 | ⚠️ mask 12 条 | ≈ 分块数与 PowerPoint 不同 | 仅 LLM 自选 |
+| `exit-circle` 圆形收拢 | ✅ | ✅ | 仅 LLM 自选 |
+
+#### 方向约定是实测过的，不是读关键帧读出来的
+
+约定是**方向指元素「从哪里来」**。用重心轨迹逐个量，13 个方向性效果全部符合，
+且与 `buildTimingXml` 写进 PPTX 的 `presetSubtype` / `filter` 同向：
+
+| 网页实测 | PPTX |
+|---|---|
+| `fade-up` / `slide-up` 重心自下方归位 | `presetSubtype=4`(下) + `ppt_y` 自 `+h/2` |
+| `fade-left` / `slide-left` 重心自左侧归位 | `presetSubtype=8`(左) + `ppt_x` 自 `-w/2` |
+| `wipe` 先露左边 → 向右揭开 | `presetSubtype=8`(左) + `filter=wipe(right)` |
+| `wipe-up` 先露下边 → 向上揭开 | `presetSubtype=4`(下) + `filter=wipe(up)` |
+| `strips-in` 自左上角对角扫出 | `filter=strips(downRight)` |
+| `wedge-in` 自正上方向两侧张开 | `filter=wedge` |
+| `exit-wipe` 自左侧擦掉 | `filter=wipe(right)` + `transition=out` |
+
+**`presetSubtype` 记的是「来源边」，`filter` 里的方向记的是「擦除去向」，两者天然相反**，这一点在词表注释里已经写明。
+
+#### agent 的三条路，没有死词表
+
+| 路 | 覆盖 |
+|---|---|
+| a) `layouts.ts` 10 个版式写死的编排 | **14 个效果**，每份 deck 必然跑到 |
+| b) `applyAnimationPreset` | 默认 `fade-up`；`title-then-content` 的标题用 `fade-down`（都在上面 14 个里） |
+| c) LLM 自选 | `ANIMATION_EFFECTS` 由 `ANIMATION_DEFS` 直接推导 → z.enum **覆盖全部 45 个**；`ANIMATION_GUIDE` 按性格分六类，**45 个全部点名** |
+
+所以**死词表是 0 个**：没有任何效果是三条路都够不着的。31 个是「只有模型主动选才会出现」，
+这是设计意图不是缺陷 —— 版式写死的那 14 个是保底的多样性，其余是模型的调色盘。
+
+高频那批（`wipe` 系 8 个版式都用、`fade-*` / `zoom-in` 遍布各版式）**全部 ✅**；
+写死路径里唯一落在 ⚠️ 的是 `blinds-v`（stat 版式的关键数字），它的 ⚠️ 只是「分块数和 PowerPoint 不同」，网页侧播得完全正常。
+
+#### 面板与翻页转场
+
+- **动画面板没被撑坏**。实测编译后的真实 SCSS：入场页签内容高 700px、容器 500px，
+  **多出来的 200px 由既有的 `overflow-y: auto` 接住**；每组仍是 4 列，最右侧 400px < 可用宽 405px，没有横向溢出。
+  入场从 4 组变 6 组带来的唯一变化是「这个页签现在要滚一下」
+- **悬停预览 45 个全部工作**：走的是同一个 `getAnimationCssClass`，实测每个类都恰好跑起 1 条 CSS 动画（`anims=0` 的有 0 个）。
+  这条比看着像更重要 —— 类名拼不出 keyframes 时 `animationend` **永远不会触发**，`useExecPlay` 的 `inAnimation` 卡住，整页放映点不动了
+- **12 种翻页转场**：11 种在 `ScreenSlideList.vue` 有 `turning-mode-*` 规则，
+  `random` 在渲染前已被 `useSlidesWithTurningMode` 换成具体值，**没有缺口**。
+  已知缺口在移动端：`MobilePlayer.vue` 只实现了 no / fade / slideX / slideY 四种，其余静默无转场（上游行为，未动）
+
+#### 新增单测（542 → 628）
+
+| 文件 | 钉住什么 |
+|---|---|
+| `src/configs/__tests__/animation.test.ts`（71） | ① 每个 `cssClass` 在 animate.css 或 animation-extra.scss 里真有规则、且自定义类都声明了 `animation-name` ② 45 个在面板分组里恰好各出现一次 ③ 每个 `turningMode` 都有 CSS ④ `cssExact` 的近似清单显式列出，改它是个需要解释的动作 |
+| `server/src/agent/__tests__/animation-reach.test.ts`（11） | z.enum 覆盖全集、`ANIMATION_GUIDE` 45 个全点名且没有词表外的名字、版式写死的 effect 全合法且全是入场类 |
+| `buildTimingXml.test.ts`（+4） | grow-shrink 三段且从 100% 起步、pulse 仍两段、强调最后一段一定收在 100% |
+
+三条都是「文件 A 改了、文件 B 没跟上」，类型系统管不着 —— 只能读文件对。
+
+`samples/animations/` 20 份**已按新的强调时间线重新生成**。
+
 ## 待完成
 
 | 项 | 说明 | 优先级 |
 |---|---|---|
-| **E3 地面真相** | 导出的动画在真实 PowerPoint 里逐个验，样本已生成（`samples/animations/`），清单见 [09-powerpoint-verify.md](./09-powerpoint-verify.md) | **高** |
+| **E3 地面真相** | 导出的动画在真实 PowerPoint 里逐个验，样本已生成（`samples/animations/`），清单见 [09-powerpoint-verify.md](./09-powerpoint-verify.md)。**网页侧已在无头浏览器里逐帧验完**（R-36），剩下的确实只有 PowerPoint 那一半 | **高** |
+| **`in` / `out` 光圈方向** | `box-in` / `circle-in` / `diamond-in` / `plus-in` 网页侧一律「自中心向外张开」。若 PowerPoint 的 `filter=circle(in)` 实际是「自外向内收拢」，这四个方向就是反的 —— 只能开 PowerPoint 看，判法见 [09](./09-powerpoint-verify.md) 第三节 | **高** |
 | **图片 / 图标能力** | 08 号文档诊断 ① 里最大的一条，本轮按决策 P1 只定了接口（`server/src/agent/assets.ts`），provider 未接 | **高** |
 | R-09 / R-18 | 旧 AI 路径包装成 agent 工具 `fillFromTemplate` | 中 |
 | 事务 / 回滚 | 逐工具提交，中途失败留半成品。Oh My PPT 的 job/rollback 还没抄 | 中 |

@@ -22,10 +22,15 @@
 |---|---|---|---|
 | **时间线嵌套层数** | 2 层 `<p:par>` | 3 层（点击步 / 子步 / 效果） | 整页动画连成一串自动播完，不停下来等点击 |
 | **退场 visibility 时机** | `delay="0"` | `delay="dur-1"` | 元素先瞬间消失，淡出动画对着空气播 |
-| **强调回弹结构** | 裹在嵌套的 `<p:seq nodeType="mainSeq">` 里 | 两段 `animScale` 平铺，第二段带 `delay` | 一页出现两条主时间线，PowerPoint 可能整段忽略 |
+| **强调回弹结构** | 裹在嵌套的 `<p:seq nodeType="mainSeq">` 里 | `animScale` 平铺，后续段带 `delay` | 一页出现两条主时间线，PowerPoint 可能整段忽略 |
 | **`effectFilter` 词表** | 只有硬编码的 `wipe(r)` | 完整 OOXML 滤镜表，`wipe(right)` 等规范写法 | 效果不播，元素直接出现（无动画） |
 
 `wipe` 的 presetID 也从 5（Checkerboard）改成了 22（Wipe）—— 原来效果能播，但动画窗格里显示成「棋盘」。
+
+> **R-36 追加**：`grow-shrink-*` 的强调回弹从两段改成三段。
+> 原来第一段直接 `from=95000`，元素会在 t=0 **瞬间弹到 95%** 再开始长；
+> 现在是 `100% → low → high → 100%`，按网页关键帧的 30% / 70% 切分。
+> `pulse-*` 不受影响（仍是两段 50/50）。**样本已按新结构重新生成**，验之前请确认用的是最新的那份。
 
 ## 二 · 生成样本
 
@@ -65,6 +70,24 @@ npm run samples          # → samples/animations/*.pptx，20 份
 | **behavior-motion** | 10 | 位移方向是否符合标题（"自下淡入" = 从下方飞上来） | `presetSubtype` 方向位掩码或 `ppt_x/ppt_y` 公式不对 |
 
 前三份都过了，再扫剩下的：
+
+#### 这一份要专门盯：`in` / `out` 的光圈方向
+
+`filter=circle(in)` 里的 `in` 到底指「光圈自中心向外张开」还是「自外向内收拢」，
+规范文本没写死，refs 里所有 pptx 的 `p:animEffect` 计数为 0，**推不出来，只能看**。
+
+网页侧（R-36 实测）四个几何入场**一律是自中心向外张开**：
+`box-in` 从中心矩形张开 · `circle-in` 圆从 0 长到盖满 · `diamond-in` 菱形外扩 · `plus-in` 十字外扩。
+
+打开 **filter-box / filter-circle / filter-diamond / filter-plus** 这四份，只回答一个问题：
+
+- 元素是**从中间冒出来**的 → 和网页一致，什么都不用改
+- 元素是**从四周往中间收着露出来**的 → 方向反了。改法二选一：
+  把这四项的 `effectFilter.subtype` 从 `'in'` 换成 `'out'`（连带 `presetSubtype` 16 ↔ 32），
+  或者把 `animation-extra.scss` 里对应的 keyframes 起止对调。**别两边一起改，会绕回原点**
+
+`exit-circle` 用的是 `circle(out)`，网页侧是「圆收拢到 0」。它和 `circle-in` 是一对镜像，
+所以只要定了一个，另一个跟着定。
 
 | 文件 | 页数 | 效果 |
 |---|---:|---|
@@ -111,6 +134,8 @@ trigger-sequencing ⚠️ 第 4 页需要点一下才开始
 | 3D 推移变成普通推移 | 基础 schema 没有，p14/p15 扩展非 PowerPoint 不播 |
 | 转场时长只有慢/中/快三档 | 只写 `spd`，没写 `p14:dur`（那需要 `mc:AlternateContent` 包一层） |
 | 网页预览的百叶窗 / 棋盘 / 溶解和 PowerPoint 里节奏不一样 | `cssExact: false`，CSS 只能用 mask 做近似，**PPTX 侧才是保真的那边** |
+| 「飞入 / 飞出」在网页上带缩放、在 PowerPoint 里只是位移 + 淡入 | `fly-in` / `exit-fly` 用 animate.css 的 `backInUp` / `backOutDown`，R-36 已标 `cssExact: false` |
+| 「飞入」和「自下淡入」在 PowerPoint 里几乎一样 | `motion: 'fromTrace'` 与 `fromBottom` 共用同一个位移公式，差别只在网页侧 |
 | 渐变背景导出后变成一个平均色 | pptxgenjs 不支持渐变填充，属于既有限制 |
 | 没设过转场的页面导出后没有转场 | 刻意的 —— 不给用户没设过的页面凭空加动画 |
 
