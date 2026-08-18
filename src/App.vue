@@ -15,7 +15,7 @@
   <!-- 编辑器 -->
   <template v-else-if="slides.length">
     <Screen v-if="screening" />
-    <Editor v-else-if="_isPC" @backToList="closeDeck" @openSettings="showSettings = true" />
+    <Editor v-else-if="_isPC" @backToList="closeDeck" @openSettings="showSettings = true" @saveDeck="saveDeck" />
     <Mobile v-else />
   </template>
 
@@ -92,7 +92,22 @@ const openDeck = async (deckId: number) => {
   }
 }
 
-const closeDeck = () => {
+const saveDeck = async () => {
+  if (!currentDeckId.value) return
+  try {
+    await deckApi.update(currentDeckId.value, {
+      title: slidesStore.title,
+      slidesJson: JSON.stringify(slidesStore.slides),
+      themeJson: JSON.stringify(slidesStore.theme),
+    })
+  }
+  catch {
+    // 静默失败，不阻塞返回操作
+  }
+}
+
+const closeDeck = async () => {
+  await saveDeck()
   currentDeckId.value = null
   slidesStore.setSlides([])
 }

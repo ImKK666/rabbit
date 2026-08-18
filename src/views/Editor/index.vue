@@ -1,6 +1,6 @@
 <template>
   <div class="pptist-editor">
-    <EditorHeader class="layout-header" @openSettings="emit('openSettings')" @backToList="emit('backToList')" />
+    <EditorHeader class="layout-header" @openSettings="emit('openSettings')" @backToList="emit('backToList')" @titleChange="emit('saveDeck')" />
     <div class="layout-content">
       <Thumbnails class="layout-content-left" />
       <div class="layout-content-center">
@@ -102,6 +102,7 @@ usePasteEvent()
 const emit = defineEmits<{
   (event: 'backToList'): void
   (event: 'openSettings'): void
+  (event: 'saveDeck'): void
 }>()
 </script>
 

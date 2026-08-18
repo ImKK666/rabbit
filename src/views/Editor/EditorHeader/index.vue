@@ -153,6 +153,7 @@ const startEditTitle = () => {
 const handleUpdateTitle = () => {
   slidesStore.setTitle(titleValue.value)
   editingTitle.value = false
+  emit('titleChange')
 }
 
 const goLink = (url: string) => {
@@ -176,6 +177,7 @@ const openAIPPTDialog = () => {
 const emit = defineEmits<{
   (event: 'openSettings'): void
   (event: 'backToList'): void
+  (event: 'titleChange'): void
 }>()
 </script>
 
