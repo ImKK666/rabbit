@@ -82,16 +82,33 @@ const runRole = async (
   send(ws, { type: 'agent.status', status: 'thinking', message: `${label} 正在思考...` })
   send(ws, { type: 'agent.text', role, content: `--- ${label} 开始工作 ---` })
 
-  const model = await resolveModelForRole(role, userId)
+  let model
+  try {
+    model = await resolveModelForRole(role, userId)
+    console.log(`[agent] ${role} → model resolved: ${model.modelId}`)
+  }
+  catch (err) {
+    const msg = err instanceof Error ? err.message : '模型解析失败'
+    console.error(`[agent] ${role} model resolution failed:`, msg)
+    throw err
+  }
 
   const accessor = {
     get: () => state,
     set: (newState: DeckState) => { state = newState },
+    onChange: () => {
+      send(ws, {
+        type: 'agent.deck',
+        slidesJson: JSON.stringify(state.slides),
+        version: state.version,
+      })
+    },
   }
   const allTools = createAgentTools(accessor)
   const tools = getToolSubset(role, allTools)
   const system = getSystemPrompt(role)
 
+  console.log(`[agent] ${role} → calling generateText...`)
   const result = await generateText({
     model,
     system,
@@ -221,6 +238,7 @@ export const runAgentTask = async (
     send(ws, { type: 'agent.status', status: 'done', message: '任务完成' })
   }
   catch (err) {
+    console.error('[agent] task failed:', err)
     if (abort.signal.aborted) {
       send(ws, { type: 'agent.status', status: 'error', message: '任务已取消' })
     }

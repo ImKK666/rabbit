@@ -35,9 +35,10 @@ export interface DeckState {
   version: number
 }
 
-type DeckStateAccessor = {
+export type DeckStateAccessor = {
   get: () => DeckState
   set: (state: DeckState) => void
+  onChange?: () => void
 }
 
 const applyMutation = (
@@ -47,6 +48,7 @@ const applyMutation = (
   if (!outcome.ok) return JSON.stringify({ ok: false, error: outcome.error })
   const state = accessor.get()
   accessor.set({ ...state, slides: outcome.data, version: state.version + 1 })
+  accessor.onChange?.()
   const warnings = outcome.issues.filter(i => i.level === 'warning')
   return JSON.stringify({
     ok: true,
@@ -211,7 +213,71 @@ export const createAgentTools = (accessor: DeckStateAccessor) => ({
       const outcome = applySetTheme(state.theme, props as Partial<SlideTheme>)
       if (!outcome.ok) return JSON.stringify({ ok: false, error: outcome.error })
       accessor.set({ ...state, theme: outcome.data, version: state.version + 1 })
+      accessor.onChange?.()
       return JSON.stringify({ ok: true, version: state.version + 1 })
+    },
+  }),
+
+  addAnimation: tool({
+    description: '给元素添加动画效果。支持 25 种效果（入场/强调/退出），3 种触发方式',
+    parameters: z.object({
+      slideId: z.string().describe('幻灯片 ID'),
+      animation: z.object({
+        id: z.string().describe('动画 ID，唯一，如 anim_xxx'),
+        elId: z.string().describe('目标元素 ID'),
+        effect: z.enum([
+          'fade', 'fade-up', 'fade-down', 'fade-left', 'fade-right',
+          'slide-up', 'slide-down', 'slide-left', 'slide-right',
+          'scale-in', 'zoom-in', 'spin-in', 'fly-in', 'wipe',
+          'pulse-soft', 'pulse', 'pulse-strong',
+          'grow-shrink-soft', 'grow-shrink', 'grow-shrink-strong',
+          'exit-fade', 'exit-scale', 'exit-zoom', 'exit-wipe', 'exit-fly',
+        ]).describe('动画效果'),
+        type: z.enum(['in', 'out', 'attention']).describe('动画类型：in=入场, out=退场, attention=强调'),
+        duration: z.number().int().min(100).max(5000).describe('持续时间（毫秒），推荐 500~1000'),
+        trigger: z.enum(['click', 'meantime', 'auto']).describe('触发方式：click=点击, meantime=与上一个同时, auto=上一个结束后自动'),
+      }).describe('动画配置'),
+    }),
+    execute: async ({ slideId, animation }) => {
+      const state = accessor.get()
+      const slideIndex = state.slides.findIndex(s => s.id === slideId)
+      if (slideIndex === -1) return JSON.stringify({ ok: false, error: `幻灯片 "${slideId}" 不存在` })
+
+      const slide = state.slides[slideIndex]
+      const elExists = slide.elements.some(e => e.id === animation.elId)
+      if (!elExists) return JSON.stringify({ ok: false, error: `元素 "${animation.elId}" 不存在` })
+
+      const newSlides = JSON.parse(JSON.stringify(state.slides))
+      if (!newSlides[slideIndex].animations) newSlides[slideIndex].animations = []
+      newSlides[slideIndex].animations.push(animation)
+
+      accessor.set({ ...state, slides: newSlides, version: state.version + 1 })
+      accessor.onChange?.()
+      return JSON.stringify({ ok: true, version: state.version + 1 })
+    },
+  }),
+
+  setSlideBackground: tool({
+    description: '设置页面背景（纯色、渐变、图片）',
+    parameters: z.object({
+      slideId: z.string().describe('幻灯片 ID'),
+      background: z.object({
+        type: z.enum(['solid', 'image', 'gradient']).describe('背景类型'),
+        color: z.string().optional().describe('纯色背景颜色，如 #0a0e27'),
+        image: z.object({
+          src: z.string(),
+          size: z.enum(['cover', 'contain', 'repeat']),
+        }).optional().describe('图片背景'),
+        gradient: z.object({
+          type: z.enum(['linear', 'radial']),
+          colors: z.array(z.object({ pos: z.number(), color: z.string() })),
+          rotate: z.number(),
+        }).optional().describe('渐变背景'),
+      }).describe('背景配置'),
+    }),
+    execute: async ({ slideId, background }) => {
+      const state = accessor.get()
+      return applyMutation(accessor, applyUpdateSlide(state.slides, slideId, { background } as Partial<Slide>))
     },
   }),
 })
