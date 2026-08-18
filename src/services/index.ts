@@ -152,6 +152,14 @@ export const conversationApi = {
   delete(id: number) {
     return api.delete(`${SERVER_URL}/conversations/${id}`)
   },
+  /** 一个 deck 一条会话线，打开演示文稿时用这个一次拿到全部历史 */
+  byDeck(deckId: number) {
+    return api.get(`${SERVER_URL}/conversations/by-deck/${deckId}`)
+  },
+  /** 清空某份演示文稿的会话历史（agent 记忆一并归零） */
+  clearDeck(deckId: number) {
+    return api.delete(`${SERVER_URL}/conversations/by-deck/${deckId}`)
+  },
 }
 
 // ---------------------------------------------------------------------------

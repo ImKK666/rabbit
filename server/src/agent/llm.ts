@@ -18,6 +18,7 @@ import {
   userRolePreferences,
   type AgentRole,
 } from '@server/db/schema'
+import { normalizeBaseUrl } from './baseUrl'
 
 export const resolveModelForRole = async (
   role: AgentRole,
@@ -63,8 +64,17 @@ export const resolveModelForRole = async (
     throw new Error(`模型提供商 #${config.providerId} 不存在`)
   }
 
-  console.log(`[llm] ${role} → provider="${provider.name}" type=${provider.providerType} model="${config.modelName}" baseUrl="${provider.baseUrl}"`)
-  return createModel(provider.providerType, provider.baseUrl, provider.apiKey, config.modelName)
+  const baseUrl = normalizeBaseUrl(provider.providerType, provider.baseUrl)
+  if (baseUrl !== provider.baseUrl) {
+    console.log(`[llm] baseUrl 规范化: "${provider.baseUrl}" → "${baseUrl}"`)
+  }
+  console.log(`[llm] ${role} → provider="${provider.name}" type=${provider.providerType} model="${config.modelName}" baseUrl="${baseUrl}"`)
+
+  const model = createModel(provider.providerType, baseUrl, provider.apiKey, config.modelName)
+  return Object.assign(model, {
+    /** 出错时拼进异常信息，省得只看到一句 "Not Found" 无从下手 */
+    __rabbitDescribe: `provider="${provider.name}" type=${provider.providerType} model="${config.modelName}" baseUrl="${baseUrl}"`,
+  })
 }
 
 const createModel = (

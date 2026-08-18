@@ -12,7 +12,6 @@ import { tool } from 'ai'
 import { z } from 'zod'
 import type { Slide, SlideTheme, PPTElement } from '@/types/slides'
 import {
-  findElement,
   findElementsByType,
   applyUpdateElement,
   applyAddElement,
@@ -21,7 +20,11 @@ import {
   applyUpdateSlide,
   applyDeleteSlide,
   applySetTheme,
+  applyAddAnimations,
+  applyRemoveAnimations,
+  applyAnimationPreset,
   lintDeck,
+  ANIMATION_EFFECTS,
   type KernelOutcome,
 } from './kernel'
 
@@ -49,13 +52,33 @@ const applyMutation = (
   const state = accessor.get()
   accessor.set({ ...state, slides: outcome.data, version: state.version + 1 })
   accessor.onChange?.()
-  const warnings = outcome.issues.filter(i => i.level === 'warning')
+
+  // errors 此前被 filter 掉了 —— agent 写出零尺寸元素、留下孤儿动画，
+  // 拿到的都是干净的 { ok: true }，永远学不到自己写错了。两级都要回传。
+  const errors = outcome.issues.filter(i => i.level === 'error').map(i => i.message)
+  const warnings = outcome.issues.filter(i => i.level === 'warning').map(i => i.message)
+
   return JSON.stringify({
     ok: true,
     version: state.version + 1,
-    warnings: warnings.length ? warnings.map(i => i.message) : undefined,
+    errors: errors.length ? errors : undefined,
+    warnings: warnings.length ? warnings : undefined,
+    hint: errors.length ? '本次修改已应用，但存在 error 级问题，请立即修复' : undefined,
   })
 }
+
+/** 元素摘要 —— getDeck / findElements 共用，别把整份 HTML content 灌给模型 */
+const summarizeElement = (el: PPTElement) => ({
+  id: el.id,
+  type: el.type,
+  ...('left' in el ? { left: el.left, top: el.top, width: el.width } : {}),
+  ...('height' in el ? { height: el.height } : {}),
+  ...(el.name ? { name: el.name } : {}),
+  ...(el.type === 'text'
+    ? { textType: el.textType, text: el.content.replace(/<[^>]*>/g, '').slice(0, 60) }
+    : {}),
+  ...(el.type === 'image' ? { src: el.src, imageType: el.imageType } : {}),
+})
 
 // ---------------------------------------------------------------------------
 // 工具定义
@@ -65,9 +88,11 @@ export const createAgentTools = (accessor: DeckStateAccessor) => ({
   // --- 读 ---
 
   getDeck: tool({
-    description: '获取当前演示文稿的完整信息，包括所有页面、主题和版本号',
-    parameters: z.object({}),
-    execute: async () => {
+    description: '获取当前演示文稿的结构总览。传 includeElements=true 可一次拿到每页所有元素的摘要（id/类型/位置/文本前 60 字），审查和整体调整时用这个，比逐页 getSlide 省很多步',
+    parameters: z.object({
+      includeElements: z.boolean().optional().describe('是否连每页元素摘要一起返回，默认 false'),
+    }),
+    execute: async ({ includeElements }) => {
       const { slides, theme, version } = accessor.get()
       return JSON.stringify({
         slideCount: slides.length,
@@ -78,6 +103,12 @@ export const createAgentTools = (accessor: DeckStateAccessor) => ({
           elementCount: s.elements.length,
           animationCount: s.animations?.length || 0,
           background: s.background?.type,
+          ...(includeElements
+            ? {
+              elements: s.elements.map(summarizeElement),
+              animations: s.animations?.map(a => ({ id: a.id, elId: a.elId, effect: a.effect, trigger: a.trigger })),
+            }
+            : {}),
         })),
         theme: { backgroundColor: theme.backgroundColor, fontColor: theme.fontColor, fontName: theme.fontName },
         version,
@@ -107,17 +138,7 @@ export const createAgentTools = (accessor: DeckStateAccessor) => ({
     execute: async ({ slideId, textType }) => {
       const { slides } = accessor.get()
       const elements = findElementsByType(slides, slideId, textType)
-      return JSON.stringify(elements.map(el => ({
-        id: el.id,
-        type: el.type,
-        left: el.left,
-        top: el.top,
-        width: el.width,
-        ...('height' in el ? { height: el.height } : {}),
-        name: el.name,
-        ...(el.type === 'text' ? { textType: el.textType, contentPreview: el.content.replace(/<[^>]*>/g, '').slice(0, 100) } : {}),
-        ...(el.type === 'image' ? { src: el.src, imageType: el.imageType } : {}),
-      })))
+      return JSON.stringify(elements.map(summarizeElement))
     },
   }),
 
@@ -218,42 +239,52 @@ export const createAgentTools = (accessor: DeckStateAccessor) => ({
     },
   }),
 
-  addAnimation: tool({
-    description: '给元素添加动画效果。支持 25 种效果（入场/强调/退出），3 种触发方式',
+  setAnimationPreset: tool({
+    description: '给整页套用动画方案，一次调用生成全页合法的动画时间线。想让一页元素「依次出现」「标题先出再出内容」时优先用这个，比逐个 addAnimation 省很多步。会覆盖该页原有动画',
     parameters: z.object({
       slideId: z.string().describe('幻灯片 ID'),
-      animation: z.object({
-        id: z.string().describe('动画 ID，唯一，如 anim_xxx'),
-        elId: z.string().describe('目标元素 ID'),
-        effect: z.enum([
-          'fade', 'fade-up', 'fade-down', 'fade-left', 'fade-right',
-          'slide-up', 'slide-down', 'slide-left', 'slide-right',
-          'scale-in', 'zoom-in', 'spin-in', 'fly-in', 'wipe',
-          'pulse-soft', 'pulse', 'pulse-strong',
-          'grow-shrink-soft', 'grow-shrink', 'grow-shrink-strong',
-          'exit-fade', 'exit-scale', 'exit-zoom', 'exit-wipe', 'exit-fly',
-        ]).describe('动画效果'),
-        type: z.enum(['in', 'out', 'attention']).describe('动画类型：in=入场, out=退场, attention=强调'),
-        duration: z.number().int().min(100).max(5000).describe('持续时间（毫秒），推荐 500~1000'),
-        trigger: z.enum(['click', 'meantime', 'auto']).describe('触发方式：click=点击, meantime=与上一个同时, auto=上一个结束后自动'),
-      }).describe('动画配置'),
+      preset: z.enum(['sequential', 'title-then-content', 'all-at-once', 'none']).describe(
+        'sequential=按阅读顺序依次入场 / title-then-content=标题先入其余随后同时入 / all-at-once=全部同时入场 / none=清空本页动画',
+      ),
+      effect: z.enum(ANIMATION_EFFECTS).optional().describe('入场效果，默认 fade-up'),
+      duration: z.number().int().min(100).max(5000).optional().describe('持续时间（毫秒），默认 600'),
     }),
-    execute: async ({ slideId, animation }) => {
+    execute: async ({ slideId, preset, effect, duration }) => {
       const state = accessor.get()
-      const slideIndex = state.slides.findIndex(s => s.id === slideId)
-      if (slideIndex === -1) return JSON.stringify({ ok: false, error: `幻灯片 "${slideId}" 不存在` })
+      return applyMutation(accessor, applyAnimationPreset(state.slides, slideId, preset, { effect, duration }))
+    },
+  }),
 
-      const slide = state.slides[slideIndex]
-      const elExists = slide.elements.some(e => e.id === animation.elId)
-      if (!elExists) return JSON.stringify({ ok: false, error: `元素 "${animation.elId}" 不存在` })
+  addAnimation: tool({
+    description: '给指定元素追加动画。可一次传多条（数组）。整页统一编排请优先用 setAnimationPreset',
+    parameters: z.object({
+      slideId: z.string().describe('幻灯片 ID'),
+      animations: z.array(z.object({
+        id: z.string().describe('动画 ID，全页唯一，如 anim_xxx'),
+        elId: z.string().describe('目标元素 ID，必须在本页存在'),
+        effect: z.enum(ANIMATION_EFFECTS).describe('动画效果'),
+        type: z.enum(['in', 'out', 'attention']).describe('必须与 effect 自洽：exit-* 是 out，pulse-*/grow-shrink-* 是 attention，其余是 in'),
+        duration: z.number().int().min(100).max(5000).describe('持续时间（毫秒），推荐 500~1000'),
+        trigger: z.enum(['click', 'meantime', 'auto']).describe('click=点击触发新一步, meantime=与上一条同时, auto=上一条结束后自动'),
+      })).min(1).describe('动画配置数组'),
+    }),
+    execute: async ({ slideId, animations }) => {
+      const state = accessor.get()
+      return applyMutation(accessor, applyAddAnimations(state.slides, slideId, animations))
+    },
+  }),
 
-      const newSlides = JSON.parse(JSON.stringify(state.slides))
-      if (!newSlides[slideIndex].animations) newSlides[slideIndex].animations = []
-      newSlides[slideIndex].animations.push(animation)
-
-      accessor.set({ ...state, slides: newSlides, version: state.version + 1 })
-      accessor.onChange?.()
-      return JSON.stringify({ ok: true, version: state.version + 1 })
+  removeAnimation: tool({
+    description: '删除动画。可按 animationIds、按 elementIds，或 all=true 清空整页。改动画时先删再加',
+    parameters: z.object({
+      slideId: z.string().describe('幻灯片 ID'),
+      animationIds: z.array(z.string()).optional().describe('按动画 ID 删'),
+      elementIds: z.array(z.string()).optional().describe('删掉这些元素身上的全部动画'),
+      all: z.boolean().optional().describe('清空本页所有动画'),
+    }),
+    execute: async ({ slideId, animationIds, elementIds, all }) => {
+      const state = accessor.get()
+      return applyMutation(accessor, applyRemoveAnimations(state.slides, slideId, { animationIds, elementIds, all }))
     },
   }),
 

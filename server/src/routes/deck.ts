@@ -1,10 +1,10 @@
 import { Hono } from 'hono'
 import { zValidator } from '@hono/zod-validator'
 import { z } from 'zod'
-import { eq, and } from 'drizzle-orm'
+import { eq, and, inArray } from 'drizzle-orm'
 import { getJwtPayload } from '@server/auth/jwt'
 import { db } from '@server/db'
-import { decks } from '@server/db/schema'
+import { decks, conversations, messages } from '@server/db/schema'
 
 const deck = new Hono()
 
@@ -74,7 +74,24 @@ deck.put('/:id', zValidator('json', updateSchema), async (c) => {
 deck.delete('/:id', async (c) => {
   const { userId } = getJwtPayload(c)
   const id = parseInt(c.req.param('id'))
+
+  const existing = await db.select({ id: decks.id }).from(decks)
+    .where(and(eq(decks.id, id), eq(decks.userId, userId))).get()
+  if (!existing) return c.json({ error: '未找到' }, 404)
+
+  // conversations.deckId 和 messages.conversationId 都是外键，且 PRAGMA foreign_keys = ON，
+  // 直接删 deck 会 FOREIGN KEY constraint failed ——
+  // 表现就是「agent 用过的文稿删不掉，没用过的能删」。必须自底向上清。
+  const convs = await db.select({ id: conversations.id }).from(conversations)
+    .where(eq(conversations.deckId, id)).all()
+
+  if (convs.length) {
+    await db.delete(messages).where(inArray(messages.conversationId, convs.map(cv => cv.id)))
+    await db.delete(conversations).where(eq(conversations.deckId, id))
+  }
+
   await db.delete(decks).where(and(eq(decks.id, id), eq(decks.userId, userId)))
+
   return c.json({ ok: true })
 })
 

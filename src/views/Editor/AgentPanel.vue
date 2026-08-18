@@ -9,11 +9,21 @@
     <template v-if="expanded">
       <div class="panel-header">
         <span class="panel-title">AI 助手</span>
-        <div class="status-dot" :class="status" v-tooltip="statusMessage || status"></div>
+        <div class="header-right">
+          <span
+            class="clear-btn"
+            v-if="log.length && !isRunning"
+            @click="handleClear"
+            v-tooltip="'清空本演示文稿的对话历史'"
+          >清空</span>
+          <div class="status-dot" :class="status" v-tooltip="statusMessage || status"></div>
+        </div>
       </div>
 
       <div class="panel-body" ref="bodyRef">
-        <div class="log-entries" v-if="log.length">
+        <div class="loading-hint" v-if="historyLoading">载入历史...</div>
+
+        <div class="log-entries" v-else-if="log.length">
           <template v-for="(entry, idx) in log" :key="idx">
             <!-- 用户输入 -->
             <div class="log-entry user-msg" v-if="entry.type === 'text' && entry.role === 'user'">
@@ -55,7 +65,7 @@
           </template>
         </div>
 
-        <div class="empty-hint" v-else>
+        <div class="empty-hint" v-else-if="!historyLoading">
           输入指令开始使用 AI 助手
         </div>
 
@@ -102,12 +112,31 @@ const props = defineProps<{
 const mainStore = useMainStore()
 const agentStore = useAgentStore()
 const { activeElementIdList } = storeToRefs(mainStore)
-const { status, statusMessage, log, isRunning } = storeToRefs(agentStore)
+const { status, statusMessage, log, isRunning, historyLoading } = storeToRefs(agentStore)
 
 const expanded = ref(true)
 const promptText = ref('')
 const bodyRef = ref<HTMLElement>()
 const expandedEntries = reactive(new Set<number>())
+
+// 会话按演示文稿隔离：切 deck 必须换掉整条日志。
+// 少了这个 watch，agent store 是全局单例，新建的项目会显示上一个项目的对话。
+watch(() => props.deckId, (deckId) => {
+  expandedEntries.clear()
+  if (deckId === null) agentStore.reset()
+  else agentStore.openDeck(deckId)
+}, { immediate: true })
+
+const handleClear = async () => {
+  if (!confirm('确定清空这份演示文稿的对话历史吗？AI 将不再记得之前的上下文。')) return
+  try {
+    await agentStore.clearHistory()
+    expandedEntries.clear()
+  }
+  catch {
+    alert('清空失败')
+  }
+}
 
 const selectedCount = computed(() => activeElementIdList.value.length)
 const canSend = computed(() => promptText.value.trim() && !isRunning.value && props.deckId)
@@ -226,6 +255,24 @@ watch(log, () => {
 .panel-title {
   font-size: 13px;
   font-weight: 500;
+}
+.header-right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.clear-btn {
+  font-size: 11px;
+  color: #999;
+  cursor: pointer;
+
+  &:hover { color: #e74c3c; }
+}
+.loading-hint {
+  color: #bbb;
+  text-align: center;
+  padding: 40px 0;
+  font-size: 13px;
 }
 .status-dot {
   width: 8px;

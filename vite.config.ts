@@ -57,11 +57,17 @@ export default defineConfig({
   },
   resolve: {
     alias: {
-      '@': fileURLToPath(new URL('./src', import.meta.url))
+      '@': fileURLToPath(new URL('./src', import.meta.url)),
+      // 后端直接 import 前端的 types / configs / utils（见 06-backend.md），
+      // 跑 server 单测时同样要能解析
+      '@server': fileURLToPath(new URL('./server/src', import.meta.url)),
     }
   },
   test: {
-    include: ['src/**/__tests__/**/*.test.ts'],
+    include: [
+      'src/**/__tests__/**/*.test.ts',
+      'server/src/**/__tests__/**/*.test.ts',
+    ],
     exclude: ['refs/**', 'node_modules/**'],
   } satisfies UserConfig['test'],
 })

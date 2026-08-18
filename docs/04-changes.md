@@ -12,7 +12,7 @@ PPTist 自带的文档已并入 [`docs/upstream/`](./upstream/)（`AI_PPT_SCHEMA
 
 | | 问题 | 结论 |
 |---|---|---|
-| Q1 | 动画词表约束层级 | **前端也砍**，92 → 26，`effect` 收窄成联合类型，编译期拦非法值 |
+| Q1 | 动画词表约束层级 | **前端也砍**，92 → 25，`effect` 收窄成联合类型，编译期拦非法值 |
 | Q2 | PPTX 动画导出 | **保留 pptxgenjs 做基础生成，自研 OOXML writer 注入 `<p:timing>` 动画树。导出留在前端，不迁 Python。** 完整方案见 [05-pptx-export.md](./05-pptx-export.md) |
 | Q3 | 旧 AI 路径 | **保留并改造成 agent 工具** `fillFromTemplate`，自由式失败时可回退 |
 | Q4 | 变更下发方式 | **整份 deck 替换**（`setSlides`），MVP 不做细粒度 patch |
@@ -51,7 +51,7 @@ PPTist 自带的文档已并入 [`docs/upstream/`](./upstream/)（`AI_PPT_SCHEMA
 | **R-21** | `src/assets/styles/animation-extra.scss` | 补齐 animate.css 缺失的 12 个效果 | ● |
 | **R-22** | `useExecPlay.ts` / `ElementAnimationPanel.vue` | `effect` 改经 `getAnimationCssClass()` 解析 | ● |
 | **R-15** | `server/src/agent/tools.ts` | `addAnimation` 工具 —— agent 可直接添加动画（25 种效果 × 3 种触发） | ● |
-| **R-16** | — | `applyAnimationPreset` 语义 API | ○ |
+| **R-16** | `server/src/agent/kernel.ts` | `applyAnimationPreset` 语义 API —— 4 个 preset（sequential / title-then-content / all-at-once / none），kernel 展开成合法时间线，一次调用替代 N 次 addAnimation | ● |
 
 ### 导出
 
@@ -106,8 +106,8 @@ PPTist 自带的文档已并入 [`docs/upstream/`](./upstream/)（`AI_PPT_SCHEMA
 | **S-04** | `server/src/routes/deck.ts` | Deck CRUD + version 乐观锁 | ● |
 | **S-05** | `server/src/routes/user.ts` | 模型偏好 / 可用模型列表 / 改密码 | ● |
 | **S-06** | `server/src/routes/conversation.ts` | 对话历史 CRUD | ● |
-| **S-07** | `server/src/agent/kernel.ts` | Deck Kernel：Zod schema + 几何 lint + 7 个纯函数变更操作 | ● |
-| **S-08** | `server/src/agent/tools.ts` | 14 个 Vercel AI SDK tools（4 读 + 8 写 + addAnimation + setSlideBackground） | ● |
+| **S-07** | `server/src/agent/kernel.ts` | Deck Kernel：Zod schema（元素级闸门真正接上）+ 几何 lint（含文本重叠）+ 11 个纯函数变更操作 | ● |
+| **S-08** | `server/src/agent/tools.ts` | **15 个** Vercel AI SDK tools（4 读 + 7 写 + 3 动画 + setSlideBackground） | ● |
 | **S-09** | `server/src/agent/llm.ts` | LLM Provider 工厂（用户偏好 > 管理员默认 > 报错） | ● |
 | **S-10** | `server/src/agent/roles.ts` | 4 角色 system prompt + 工具子集分配 | ● |
 | **S-11** | `server/src/agent/orchestrator.ts` | 任务编排：Planner→Generator→Reviewer（容错）→ 实时同步画布 | ● |
@@ -124,7 +124,7 @@ PPTist 自带的文档已并入 [`docs/upstream/`](./upstream/)（`AI_PPT_SCHEMA
 
 ## 当前状态（2026-08-18）
 
-**已完成 22/24 项改动 + 12 项后端 + 4 个新页面。**
+**已完成 23/24 项改动 + 12 项后端 + 4 个新页面。**
 
 前后端全栈已打通：
 ```
@@ -134,16 +134,61 @@ PPTist 自带的文档已并入 [`docs/upstream/`](./upstream/)（`AI_PPT_SCHEMA
 → 每步实时同步画布 → 完成后保存 DB
 ```
 
-58 个单测（vitest）：assetUrl 19 + spidMap 8 + buildTimingXml 31。
+125 个单测（vitest）：assetUrl 19 + spidMap 8 + buildTimingXml 31 + kernel 52 + baseUrl 15。
 
-`npm run build` exit 0（前端），`bun run dev` 正常启动（后端）。
+`npm run build` exit 0（前端），`tsc --noEmit` exit 0（后端），`bun run dev` 正常启动。
+
+功能测试脚本见 [07-agent-test.md](./07-agent-test.md)。
+
+### 2026-08-18 第二轮：agent 能力与正确性
+
+上一轮打通了链路，这一轮补的是**链路里被跳过的环节**。四处「设计写了但代码没接」：
+
+| | 问题 | 处置 |
+|---|---|---|
+| 1 | `elementSchema` 定义后**零引用** —— `addElement` 收到什么 push 什么，`slideSchema.elements` 是 `z.array(z.any())`。「工具全部经 kernel 校验」当时只对 slide 层成立 | 新增 `validateElement()`，接进 add/update Element 与 add/update Slide 四处；chart/table 等 agent 不产出的类型只校验基础几何，避免误杀导入的 deck |
+| 2 | `rectsOverlap` 是**死代码**。而 03-architecture 把「矩形求交查重叠」列为选 JSON 路线的头号收益 | 接进 `lintSlide`，只查 text↔text（文字压图片是正常设计），带背景板豁免和 60% 面积阈值 |
+| 3 | `applyMutation` 只回传 `warning`，**error 级被静默吞掉** —— agent 写出零尺寸元素拿到的是干净的 `{ok:true}` | errors / warnings 两级都回传，有 error 时附 hint |
+| 4 | `maxSteps` 全角色固定 15，且**截断无提示** | 按角色分配（Planner/Reviewer 12 · Generator 48 · Editor 24），截断时推 `⚠` 到面板 |
+
+同时补的能力：
+
+- **R-16 `applyAnimationPreset`** —— 4 个 preset，一次调用替代 N 次 `addAnimation`
+- **`addAnimation` 支持批量**，新增 **`removeAnimation`** —— 此前动画只能加不能删，Reviewer 提了意见 Generator 也改不了
+- **动画 effect / type 自洽校验** —— `effect: 'exit-fade'` 配 `type: 'in'` 此前无人拦截，会让导出把入场动画写进退场时间线
+- **元素 / 幻灯片 id 唯一性校验** —— 撞车此前会让后续寻址悄悄指向另一个元素
+- **`addSlide` 堵死孤儿动画入口** —— 整页带 `animations` 引用不存在的元素，此前可直接写进 deck
+- **25 个动画效果单一真相源** —— kernel 改为从 `configs/animation.ts` 派生，不再三处各抄一份
+- **`getDeck(includeElements)`** —— Planner/Reviewer 一次拿到全貌，不用逐页 `getSlide`
+- **Editor 上下文预注入** —— 选中元素的完整数据直接写进 prompt，省掉两轮 LLM 往返
+- **`normalizeBaseUrl`** + 模型调用异常带 provider/model/baseUrl —— 针对 Reviewer `Not Found`
+- 顺带修掉 `orchestrator.ts` 里 7 个既有 TS 报错（`Partial<AgentTools>` 让 SDK 把 toolCalls 推断成 `never`）
+
+### 2026-08-18 第三轮：删除失败 + 会话按 deck 隔离
+
+| | 问题 | 根因 | 处置 |
+|---|---|---|---|
+| 1 | **agent 用过的演示文稿删不掉**（没用过的能删） | `db/index.ts:16` 开了 `PRAGMA foreign_keys = ON`，而 `conversations.deckId` 外键指向 `decks.id` —— 直接 `DELETE FROM decks` 报 `FOREIGN KEY constraint failed`，路由没 catch 变成 500 | `deck.delete` 改为自底向上级联清 messages → conversations → deck，并补上归属校验（原来无论存不存在都返回 `ok:true`） |
+| 2 | **新建项目显示上一个项目的对话** | `agentStore.log` 是全局单例；`AgentPanel` 没有 `deckId` watcher；store 里的 `loadConversations`/`loadMessages` 定义了但**全项目零调用**（历史写进 DB 从没读回来过） | 加 `deckId` watcher + `openDeck()`/`reset()`；`GET /conversations/by-deck/:deckId` 一次取回历史 |
+| 3 | **agent 没有记忆** | `runAgentTask` 每次新建一条 conversation，且只喂 `[{role:'user', content:prompt}]` | 一个 deck 一条会话线（`getOrCreateConversation`）；历史经 `toHistoryTurns` 带进 Planner/Generator/Editor |
+| 4 | 任务跑到一半切走 deck，旧任务的 `agent.deck` 会覆盖新打开的文稿 | 无 | `openDeck` 检测到跨 deck 且任务在跑时先 `cancelTask` |
+
+`toHistoryTurns` 只留用户输入和 Generator/Editor 产出（Planner 的计划、Reviewer 的审查是一轮内部的中间过程），
+并合并连续同角色、丢弃开头的 assistant —— Anthropic 要求 user/assistant 严格交替且首条必须是 user。
+
+Reviewer 刻意不给历史：它的职责是拿当前 deck 对照本轮需求，喂历史只会让它翻出上几轮已解决的问题。
+
+面板还加了「清空」（`DELETE /conversations/by-deck/:deckId`），清完 agent 的记忆一并归零。
+
+**已知取舍**：重新打开演示文稿时，历史里只有对话文本，没有工具调用明细 —— 工具调用是实时流，不落库。
 
 ## 待完成
 
 | 项 | 说明 | 优先级 |
 |---|---|---|
 | R-09 / R-18 | 旧 AI 路径包装成 agent 工具 `fillFromTemplate` | 中 |
-| R-16 | 动画语义 preset API（`applyAnimationPreset`） | 低 |
+| 事务 / 回滚 | 逐工具提交，中途失败留半成品。Oh My PPT 的 job/rollback 还没抄 | 中 |
+| 并发控制 | agent 跑时用户手改画布会被整份 `agent.deck` 覆盖 | 中 |
 | E3 地面真相 | 在 PowerPoint 中验证导出的 PPTX 动画是否正常 | 高 |
 | 图片资产存储 | 对象存储（S3/R2），目前 TODO | 中 |
 | 调研摄入 | MinerU / 联网搜索，目前 TODO | 低 |
@@ -155,4 +200,4 @@ PPTist 自带的文档已并入 [`docs/upstream/`](./upstream/)（`AI_PPT_SCHEMA
 - [ ] **决策 C**：AGPL-3.0 授权 —— 需联系 PPTist 作者询价。**这是当前唯一可能导致推倒重来的风险**
 - [ ] `objectName` 是否对图表 / 表格生效（走 graphicFrame，属性位置可能不同）
 - [ ] 上游 `pptxtojson` 导入时是否解析动画
-- [ ] Reviewer 角色调用 LLM 报 "Not Found"，需排查模型名 / baseURL 配置
+- [x] ~~Reviewer 角色调用 LLM 报 "Not Found"~~ —— 已加 `normalizeBaseUrl` 修正常见 baseUrl 填法，且异常现在自带 provider/model/baseUrl。**待实测确认是否根治**
