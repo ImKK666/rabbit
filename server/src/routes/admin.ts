@@ -4,7 +4,7 @@ import { z } from 'zod'
 import { eq } from 'drizzle-orm'
 import { getJwtPayload } from '@server/auth/jwt'
 import { db } from '@server/db'
-import { modelProviders, modelConfigs, roleDefaults, type AgentRole } from '@server/db/schema'
+import { users, modelProviders, modelConfigs, roleDefaults, type AgentRole } from '@server/db/schema'
 
 const admin = new Hono()
 
@@ -101,6 +101,33 @@ admin.put('/role-defaults', zValidator('json', roleDefaultSchema), async (c) => 
   else {
     await db.insert(roleDefaults).values({ role: role as AgentRole, modelConfigId })
   }
+  return c.json({ ok: true })
+})
+
+// --- Users ---
+
+admin.get('/users', async (c) => {
+  const result = await db.select({
+    id: users.id,
+    username: users.username,
+    role: users.role,
+    createdAt: users.createdAt,
+  }).from(users).all()
+  return c.json({ users: result })
+})
+
+admin.patch('/users/:id', zValidator('json', z.object({ role: z.enum(['admin', 'user']) })), async (c) => {
+  const id = parseInt(c.req.param('id'))
+  const { role } = c.req.valid('json')
+  await db.update(users).set({ role }).where(eq(users.id, id))
+  return c.json({ ok: true })
+})
+
+admin.delete('/users/:id', async (c) => {
+  const payload = getJwtPayload(c)
+  const id = parseInt(c.req.param('id'))
+  if (id === payload.userId) return c.json({ error: '不能删除自己' }, 400)
+  await db.delete(users).where(eq(users.id, id))
   return c.json({ ok: true })
 })
 

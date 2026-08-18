@@ -7,6 +7,8 @@ import { getJwtSecret } from '@server/auth/jwt'
 import authRoutes from '@server/routes/auth'
 import adminRoutes from '@server/routes/admin'
 import deckRoutes from '@server/routes/deck'
+import userRoutes from '@server/routes/user'
+import conversationRoutes from '@server/routes/conversation'
 import { authenticateWs, handleWsMessage, type WsUserData } from '@server/ws/handler'
 
 const app = new Hono()
@@ -22,6 +24,8 @@ const authed = new Hono()
 authed.use('*', jwt({ secret: getJwtSecret(), alg: 'HS256' }))
 authed.route('/admin', adminRoutes)
 authed.route('/decks', deckRoutes)
+authed.route('/user', userRoutes)
+authed.route('/conversations', conversationRoutes)
 app.route('/api', authed)
 
 app.get('/health', (c) => c.json({ ok: true }))
