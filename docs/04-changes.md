@@ -211,6 +211,21 @@ messages         role='tool'     枚举里本来就有，此前从没写过
 `WHERE ${messages.conversationId} = ${conversations.id}` 变成 `WHERE "conversation_id" = "id"` ——
 两边都落到 messages 上成了自比较，**返回的不是报错而是一个看着挺合理的数字**。改用 GROUP BY 聚合再合并。
 
+### 2026-08-18 第五轮：登录态持久
+
+| | 问题 | 处置 |
+|---|---|---|
+| 1 | **`fetchMe()` catch 到任何异常就 `logout()`** —— 网络抖动、后端还没起、5xx 全都清掉 token。开发时 vite 比 bun 先起来，刷新一次就掉登录 | 只有真 401 才登出；其余保留登录态 |
+| 2 | **启动必须等 `/auth/me` 回来才知道自己是谁** | 身份缓存进 localStorage，刷新即已登录（乐观恢复），再后台跟服务端核对 |
+| 3 | **JWT 固定 7 天、零续期**，用得再勤第 8 天也被踢 | `/auth/me` 在剩余寿命过半时换发新 token，前端收到即替换 |
+| 4 | **换账号登录会直接进上一个人的演示文稿**，AI 面板还是上一个人的对话 —— `currentDeckId` 是 App.vue 局部 ref，slides / agent 是 pinia 单例，都不随登出重置（deckId 没变，AgentPanel 的 watch 也不触发） | watch `isLoggedIn`，登出时清 deck + slides + agent |
+| 5 | WebSocket 固定 3 秒重连、**10 次后永久放弃** —— 后端重启一次，AI 面板从此静默失联 | 指数退避（1s→30s 封顶）不设次数上限；登出才停 |
+| 6 | 各处 401 无统一处理 | axios 响应拦截器统一登出；`/auth/login`、`/auth/register` 的 401 是「密码错了」，排除在外 |
+
+`/auth/me` 顺带改成**从库里读用户**而不是直接信 token 里的字段：账号被删、角色被管理员改过都能立刻生效。
+
+实测：新鲜 token 不换发 · 剩 1 天的 token 换发新的 · 账号删除后立即 401 · 错误密码的 401 不会触发登出。
+
 ## 待完成
 
 | 项 | 说明 | 优先级 |

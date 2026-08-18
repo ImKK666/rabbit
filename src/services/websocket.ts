@@ -27,12 +27,14 @@ export type ServerMessage =
 
 type MessageHandler = (msg: ServerMessage) => void
 
-const RECONNECT_DELAY = 3000
-const MAX_RECONNECT_ATTEMPTS = 10
+const RECONNECT_BASE_DELAY = 1000
+const RECONNECT_MAX_DELAY = 30_000
 
 let ws: WebSocket | null = null
 let reconnectTimer: number | null = null
 let reconnectAttempts = 0
+/** 主动登出后不再自动重连，等下次登录显式 connect() */
+let stopped = false
 
 const connected = ref(false)
 const handlers = new Set<MessageHandler>()
@@ -54,21 +56,35 @@ const cleanup = () => {
   connected.value = false
 }
 
+/**
+ * 指数退避重连，不设次数上限。
+ *
+ * 原来是固定 3 秒重试 10 次，**30 秒后就永久放弃** ——
+ * 后端重启一次，编辑器里的 AI 面板从此静默失联，用户完全看不出来。
+ * 没有 token（已登出）时不重连。
+ */
 const scheduleReconnect = () => {
-  if (reconnectTimer !== null) return
-  if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) return
+  if (reconnectTimer !== null || stopped) return
+  if (!getToken()) return
+
+  const delay = Math.min(RECONNECT_BASE_DELAY * 2 ** reconnectAttempts, RECONNECT_MAX_DELAY)
   reconnectAttempts++
   reconnectTimer = window.setTimeout(() => {
     reconnectTimer = null
     connect()
-  }, RECONNECT_DELAY)
+  }, delay)
 }
 
 export const connect = () => {
   const token = getToken()
   if (!token) return
-  if (ws && ws.readyState === WebSocket.OPEN) return
+  if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return
 
+  stopped = false
+  if (reconnectTimer !== null) {
+    clearTimeout(reconnectTimer)
+    reconnectTimer = null
+  }
   cleanup()
 
   const socket = new WebSocket(getWsUrl())
@@ -105,7 +121,8 @@ export const disconnect = () => {
     clearTimeout(reconnectTimer)
     reconnectTimer = null
   }
-  reconnectAttempts = MAX_RECONNECT_ATTEMPTS
+  stopped = true
+  reconnectAttempts = 0
   if (ws) {
     ws.close()
     cleanup()

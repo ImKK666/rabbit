@@ -23,10 +23,10 @@
 </template>
 
 <script lang="ts" setup>
-import { ref, provide, onMounted } from 'vue'
+import { ref, provide, onMounted, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { nanoid } from 'nanoid'
-import { useScreenStore, useMainStore, useSnapshotStore, useSlidesStore, useAuthStore } from '@/store'
+import { useScreenStore, useMainStore, useSnapshotStore, useSlidesStore, useAuthStore, useAgentStore } from '@/store'
 import { LOCALSTORAGE_KEY_DISCARDED_DB } from '@/configs/storage'
 import { deleteDiscardedDB } from '@/utils/database'
 import { isPC } from '@/utils/common'
@@ -43,6 +43,7 @@ import FullscreenSpin from '@/components/FullscreenSpin.vue'
 const _isPC = isPC()
 
 const authStore = useAuthStore()
+const agentStore = useAgentStore()
 const mainStore = useMainStore()
 const slidesStore = useSlidesStore()
 const snapshotStore = useSnapshotStore()
@@ -112,12 +113,29 @@ const closeDeck = async () => {
   slidesStore.setSlides([])
 }
 
+/**
+ * 登出（或登录态失效）时清干净上一个账号的全部残留。
+ *
+ * currentDeckId 是本组件的局部 ref，slides / agent 是 pinia 单例，三者原来都不随登出重置。
+ * 结果是换个账号登录会**直接跳进上一个人的演示文稿**，AI 面板里还是上一个人的对话
+ * —— deckId 没变，AgentPanel 的 watch 也不会触发重载。
+ */
+watch(() => authStore.isLoggedIn, (loggedIn) => {
+  if (loggedIn) return
+  currentDeckId.value = null
+  showSettings.value = false
+  slidesStore.setSlides([])
+  agentStore.reset()
+})
+
 onMounted(async () => {
   if (isAudienceMode) {
     slidesStore.setSlides([{ id: nanoid(10), elements: [] }])
     screenStore.setScreening(true)
     return
   }
+  // 任何请求撞上 401 都统一登出，不用各处自己判断
+  authStore.installUnauthorizedHandler()
   await authStore.fetchMe()
 })
 

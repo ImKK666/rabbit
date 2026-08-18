@@ -2,7 +2,13 @@ import { sign, verify } from 'hono/jwt'
 import type { Context } from 'hono'
 
 const JWT_SECRET = process.env.JWT_SECRET || 'rabbit-dev-secret-change-in-production'
-const JWT_EXPIRES_IN = 7 * 24 * 60 * 60 // 7 days in seconds
+export const JWT_EXPIRES_IN = 7 * 24 * 60 * 60 // 7 days in seconds
+
+/**
+ * 剩余寿命低于总时长的这个比例时换发新 token（见 /auth/me）。
+ * 只要还在用就不会被踢下线；真闲置超过 7 天才需要重新登录。
+ */
+export const JWT_RENEW_THRESHOLD = 0.5
 
 export interface JwtPayload {
   userId: number

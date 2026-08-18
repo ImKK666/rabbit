@@ -5,10 +5,35 @@ import fetchRequest from './fetch'
 export const SERVER_URL = import.meta.env.VITE_API_URL || '/api'
 
 const TOKEN_KEY = 'rabbit_token'
+const USER_KEY = 'rabbit_user'
 
 export const getToken = (): string | null => localStorage.getItem(TOKEN_KEY)
 export const setToken = (token: string) => localStorage.setItem(TOKEN_KEY, token)
 export const clearToken = () => localStorage.removeItem(TOKEN_KEY)
+
+/**
+ * 缓存身份，刷新页面时先按上次的身份把界面渲染出来，再后台跟服务端核对。
+ *
+ * 没有它的话，启动必须等 /auth/me 回来才知道自己是谁 ——
+ * 后端慢一点或者暂时连不上，用户看到的就是登录页。
+ */
+export const getCachedUser = <T>(): T | null => {
+  const raw = localStorage.getItem(USER_KEY)
+  if (!raw) return null
+  try {
+    return JSON.parse(raw) as T
+  }
+  catch {
+    localStorage.removeItem(USER_KEY)
+    return null
+  }
+}
+export const setCachedUser = (user: unknown) => localStorage.setItem(USER_KEY, JSON.stringify(user))
+export const clearCachedUser = () => localStorage.removeItem(USER_KEY)
+
+/** 请求是否因为登录态失效而失败（真 401），区别于网络错误 / 5xx */
+export const isUnauthorized = (err: unknown): boolean =>
+  (err as { response?: { status?: number } })?.response?.status === 401
 
 // ---------------------------------------------------------------------------
 // 带 JWT 的 axios 实例
@@ -20,6 +45,25 @@ api.interceptors.request.use(config => {
   if (token) config.headers.Authorization = `Bearer ${token}`
   return config
 })
+
+/**
+ * 登录态失效时的统一出口。
+ *
+ * 用回调注册而不是直接 import store，避免 services ←→ store 循环依赖。
+ */
+let unauthorizedHandler: (() => void) | null = null
+export const setUnauthorizedHandler = (fn: () => void) => { unauthorizedHandler = fn }
+
+api.interceptors.response.use(
+  res => res,
+  (err) => {
+    // 登录 / 注册接口的 401 是「密码错了」，不是登录态失效，别把人踢出去
+    const url: string = err?.config?.url || ''
+    const isAuthEntry = url.includes('/auth/login') || url.includes('/auth/register')
+    if (isUnauthorized(err) && !isAuthEntry) unauthorizedHandler?.()
+    return Promise.reject(err)
+  },
+)
 
 // ---------------------------------------------------------------------------
 // Auth（公开，不需要 JWT）
