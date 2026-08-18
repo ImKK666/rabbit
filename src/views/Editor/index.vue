@@ -1,6 +1,6 @@
 <template>
   <div class="pptist-editor">
-    <EditorHeader class="layout-header" @openSettings="showSettingsDialog = true" @backToList="emit('backToList')" />
+    <EditorHeader class="layout-header" @openSettings="emit('openSettings')" @backToList="emit('backToList')" />
     <div class="layout-content">
       <Thumbnails class="layout-content-left" />
       <div class="layout-content-center">
@@ -46,13 +46,6 @@
     <AIPPTDialog />
   </Modal>
 
-  <Modal
-    :visible="showSettingsDialog"
-    :width="640"
-    @closed="showSettingsDialog = false"
-  >
-    <SettingsDialog />
-  </Modal>
 </template>
 
 <script lang="ts" setup>
@@ -69,7 +62,6 @@ import Thumbnails from './Thumbnails/index.vue'
 import Toolbar from './Toolbar/index.vue'
 import Remark from './Remark/index.vue'
 import AgentPanel from './AgentPanel.vue'
-import SettingsDialog from './SettingsDialog.vue'
 import ChartDataEditorDialog from './ChartDataEditorDialog.vue'
 import LatexEditorDialog from './LatexEditorDialog.vue'
 import ExportDialog from './ExportDialog/index.vue'
@@ -102,8 +94,6 @@ const currentDeckId = inject<number | null>('currentDeckId', null)
 const closeExportDialog = () => mainStore.setDialogForExport('')
 const closeAIPPTDialog = () => mainStore.setAIPPTDialogState(false)
 
-const showSettingsDialog = ref(false)
-
 const remarkHeight = ref(40)
 
 useGlobalHotkey()
@@ -111,6 +101,7 @@ usePasteEvent()
 
 const emit = defineEmits<{
   (event: 'backToList'): void
+  (event: 'openSettings'): void
 }>()
 </script>
 

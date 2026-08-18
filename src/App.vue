@@ -2,26 +2,24 @@
   <!-- 未登录 -->
   <Auth v-if="!authStore.isLoggedIn" @success="onAuthSuccess" />
 
+  <!-- 设置页 -->
+  <Settings v-else-if="showSettings" @back="showSettings = false" />
+
   <!-- 已登录但未选 deck -->
   <DeckList
     v-else-if="!currentDeckId"
     @select="openDeck"
-    @openSettings="showGlobalSettings = true"
+    @openSettings="showSettings = true"
   />
 
   <!-- 编辑器 -->
   <template v-else-if="slides.length">
     <Screen v-if="screening" />
-    <Editor v-else-if="_isPC" @backToList="closeDeck" />
+    <Editor v-else-if="_isPC" @backToList="closeDeck" @openSettings="showSettings = true" />
     <Mobile v-else />
   </template>
 
   <FullscreenSpin tip="加载中..." v-else-if="currentDeckId" loading :mask="false" />
-
-  <!-- 全局设置（从 deck 列表页打开） -->
-  <Modal :visible="showGlobalSettings" :width="640" @closed="showGlobalSettings = false">
-    <SettingsDialog />
-  </Modal>
 </template>
 
 <script lang="ts" setup>
@@ -36,12 +34,11 @@ import { deckApi } from '@/services'
 
 import Auth from './views/Auth/index.vue'
 import DeckList from './views/DeckList/index.vue'
+import Settings from './views/Settings/index.vue'
 import Editor from './views/Editor/index.vue'
 import Screen from './views/Screen/index.vue'
 import Mobile from './views/Mobile/index.vue'
-import SettingsDialog from './views/Editor/SettingsDialog.vue'
 import FullscreenSpin from '@/components/FullscreenSpin.vue'
-import Modal from '@/components/Modal.vue'
 
 const _isPC = isPC()
 
@@ -55,7 +52,7 @@ const { slides } = storeToRefs(slidesStore)
 const { screening } = storeToRefs(screenStore)
 
 const currentDeckId = ref<number | null>(null)
-const showGlobalSettings = ref(false)
+const showSettings = ref(false)
 provide('currentDeckId', currentDeckId)
 
 const isAudienceMode = new URLSearchParams(window.location.search).get('mode') === 'audience'
