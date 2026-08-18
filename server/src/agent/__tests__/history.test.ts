@@ -1,8 +1,19 @@
 import { describe, it, expect } from 'vitest'
-import { toHistoryTurns, HISTORY_CONTENT_LIMIT, type StoredMessage } from '../history'
+import {
+  toHistoryTurns,
+  makeConversationTitle,
+  serializeToolCall,
+  parseToolCall,
+  HISTORY_CONTENT_LIMIT,
+  TITLE_LIMIT,
+  TOOL_ARGS_LIMIT,
+  TOOL_RESULT_LIMIT,
+  type StoredMessage,
+} from '../history'
 
 const u = (content: string): StoredMessage => ({ role: 'user', content })
 const a = (content: string): StoredMessage => ({ role: 'assistant', content })
+const t = (content: string): StoredMessage => ({ role: 'tool', content })
 
 describe('toHistoryTurns — 对话历史转 LLM 消息', () => {
   it('保留用户和 Generator 的产出', () => {
@@ -103,5 +114,100 @@ describe('toHistoryTurns — 对话历史转 LLM 消息', () => {
   it('Editor 路径的产出没有角色前缀，同样保留', () => {
     const turns = toHistoryTurns([u('把标题改蓝'), a('已把标题改成 #00d4ff')])
     expect(turns[1].content).toBe('已把标题改成 #00d4ff')
+  })
+
+  it('tool 行不进记忆 —— 它只用于面板还原，混进去会打断 user/assistant 交替', () => {
+    const turns = toHistoryTurns([
+      u('做一份 PPT'),
+      t('{"tool":"addSlide","args":{},"result":"{\\"ok\\":true}"}'),
+      t('{"tool":"setTheme","args":{}}'),
+      a('[Generator] 建好了'),
+    ])
+    expect(turns).toEqual([
+      { role: 'user', content: '做一份 PPT' },
+      { role: 'assistant', content: '[Generator] 建好了' },
+    ])
+  })
+
+  it('tool 行夹在中间也不会把同侧的 assistant 拆成两条', () => {
+    const turns = toHistoryTurns([
+      u('做一份 PPT'),
+      a('[Generator] 第一段'),
+      t('{"tool":"lintDeck","args":{}}'),
+      a('[Generator 修正] 第二段'),
+    ])
+    expect(turns).toHaveLength(2)
+    expect(turns[1].content).toBe('[Generator] 第一段\n\n[Generator 修正] 第二段')
+  })
+})
+
+describe('makeConversationTitle', () => {
+  it('短输入原样用作标题', () => {
+    expect(makeConversationTitle('加个封面')).toBe('加个封面')
+  })
+
+  it('超长截断并加省略号', () => {
+    const title = makeConversationTitle('做一份深海蓝科技风格的演示文稿讲清楚为什么要有 Deck Kernel')
+    expect(title.length).toBe(TITLE_LIMIT + 1)
+    expect(title.endsWith('…')).toBe(true)
+  })
+
+  it('折叠换行和连续空白 —— 多行输入不能把列表撑坏', () => {
+    expect(makeConversationTitle('第一行\n\n  第二行')).toBe('第一行 第二行')
+  })
+
+  it('空输入回退到「新会话」', () => {
+    expect(makeConversationTitle('   ')).toBe('新会话')
+    expect(makeConversationTitle('')).toBe('新会话')
+  })
+})
+
+describe('serializeToolCall / parseToolCall', () => {
+  it('往返不丢信息', () => {
+    const record = {
+      tool: 'addSlide',
+      args: { slideId: 'slide_1', afterIndex: 0 },
+      result: '{"ok":true,"version":3}',
+    }
+    expect(parseToolCall(serializeToolCall(record))).toEqual(record)
+  })
+
+  it('没有 result 的调用也能往返', () => {
+    const record = { tool: 'lintDeck', args: {} }
+    const parsed = parseToolCall(serializeToolCall(record))
+    expect(parsed?.tool).toBe('lintDeck')
+    expect(parsed?.result).toBeUndefined()
+  })
+
+  it('超长参数整体换成 __truncated，而不是切成半截 JSON', () => {
+    const huge = { content: 'x'.repeat(TOOL_ARGS_LIMIT + 500) }
+    const parsed = parseToolCall(serializeToolCall({ tool: 'addSlide', args: huge }))
+    expect(parsed?.args.content).toBeUndefined()
+    expect(String(parsed?.args.__truncated)).toContain('已截断')
+  })
+
+  it('恰好在上限内的参数不动', () => {
+    const args = { content: 'x'.repeat(100) }
+    const parsed = parseToolCall(serializeToolCall({ tool: 'addSlide', args }))
+    expect(parsed?.args).toEqual(args)
+  })
+
+  it('超长结果被截断', () => {
+    const result = 'y'.repeat(TOOL_RESULT_LIMIT + 500)
+    const parsed = parseToolCall(serializeToolCall({ tool: 'getSlide', args: {}, result }))
+    expect(parsed!.result!.length).toBeLessThan(result.length)
+    expect(parsed?.result).toContain('已截断')
+  })
+
+  it('脏数据解析返回 null，不抛异常 —— 一条坏记录不能炸掉整个面板', () => {
+    expect(parseToolCall('not json')).toBeNull()
+    expect(parseToolCall('{}')).toBeNull()
+    expect(parseToolCall('null')).toBeNull()
+    expect(parseToolCall('{"tool":123}')).toBeNull()
+  })
+
+  it('args 缺失或不是对象时兜底成空对象', () => {
+    expect(parseToolCall('{"tool":"getDeck"}')?.args).toEqual({})
+    expect(parseToolCall('{"tool":"getDeck","args":"oops"}')?.args).toEqual({})
   })
 })

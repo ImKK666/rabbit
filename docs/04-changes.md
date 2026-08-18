@@ -180,7 +180,36 @@ Reviewer 刻意不给历史：它的职责是拿当前 deck 对照本轮需求�
 
 面板还加了「清空」（`DELETE /conversations/by-deck/:deckId`），清完 agent 的记忆一并归零。
 
-**已知取舍**：重新打开演示文稿时，历史里只有对话文本，没有工具调用明细 —— 工具调用是实时流，不落库。
+### 2026-08-18 第四轮：会话管理
+
+上一轮把会话绑到 deck，这一轮做成**一个 deck 多条会话线**，并补上工具调用落库。
+
+数据模型：`decks ──1:N── conversations ──1:N── messages`
+
+```
+conversations  + title           标题取首条用户输入前 20 字
+               + updatedAt       列表按「最近活动」排序
+               + forkedFromId    分叉来源，刻意不加外键
+messages         role='tool'     枚举里本来就有，此前从没写过
+```
+
+`forkedFromId` **不加外键约束**：加了之后删父会话会被子会话挡住，正是 deck 删不掉那个坑的翻版。
+
+| 能力 | 说明 |
+|---|---|
+| 工具调用落库 | `role='tool'`，content 是 `{tool,args,result}` JSON。args 上限 8KB、result 4KB，超限整体换 `__truncated` 标记而不是切成半截 JSON（面板按对象渲染，残缺 JSON 只会显示成乱码） |
+| 多会话切换 | 面板标题栏下拉，**记忆随会话切换**——每条线各自独立 |
+| 新建会话 | 不预建库记录：置空 `activeConversationId`，等真正发出第一条消息后端才建，否则点一下就留一条永远空着的会话 |
+| 重命名 / 删除 | 列表项悬停出现 |
+| 从消息分叉 | 复制 `messages[起点..选中点]` 到新会话，**deck 不动**——会话是聊天线程，演示文稿是单一可变文档 |
+
+协议变更：`agent.task` 上行加 `conversationId?`（不传=新开），新增下行 `agent.conversation {id, title}` 让前端挂新会话进列表、并在 id 对不上时自愈。
+
+迁移 `0002` 是**手改过的**：SQLite 的 `ALTER TABLE ADD COLUMN` 既不接受 NOT NULL 无默认，也不接受 `unixepoch()` 这类非常量默认，所以 `updated_at` 先用常量 0 占位再回填成 `created_at`；同时从首条用户消息回填了已有会话的标题，否则升级后全叫「新会话」。
+
+**踩到的坑**：`messageCount` 一开始用相关子查询写，drizzle 在 `` sql`` `` 模板里把列渲染成**不带表前缀**的名字，
+`WHERE ${messages.conversationId} = ${conversations.id}` 变成 `WHERE "conversation_id" = "id"` ——
+两边都落到 messages 上成了自比较，**返回的不是报错而是一个看着挺合理的数字**。改用 GROUP BY 聚合再合并。
 
 ## 待完成
 

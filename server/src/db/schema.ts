@@ -57,7 +57,15 @@ export const conversations = sqliteTable('conversations', {
   id: integer('id').primaryKey({ autoIncrement: true }),
   userId: integer('user_id').notNull().references(() => users.id),
   deckId: integer('deck_id').notNull().references(() => decks.id),
+  title: text('title').notNull().default('新会话'),
+  /**
+   * 分叉来源会话 id。**刻意不加外键约束** ——
+   * 加了之后删除父会话会被子会话挡住，正是 deck 删不掉的那个坑的翻版。
+   * 来源没了就当普通会话，不影响使用。
+   */
+  forkedFromId: integer('forked_from_id'),
   createdAt: integer('created_at', { mode: 'timestamp' }).notNull().$defaultFn(() => new Date()),
+  updatedAt: integer('updated_at', { mode: 'timestamp' }).notNull().$defaultFn(() => new Date()),
 })
 
 export const messages = sqliteTable('messages', {

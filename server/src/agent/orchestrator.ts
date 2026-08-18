@@ -17,7 +17,12 @@ import { decks, conversations, messages } from '@server/db/schema'
 import type { AgentRole } from '@server/db/schema'
 import type { WsUserData, ServerMessage } from '@server/ws/handler'
 import { createAgentTools, type DeckState } from './tools'
-import { toHistoryTurns, type HistoryTurn } from './history'
+import {
+  toHistoryTurns,
+  makeConversationTitle,
+  serializeToolCall,
+  type HistoryTurn,
+} from './history'
 import { resolveModelForRole } from './llm'
 import { getSystemPrompt, getToolSubset } from './roles'
 
@@ -84,24 +89,51 @@ const saveDeckState = async (deckId: number, state: DeckState) => {
   }).where(eq(decks.id, deckId))
 }
 
-const saveMessage = async (conversationId: number, role: 'user' | 'assistant' | 'system', content: string) => {
+const saveMessage = async (
+  conversationId: number,
+  role: 'user' | 'assistant' | 'system' | 'tool',
+  content: string,
+) => {
   await db.insert(messages).values({ conversationId, role, content })
 }
 
 /**
- * 一个 deck 一条会话线。
+ * 定位本次任务写进哪条会话。
  *
- * 原来每提交一次任务就新建一条 conversation —— 同一份演示文稿的历史被切成互不相干的碎片，
- * 前端按 deckId 查会拿到一堆各含一轮对话的记录，agent 也无从「记得上次做过什么」。
+ * 前端带 conversationId → 续那条（记忆也从那条载入）
+ * 不带                  → 新开一条，标题取首句输入，记忆为空
+ *
+ * 带了但对不上（多标签页里被删掉之类）不报错，自动新开一条并把新 id 推回前端 ——
+ * 让前端自愈，比甩一个错误让用户手动刷新体面。
  */
-const getOrCreateConversation = async (userId: number, deckId: number) => {
-  const existing = await db.select().from(conversations)
-    .where(and(eq(conversations.userId, userId), eq(conversations.deckId, deckId)))
-    .orderBy(conversations.id)
-    .get()
-  if (existing) return existing
+const resolveConversation = async (
+  userId: number,
+  deckId: number,
+  conversationId: number | undefined,
+  prompt: string,
+) => {
+  if (conversationId !== undefined) {
+    const found = await db.select().from(conversations)
+      .where(and(
+        eq(conversations.id, conversationId),
+        eq(conversations.userId, userId),
+        eq(conversations.deckId, deckId),
+      ))
+      .get()
+    if (found) return found
+    console.warn(`[agent] conversation #${conversationId} 不属于 deck #${deckId}，改为新建`)
+  }
 
-  return db.insert(conversations).values({ userId, deckId }).returning().get()
+  return db.insert(conversations)
+    .values({ userId, deckId, title: makeConversationTitle(prompt) })
+    .returning()
+    .get()
+}
+
+const touchConversation = async (conversationId: number) => {
+  await db.update(conversations)
+    .set({ updatedAt: new Date() })
+    .where(eq(conversations.id, conversationId))
 }
 
 /** 带进 LLM 的历史条数上限 */
@@ -173,6 +205,7 @@ const runRole = async (
   ws: ServerWebSocket<WsUserData>,
   signal: AbortSignal,
   history: HistoryTurn[] = [],
+  conversationId?: number,
 ): Promise<{ text: string, state: DeckState, truncated: boolean }> => {
   const label = ROLE_LABELS[role]
   send(ws, { type: 'agent.status', status: 'thinking', message: `${label} 正在思考...` })
@@ -213,7 +246,7 @@ const runRole = async (
     tools,
     maxSteps,
     abortSignal: signal,
-    onStepFinish: ({ text, toolCalls, toolResults }) => {
+    onStepFinish: async ({ text, toolCalls, toolResults }) => {
       if (text) {
         send(ws, { type: 'agent.text', role, content: text })
       }
@@ -244,6 +277,16 @@ const runRole = async (
           args: tc.args,
           result: resultStr,
         })
+
+        // 落库，重开演示文稿时能还原完整的工具流。
+        // 不落的话历史里只剩对话文本，看不出 agent 到底动了什么。
+        if (conversationId !== undefined) {
+          await saveMessage(conversationId, 'tool', serializeToolCall({
+            tool: tc.toolName,
+            args: tc.args,
+            result: resultStr,
+          }))
+        }
       }
     },
   }))
@@ -265,6 +308,7 @@ export const runAgentTask = async (
   deckId: number,
   prompt: string,
   selectedElementIds?: string[],
+  conversationId?: number,
 ) => {
   const { userId } = ws.data
 
@@ -282,7 +326,10 @@ export const runAgentTask = async (
   const abort = new AbortController()
   activeTasks.set(userId, abort)
 
-  const conv = await getOrCreateConversation(userId, deckId)
+  const conv = await resolveConversation(userId, deckId, conversationId, prompt)
+  // 前端据此把新建的会话挂进列表，也用来纠正对不上的 conversationId
+  send(ws, { type: 'agent.conversation', id: conv.id, title: conv.title })
+
   // 先读历史再存当前这条，否则当前 prompt 会重复出现在 messages 里
   const history = await loadHistory(conv.id)
   await saveMessage(conv.id, 'user', prompt)
@@ -292,16 +339,16 @@ export const runAgentTask = async (
   try {
     if (selectedElementIds?.length) {
       const editorPrompt = `${describeSelection(state, selectedElementIds)}\n\n用户的要求：${prompt}`
-      const result = await runRole('editor', userId, editorPrompt, state, ws, abort.signal, history)
+      const result = await runRole('editor', userId, editorPrompt, state, ws, abort.signal, history, conv.id)
       state = result.state
       await saveMessage(conv.id, 'assistant', result.text)
     }
     else {
-      const planResult = await runRole('planner', userId, prompt, state, ws, abort.signal, history)
+      const planResult = await runRole('planner', userId, prompt, state, ws, abort.signal, history, conv.id)
       await saveMessage(conv.id, 'assistant', `[Planner] ${planResult.text}`)
 
       const genPrompt = `按照以下计划执行：\n${planResult.text}\n\n用户原始需求：${prompt}`
-      const genResult = await runRole('generator', userId, genPrompt, state, ws, abort.signal, history)
+      const genResult = await runRole('generator', userId, genPrompt, state, ws, abort.signal, history, conv.id)
       state = genResult.state
       await saveMessage(conv.id, 'assistant', `[Generator] ${genResult.text}`)
 
@@ -309,7 +356,7 @@ export const runAgentTask = async (
         // Reviewer 不给历史：它的职责是拿当前 deck 对照本轮需求，
         // 喂历史只会让它翻出上几轮已经解决的问题
         const reviewPrompt = `请审查 Generator 刚才对演示文稿所做的修改。用户的原始需求是：${prompt}`
-        const reviewResult = await runRole('reviewer', userId, reviewPrompt, state, ws, abort.signal)
+        const reviewResult = await runRole('reviewer', userId, reviewPrompt, state, ws, abort.signal, [], conv.id)
         await saveMessage(conv.id, 'assistant', `[Reviewer] ${reviewResult.text}`)
 
         let reviewPassed = true
@@ -326,7 +373,7 @@ export const runAgentTask = async (
         if (!reviewPassed) {
           send(ws, { type: 'agent.status', status: 'thinking', message: 'Reviewer 发现问题，Generator 正在修正...' })
           const fixPrompt = `Reviewer 发现了以下问题，请修正：\n${reviewResult.text}`
-          const fixResult = await runRole('generator', userId, fixPrompt, state, ws, abort.signal)
+          const fixResult = await runRole('generator', userId, fixPrompt, state, ws, abort.signal, [], conv.id)
           state = fixResult.state
           await saveMessage(conv.id, 'assistant', `[Generator 修正] ${fixResult.text}`)
         }
@@ -359,6 +406,8 @@ export const runAgentTask = async (
     await saveMessage(conv.id, 'system', `错误: ${err instanceof Error ? err.message : '未知错误'}`)
   }
   finally {
+    // 无论成败都刷新时间戳，会话列表按「最近活动」排序才准
+    await touchConversation(conv.id)
     activeTasks.delete(userId)
   }
 }

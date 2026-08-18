@@ -9,7 +9,14 @@ export interface WsUserData {
 }
 
 export type ClientMessage =
-  | { type: 'agent.task', deckId: number, prompt: string, selectedElementIds?: string[] }
+  | {
+    type: 'agent.task'
+    deckId: number
+    prompt: string
+    selectedElementIds?: string[]
+    /** 续哪条会话；不传则新开一条（记忆从零开始） */
+    conversationId?: number
+  }
   | { type: 'agent.cancel' }
   | { type: 'agent.confirm', value: boolean }
 
@@ -17,6 +24,8 @@ export type ServerMessage =
   | { type: 'agent.status', status: 'thinking' | 'tool_call' | 'done' | 'error', message?: string }
   | { type: 'agent.tool', tool: string, args: Record<string, unknown>, result?: string }
   | { type: 'agent.text', role: string, content: string }
+  /** 告诉前端本次任务落在哪条会话上（新建时前端据此挂进列表） */
+  | { type: 'agent.conversation', id: number, title: string }
   | { type: 'agent.ask', question: string }
   | { type: 'agent.deck', slidesJson: string, version: number }
   | { type: 'agent.asset.pending', elementId: string, taskId: string }
@@ -43,7 +52,7 @@ export const handleWsMessage = async (
 
     switch (msg.type) {
       case 'agent.task':
-        runAgentTask(ws, msg.deckId, msg.prompt, msg.selectedElementIds)
+        runAgentTask(ws, msg.deckId, msg.prompt, msg.selectedElementIds, msg.conversationId)
         break
 
       case 'agent.cancel': {

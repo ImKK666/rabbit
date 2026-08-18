@@ -8,15 +8,46 @@
 
     <template v-if="expanded">
       <div class="panel-header">
-        <span class="panel-title">AI 助手</span>
+        <div class="conv-switcher" @click="convListOpen = !convListOpen">
+          <span class="conv-title">{{ activeTitle }}</span>
+          <span class="conv-arrow" :class="{ open: convListOpen }">▾</span>
+        </div>
         <div class="header-right">
-          <span
-            class="clear-btn"
-            v-if="log.length && !isRunning"
-            @click="handleClear"
-            v-tooltip="'清空本演示文稿的对话历史'"
-          >清空</span>
           <div class="status-dot" :class="status" v-tooltip="statusMessage || status"></div>
+        </div>
+      </div>
+
+      <!-- 会话列表 -->
+      <div class="conv-list" v-if="convListOpen">
+        <div
+          class="conv-item"
+          v-for="conv in conversations"
+          :key="conv.id"
+          :class="{ active: conv.id === activeConversationId }"
+          @click="handleSwitch(conv.id)"
+        >
+          <span class="conv-dot">{{ conv.id === activeConversationId ? '●' : '' }}</span>
+          <span class="conv-item-title" :title="conv.title">
+            {{ conv.title }}
+            <span class="fork-mark" v-if="conv.forkedFromId" v-tooltip="'由分叉而来'">⑂</span>
+          </span>
+          <span class="conv-time">{{ formatTime(conv.updatedAt) }}</span>
+          <span class="conv-actions" @click.stop>
+            <span class="conv-act" @click="handleRename(conv)" v-tooltip="'重命名'">✎</span>
+            <span class="conv-act danger" @click="handleDeleteConv(conv)" v-tooltip="'删除此会话'">✕</span>
+          </span>
+        </div>
+
+        <div class="conv-empty" v-if="!conversations.length">还没有会话记录</div>
+
+        <div class="conv-divider"></div>
+        <div class="conv-item new" @click="handleNewConv">
+          <span class="conv-dot">＋</span>
+          <span class="conv-item-title">新建会话<span class="conv-hint">（记忆从零开始）</span></span>
+        </div>
+        <div class="conv-item danger-row" v-if="conversations.length" @click="handleClear">
+          <span class="conv-dot">🗑</span>
+          <span class="conv-item-title">清空本演示文稿的全部会话</span>
         </div>
       </div>
 
@@ -27,7 +58,15 @@
           <template v-for="(entry, idx) in log" :key="idx">
             <!-- 用户输入 -->
             <div class="log-entry user-msg" v-if="entry.type === 'text' && entry.role === 'user'">
-              <div class="entry-label">你</div>
+              <div class="entry-label">
+                你
+                <span
+                  class="fork-btn"
+                  v-if="entry.messageId && !isRunning"
+                  @click="handleFork(entry.messageId)"
+                  v-tooltip="'从这里分叉出新会话（画布不回退）'"
+                >⑂ 分叉</span>
+              </div>
               <div class="entry-content">{{ entry.content }}</div>
             </div>
 
@@ -112,23 +151,84 @@ const props = defineProps<{
 const mainStore = useMainStore()
 const agentStore = useAgentStore()
 const { activeElementIdList } = storeToRefs(mainStore)
-const { status, statusMessage, log, isRunning, historyLoading } = storeToRefs(agentStore)
+const {
+  status, statusMessage, log, isRunning, historyLoading,
+  conversations, activeConversationId,
+} = storeToRefs(agentStore)
 
 const expanded = ref(true)
 const promptText = ref('')
 const bodyRef = ref<HTMLElement>()
 const expandedEntries = reactive(new Set<number>())
+const convListOpen = ref(false)
+
+const activeTitle = computed(() => {
+  if (activeConversationId.value === null) return '新会话'
+  return conversations.value.find(cv => cv.id === activeConversationId.value)?.title || '新会话'
+})
 
 // 会话按演示文稿隔离：切 deck 必须换掉整条日志。
 // 少了这个 watch，agent store 是全局单例，新建的项目会显示上一个项目的对话。
 watch(() => props.deckId, (deckId) => {
   expandedEntries.clear()
+  convListOpen.value = false
   if (deckId === null) agentStore.reset()
   else agentStore.openDeck(deckId)
 }, { immediate: true })
 
+const handleSwitch = async (id: number) => {
+  convListOpen.value = false
+  expandedEntries.clear()
+  try {
+    await agentStore.switchConversation(id)
+  }
+  catch {
+    alert('切换会话失败')
+  }
+}
+
+const handleNewConv = () => {
+  convListOpen.value = false
+  expandedEntries.clear()
+  agentStore.startNewConversation()
+}
+
+const handleRename = async (conv: { id: number, title: string }) => {
+  const title = prompt('会话名称', conv.title)
+  if (title === null || !title.trim() || title.trim() === conv.title) return
+  try {
+    await agentStore.renameConversation(conv.id, title.trim())
+  }
+  catch {
+    alert('重命名失败')
+  }
+}
+
+const handleDeleteConv = async (conv: { id: number, title: string }) => {
+  if (!confirm(`删除会话「${conv.title}」？此操作不可撤销。`)) return
+  try {
+    await agentStore.deleteConversation(conv.id)
+    expandedEntries.clear()
+  }
+  catch {
+    alert('删除失败')
+  }
+}
+
+const handleFork = async (messageId: number) => {
+  if (!confirm('从这条消息分叉出一条新会话？\n\n只复制到这里为止的对话，演示文稿内容不会回退。')) return
+  try {
+    await agentStore.forkFrom(messageId)
+    expandedEntries.clear()
+  }
+  catch {
+    alert('分叉失败')
+  }
+}
+
 const handleClear = async () => {
-  if (!confirm('确定清空这份演示文稿的对话历史吗？AI 将不再记得之前的上下文。')) return
+  convListOpen.value = false
+  if (!confirm('确定清空这份演示文稿的全部会话吗？AI 将不再记得任何上下文。')) return
   try {
     await agentStore.clearHistory()
     expandedEntries.clear()
@@ -136,6 +236,17 @@ const handleClear = async () => {
   catch {
     alert('清空失败')
   }
+}
+
+const formatTime = (t: string | number) => {
+  if (!t) return ''
+  const d = new Date(t)
+  const diff = Date.now() - d.getTime()
+  if (diff < 60_000) return '刚刚'
+  if (diff < 3600_000) return `${Math.floor(diff / 60_000)} 分钟前`
+  if (diff < 86400_000) return `${Math.floor(diff / 3600_000)} 小时前`
+  if (diff < 7 * 86400_000) return `${Math.floor(diff / 86400_000)} 天前`
+  return d.toLocaleDateString('zh-CN')
 }
 
 const selectedCount = computed(() => activeElementIdList.value.length)
@@ -252,21 +363,127 @@ watch(log, () => {
   border-bottom: 1px solid $borderColor;
   flex-shrink: 0;
 }
-.panel-title {
-  font-size: 13px;
-  font-weight: 500;
-}
 .header-right {
   display: flex;
   align-items: center;
   gap: 10px;
+  flex-shrink: 0;
 }
-.clear-btn {
+
+// 会话切换器
+.conv-switcher {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+  min-width: 0;
+  flex: 1;
+  padding: 3px 6px;
+  margin-left: -6px;
+  border-radius: 4px;
+
+  &:hover { background: $lightGray; }
+}
+.conv-title {
+  font-size: 13px;
+  font-weight: 500;
+  @include ellipsis-oneline();
+}
+.conv-arrow {
+  font-size: 10px;
+  color: #999;
+  flex-shrink: 0;
+  transition: transform .15s;
+
+  &.open { transform: rotate(180deg); }
+}
+.conv-list {
+  border-bottom: 1px solid $borderColor;
+  background: #fafbfc;
+  max-height: 260px;
+  @include overflow-overlay();
+  flex-shrink: 0;
+}
+.conv-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 12px;
+  cursor: pointer;
+  font-size: 12px;
+
+  &:hover {
+    background: #eef2f7;
+
+    .conv-actions { opacity: 1; }
+  }
+  &.active { background: #e8f4fd; }
+  &.new { color: $themeColor; }
+  &.danger-row {
+    color: #b0b0b0;
+    font-size: 11px;
+
+    &:hover { color: #e74c3c; }
+  }
+}
+.conv-dot {
+  width: 12px;
+  font-size: 9px;
+  color: $themeColor;
+  flex-shrink: 0;
+  text-align: center;
+}
+.conv-item-title {
+  flex: 1;
+  min-width: 0;
+  @include ellipsis-oneline();
+}
+.conv-hint {
+  color: #aaa;
   font-size: 11px;
+}
+.fork-mark {
+  color: #999;
+  margin-left: 3px;
+}
+.conv-time {
+  font-size: 10px;
+  color: #aaa;
+  flex-shrink: 0;
+}
+.conv-actions {
+  display: flex;
+  gap: 4px;
+  opacity: 0;
+  transition: opacity .15s;
+  flex-shrink: 0;
+}
+.conv-act {
+  font-size: 11px;
+  color: #999;
+  padding: 0 2px;
+
+  &:hover { color: $themeColor; }
+  &.danger:hover { color: #e74c3c; }
+}
+.conv-empty {
+  padding: 12px;
+  text-align: center;
+  color: #bbb;
+  font-size: 12px;
+}
+.conv-divider {
+  height: 1px;
+  background: $borderColor;
+  margin: 4px 0;
+}
+.fork-btn {
+  float: right;
+  font-weight: 400;
   color: #999;
   cursor: pointer;
 
-  &:hover { color: #e74c3c; }
+  &:hover { color: $themeColor; }
 }
 .loading-hint {
   color: #bbb;

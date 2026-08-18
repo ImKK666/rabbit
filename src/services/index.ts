@@ -152,13 +152,23 @@ export const conversationApi = {
   delete(id: number) {
     return api.delete(`${SERVER_URL}/conversations/${id}`)
   },
-  /** 一个 deck 一条会话线，打开演示文稿时用这个一次拿到全部历史 */
+  /** 打开演示文稿：一次拿到会话列表 + 最近活动那条的全部消息 */
   byDeck(deckId: number) {
     return api.get(`${SERVER_URL}/conversations/by-deck/${deckId}`)
   },
-  /** 清空某份演示文稿的会话历史（agent 记忆一并归零） */
+  /** 清空某份演示文稿的全部会话（agent 记忆一并归零） */
   clearDeck(deckId: number) {
     return api.delete(`${SERVER_URL}/conversations/by-deck/${deckId}`)
+  },
+  create(deckId: number, title?: string) {
+    return api.post(`${SERVER_URL}/conversations`, { deckId, title })
+  },
+  rename(id: number, title: string) {
+    return api.patch(`${SERVER_URL}/conversations/${id}`, { title })
+  },
+  /** 从某条消息分叉出新会话（复制该点之前的消息，deck 不动） */
+  fork(id: number, fromMessageId?: number) {
+    return api.post(`${SERVER_URL}/conversations/${id}/fork`, { fromMessageId })
   },
 }
 
