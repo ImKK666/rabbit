@@ -230,6 +230,7 @@ messages         role='tool'     枚举里本来就有，此前从没写过
 
 | 项 | 说明 | 优先级 |
 |---|---|---|
+| **表现力升级** | 产出「太没有新意」的五个根因与 A/B/C 三条工作线，见 [08-expressiveness.md](./08-expressiveness.md) | **高** |
 | R-09 / R-18 | 旧 AI 路径包装成 agent 工具 `fillFromTemplate` | 中 |
 | 事务 / 回滚 | 逐工具提交，中途失败留半成品。Oh My PPT 的 job/rollback 还没抄 | 中 |
 | 并发控制 | agent 跑时用户手改画布会被整份 `agent.deck` 覆盖 | 中 |
