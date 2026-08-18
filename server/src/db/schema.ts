@@ -14,6 +14,7 @@ export const modelProviders = sqliteTable('model_providers', {
   providerType: text('provider_type', { enum: ['openai', 'anthropic', 'google'] }).notNull(),
   baseUrl: text('base_url').notNull(),
   apiKey: text('api_key').notNull(),
+  remark: text('remark').default(''),
   createdAt: integer('created_at', { mode: 'timestamp' }).notNull().$defaultFn(() => new Date()),
 })
 

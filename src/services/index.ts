@@ -87,11 +87,17 @@ export const adminApi = {
   listProviders() {
     return api.get(`${SERVER_URL}/admin/providers`)
   },
-  createProvider(data: { name: string, providerType: string, baseUrl: string, apiKey: string }) {
+  createProvider(data: { name: string, providerType: string, baseUrl: string, apiKey: string, remark?: string }) {
     return api.post(`${SERVER_URL}/admin/providers`, data)
+  },
+  updateProvider(id: number, data: { name: string, providerType: string, baseUrl: string, apiKey: string, remark?: string }) {
+    return api.put(`${SERVER_URL}/admin/providers/${id}`, data)
   },
   deleteProvider(id: number) {
     return api.delete(`${SERVER_URL}/admin/providers/${id}`)
+  },
+  fetchModels(providerId: number) {
+    return api.post(`${SERVER_URL}/admin/providers/${providerId}/fetch-models`)
   },
 
   // models
@@ -125,6 +131,9 @@ export const adminApi = {
   },
   deleteUser(id: number) {
     return api.delete(`${SERVER_URL}/admin/users/${id}`)
+  },
+  resetPassword(userId: number, newPassword: string) {
+    return api.post(`${SERVER_URL}/admin/users/${userId}/reset-password`, { newPassword })
   },
 }
 
