@@ -6,12 +6,23 @@ import { useSlidesStore } from './slides'
 export interface ToolCallRecord {
   tool: string
   args: Record<string, unknown>
+  result?: string
 }
+
+export interface TextRecord {
+  role: string
+  content: string
+}
+
+export type AgentLogEntry =
+  | { type: 'text', role: string, content: string }
+  | { type: 'tool', tool: string, args: Record<string, unknown>, result?: string }
+  | { type: 'status', status: string, message: string }
 
 export interface AgentState {
   status: 'idle' | 'thinking' | 'tool_call' | 'done' | 'error'
   statusMessage: string
-  toolCalls: ToolCallRecord[]
+  log: AgentLogEntry[]
   currentDeckId: number | null
 }
 
@@ -19,13 +30,16 @@ export const useAgentStore = defineStore('agent', {
   state: (): AgentState => ({
     status: 'idle',
     statusMessage: '',
-    toolCalls: [],
+    log: [],
     currentDeckId: null,
   }),
 
   getters: {
     isRunning(state) {
       return state.status === 'thinking' || state.status === 'tool_call'
+    },
+    toolCalls(state): ToolCallRecord[] {
+      return state.log.filter((e): e is AgentLogEntry & { type: 'tool' } => e.type === 'tool')
     },
   },
 
@@ -37,7 +51,7 @@ export const useAgentStore = defineStore('agent', {
     submitTask(deckId: number, prompt: string, selectedElementIds?: string[]) {
       this.status = 'thinking'
       this.statusMessage = '正在处理...'
-      this.toolCalls = []
+      this.log = [{ type: 'text', role: 'user', content: prompt }]
       this.currentDeckId = deckId
       send({ type: 'agent.task', deckId, prompt, selectedElementIds })
     },
@@ -55,11 +69,16 @@ export const useAgentStore = defineStore('agent', {
         case 'agent.status':
           this.status = msg.status
           this.statusMessage = msg.message || ''
+          this.log.push({ type: 'status', status: msg.status, message: msg.message || '' })
           break
 
         case 'agent.tool':
           this.status = 'tool_call'
-          this.toolCalls.push({ tool: msg.tool, args: msg.args })
+          this.log.push({ type: 'tool', tool: msg.tool, args: msg.args, result: msg.result })
+          break
+
+        case 'agent.text':
+          this.log.push({ type: 'text', role: msg.role, content: msg.content })
           break
 
         case 'agent.deck': {
@@ -76,6 +95,7 @@ export const useAgentStore = defineStore('agent', {
         case 'error':
           this.status = 'error'
           this.statusMessage = msg.message
+          this.log.push({ type: 'status', status: 'error', message: msg.message })
           break
 
         default:

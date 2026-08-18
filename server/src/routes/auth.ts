@@ -4,7 +4,7 @@ import { z } from 'zod'
 import { eq } from 'drizzle-orm'
 import { db } from '@server/db'
 import { users } from '@server/db/schema'
-import { signToken, getJwtPayload } from '@server/auth/jwt'
+import { signToken, verifyToken } from '@server/auth/jwt'
 
 const auth = new Hono()
 
@@ -47,8 +47,16 @@ auth.post('/login', zValidator('json', loginSchema), async (c) => {
 })
 
 auth.get('/me', async (c) => {
-  const payload = getJwtPayload(c)
-  return c.json({ user: { id: payload.userId, username: payload.username, role: payload.role } })
+  const header = c.req.header('Authorization')
+  if (!header?.startsWith('Bearer ')) return c.json({ error: '未登录' }, 401)
+
+  try {
+    const payload = await verifyToken(header.slice(7))
+    return c.json({ user: { id: payload.userId, username: payload.username, role: payload.role } })
+  }
+  catch {
+    return c.json({ error: 'token 无效或已过期' }, 401)
+  }
 })
 
 export default auth

@@ -13,23 +13,55 @@
       </div>
 
       <div class="panel-body" ref="bodyRef">
-        <div class="tool-calls" v-if="toolCalls.length">
-          <div class="tool-call" v-for="(tc, idx) in toolCalls" :key="idx">
-            <span class="tool-name">{{ tc.tool }}</span>
-            <span class="tool-args">{{ summarizeArgs(tc.args) }}</span>
-          </div>
+        <div class="log-entries" v-if="log.length">
+          <template v-for="(entry, idx) in log" :key="idx">
+            <!-- 用户输入 -->
+            <div class="log-entry user-msg" v-if="entry.type === 'text' && entry.role === 'user'">
+              <div class="entry-label">你</div>
+              <div class="entry-content">{{ entry.content }}</div>
+            </div>
+
+            <!-- 角色文本输出 -->
+            <div class="log-entry role-msg" v-else-if="entry.type === 'text' && entry.role !== 'user'">
+              <div class="entry-label">{{ roleLabel(entry.role) }}</div>
+              <div class="entry-content" v-html="formatContent(entry.content)"></div>
+            </div>
+
+            <!-- 工具调用 -->
+            <div class="log-entry tool-entry" v-else-if="entry.type === 'tool'">
+              <div class="tool-header" @click="toggleExpand(idx)">
+                <span class="tool-icon">⚙</span>
+                <span class="tool-name">{{ entry.tool }}</span>
+                <span class="tool-args-preview">{{ summarizeArgs(entry.args) }}</span>
+                <span class="expand-arrow" :class="{ open: expandedEntries.has(idx) }">▸</span>
+              </div>
+              <div class="tool-detail" v-if="expandedEntries.has(idx)">
+                <div class="detail-section" v-if="Object.keys(entry.args).length">
+                  <div class="detail-label">参数</div>
+                  <pre class="detail-json">{{ JSON.stringify(entry.args, null, 2) }}</pre>
+                </div>
+                <div class="detail-section" v-if="entry.result">
+                  <div class="detail-label">结果</div>
+                  <pre class="detail-json">{{ entry.result }}</pre>
+                </div>
+              </div>
+            </div>
+
+            <!-- 状态变化 -->
+            <div class="log-entry status-entry" v-else-if="entry.type === 'status' && entry.message">
+              <span class="status-icon" :class="entry.status">●</span>
+              <span class="status-msg">{{ entry.message }}</span>
+            </div>
+          </template>
         </div>
-        <div class="status-info" v-if="isRunning">
-          <div class="thinking-indicator">
-            <span class="dot"></span><span class="dot"></span><span class="dot"></span>
-          </div>
-          <span class="status-text">{{ statusMessage }}</span>
+
+        <div class="empty-hint" v-else>
+          输入指令开始使用 AI 助手
         </div>
-        <div class="status-info done" v-else-if="status === 'done'">
-          <span class="status-text">{{ statusMessage || '完成' }}</span>
-        </div>
-        <div class="status-info error" v-else-if="status === 'error'">
-          <span class="status-text">{{ statusMessage }}</span>
+
+        <div class="thinking-bar" v-if="isRunning">
+          <span class="dot"></span><span class="dot"></span><span class="dot"></span>
+          <span class="thinking-text">{{ statusMessage }}</span>
         </div>
       </div>
 
@@ -57,7 +89,7 @@
 </template>
 
 <script lang="ts" setup>
-import { ref, computed, watch, nextTick } from 'vue'
+import { ref, reactive, computed, watch, nextTick } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useMainStore, useAgentStore } from '@/store'
 import Button from '@/components/Button.vue'
@@ -70,17 +102,19 @@ const props = defineProps<{
 const mainStore = useMainStore()
 const agentStore = useAgentStore()
 const { activeElementIdList } = storeToRefs(mainStore)
-const { status, statusMessage, toolCalls, isRunning } = storeToRefs(agentStore)
+const { status, statusMessage, log, isRunning } = storeToRefs(agentStore)
 
 const expanded = ref(true)
 const promptText = ref('')
 const bodyRef = ref<HTMLElement>()
+const expandedEntries = reactive(new Set<number>())
 
 const selectedCount = computed(() => activeElementIdList.value.length)
 const canSend = computed(() => promptText.value.trim() && !isRunning.value && props.deckId)
 
 const handleSend = () => {
   if (!canSend.value || !props.deckId) return
+  expandedEntries.clear()
   const selectedIds = activeElementIdList.value.length ? [...activeElementIdList.value] : undefined
   agentStore.submitTask(props.deckId, promptText.value.trim(), selectedIds)
   promptText.value = ''
@@ -93,19 +127,43 @@ const handleKeydown = (e: KeyboardEvent) => {
   }
 }
 
+const toggleExpand = (idx: number) => {
+  if (expandedEntries.has(idx)) expandedEntries.delete(idx)
+  else expandedEntries.add(idx)
+}
+
+const roleLabel = (role: string): string => {
+  const labels: Record<string, string> = {
+    planner: 'Planner',
+    generator: 'Generator',
+    reviewer: 'Reviewer',
+    editor: 'Editor',
+  }
+  return labels[role] || role
+}
+
+const formatContent = (content: string): string => {
+  return content
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/\n/g, '<br>')
+}
+
 const summarizeArgs = (args: Record<string, unknown>): string => {
   const keys = Object.keys(args)
   if (!keys.length) return ''
   const parts = keys.slice(0, 2).map(k => {
     const v = args[k]
-    if (typeof v === 'string') return v.length > 30 ? v.slice(0, 30) + '...' : v
+    if (typeof v === 'string') return v.length > 20 ? v.slice(0, 20) + '...' : v
+    if (typeof v === 'object') return '{...}'
     return String(v)
   })
   if (keys.length > 2) parts.push('...')
   return parts.join(', ')
 }
 
-watch(toolCalls, () => {
+watch(log, () => {
   nextTick(() => {
     if (bodyRef.value) bodyRef.value.scrollTop = bodyRef.value.scrollHeight
   })
@@ -114,7 +172,7 @@ watch(toolCalls, () => {
 
 <style lang="scss" scoped>
 .agent-panel {
-  width: 280px;
+  width: 320px;
   height: 100%;
   border-left: 1px solid $borderColor;
   background: #fff;
@@ -189,43 +247,145 @@ watch(toolCalls, () => {
   @include overflow-overlay();
   font-size: 12px;
 }
-.tool-calls {
+.empty-hint {
+  color: #bbb;
+  text-align: center;
+  padding: 40px 0;
+  font-size: 13px;
+}
+.log-entries {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 8px;
 }
-.tool-call {
+.log-entry {
+  border-radius: 6px;
+}
+
+// 用户消息
+.user-msg {
+  background: #e8f4fd;
+  padding: 8px 10px;
+
+  .entry-label {
+    font-size: 10px;
+    font-weight: 600;
+    color: #2980b9;
+    margin-bottom: 3px;
+  }
+  .entry-content {
+    font-size: 12px;
+    color: #333;
+    line-height: 1.5;
+  }
+}
+
+// 角色输出
+.role-msg {
   background: $lightGray;
-  border-radius: 4px;
+  padding: 8px 10px;
+
+  .entry-label {
+    font-size: 10px;
+    font-weight: 600;
+    color: $themeColor;
+    margin-bottom: 3px;
+  }
+  .entry-content {
+    font-size: 12px;
+    color: #333;
+    line-height: 1.5;
+    word-break: break-word;
+  }
+}
+
+// 工具调用
+.tool-entry {
+  background: #f0f0f0;
+  border: 1px solid #e0e0e0;
+  overflow: hidden;
+}
+.tool-header {
   padding: 6px 8px;
   display: flex;
-  flex-direction: column;
-  gap: 2px;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  font-size: 11px;
+
+  &:hover { background: #e8e8e8; }
 }
+.tool-icon { font-size: 12px; }
 .tool-name {
-  font-weight: 500;
-  color: $themeColor;
-  font-size: 11px;
+  font-weight: 600;
+  color: #555;
+  flex-shrink: 0;
 }
-.tool-args {
-  color: #666;
-  font-size: 11px;
+.tool-args-preview {
+  color: #888;
+  flex: 1;
+  @include ellipsis-oneline();
+}
+.expand-arrow {
+  font-size: 10px;
+  color: #999;
+  transition: transform .15s;
+  flex-shrink: 0;
+
+  &.open { transform: rotate(90deg); }
+}
+.tool-detail {
+  border-top: 1px solid #e0e0e0;
+  padding: 6px 8px;
+}
+.detail-section {
+  margin-bottom: 6px;
+  &:last-child { margin-bottom: 0; }
+}
+.detail-label {
+  font-size: 10px;
+  font-weight: 600;
+  color: #888;
+  margin-bottom: 2px;
+}
+.detail-json {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  color: #555;
+  background: #fff;
+  padding: 6px;
+  border-radius: 3px;
+  margin: 0;
+  max-height: 200px;
+  @include overflow-overlay();
+  white-space: pre-wrap;
   word-break: break-all;
 }
-.status-info {
+
+// 状态
+.status-entry {
+  padding: 4px 8px;
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 8px 0;
-  color: #666;
-  font-size: 12px;
-
+  gap: 6px;
+  font-size: 11px;
+  color: #888;
+}
+.status-icon {
+  font-size: 8px;
+  &.thinking, &.tool_call { color: #f39c12; }
   &.done { color: #27ae60; }
   &.error { color: #e74c3c; }
 }
-.thinking-indicator {
+
+// 底部思考指示
+.thinking-bar {
   display: flex;
-  gap: 3px;
+  align-items: center;
+  gap: 4px;
+  padding: 8px 0;
+  color: #f39c12;
+  font-size: 12px;
 
   .dot {
     width: 5px;
@@ -236,6 +396,10 @@ watch(toolCalls, () => {
 
     &:nth-child(2) { animation-delay: 0.2s; }
     &:nth-child(3) { animation-delay: 0.4s; }
+  }
+  .thinking-text {
+    margin-left: 4px;
+    color: #999;
   }
 }
 @keyframes bounce-dot {
@@ -258,9 +422,6 @@ watch(toolCalls, () => {
 .context-hint {
   font-size: 11px;
   color: #999;
-  display: flex;
-  align-items: center;
-  gap: 4px;
 }
 .action-buttons {
   display: flex;

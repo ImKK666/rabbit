@@ -15,7 +15,8 @@ export type ClientMessage =
 
 export type ServerMessage =
   | { type: 'agent.status', status: 'thinking' | 'tool_call' | 'done' | 'error', message?: string }
-  | { type: 'agent.tool', tool: string, args: Record<string, unknown> }
+  | { type: 'agent.tool', tool: string, args: Record<string, unknown>, result?: string }
+  | { type: 'agent.text', role: string, content: string }
   | { type: 'agent.ask', question: string }
   | { type: 'agent.deck', slidesJson: string, version: number }
   | { type: 'agent.asset.pending', elementId: string, taskId: string }

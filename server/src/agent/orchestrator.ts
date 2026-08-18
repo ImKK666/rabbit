@@ -29,6 +29,13 @@ const DEFAULT_THEME: SlideTheme = {
   outline: { width: 2, color: '#525252', style: 'solid' },
 }
 
+const ROLE_LABELS: Record<AgentRole, string> = {
+  planner: 'Planner 规划者',
+  generator: 'Generator 生成者',
+  reviewer: 'Reviewer 审查者',
+  editor: 'Editor 编辑者',
+}
+
 const activeTasks = new Map<number, AbortController>()
 
 const send = (ws: ServerWebSocket<WsUserData>, msg: ServerMessage) => {
@@ -71,7 +78,9 @@ const runRole = async (
   ws: ServerWebSocket<WsUserData>,
   signal: AbortSignal,
 ): Promise<{ text: string, state: DeckState }> => {
-  send(ws, { type: 'agent.status', status: 'thinking', message: `${role} 正在思考...` })
+  const label = ROLE_LABELS[role]
+  send(ws, { type: 'agent.status', status: 'thinking', message: `${label} 正在思考...` })
+  send(ws, { type: 'agent.text', role, content: `--- ${label} 开始工作 ---` })
 
   const model = await resolveModelForRole(role, userId)
 
@@ -90,12 +99,41 @@ const runRole = async (
     tools,
     maxSteps: 15,
     abortSignal: signal,
-    onStepFinish: ({ toolCalls }) => {
-      for (const tc of toolCalls) {
-        if (tc) send(ws, { type: 'agent.tool', tool: tc.toolName, args: tc.args as Record<string, unknown> })
+    onStepFinish: ({ text, toolCalls, toolResults }) => {
+      if (text) {
+        send(ws, { type: 'agent.text', role, content: text })
+      }
+
+      if (toolCalls) {
+        for (const tc of toolCalls) {
+          const toolResult = toolResults?.find((tr: any) => tr.toolCallId === tc.toolCallId)
+          let resultStr: string | undefined
+          if (toolResult) {
+            try {
+              const parsed = typeof toolResult.result === 'string'
+                ? JSON.parse(toolResult.result)
+                : toolResult.result
+              resultStr = JSON.stringify(parsed, null, 2)
+            }
+            catch {
+              resultStr = String(toolResult.result)
+            }
+          }
+
+          send(ws, {
+            type: 'agent.tool',
+            tool: tc.toolName,
+            args: tc.args as Record<string, unknown>,
+            result: resultStr,
+          })
+        }
       }
     },
   })
+
+  if (result.text) {
+    send(ws, { type: 'agent.text', role, content: result.text })
+  }
 
   return { text: result.text, state }
 }
@@ -106,7 +144,7 @@ export const runAgentTask = async (
   prompt: string,
   selectedElementIds?: string[],
 ) => {
-  const { userId, username } = ws.data
+  const { userId } = ws.data
 
   if (activeTasks.has(userId)) {
     send(ws, { type: 'error', message: '已有任务在执行中，请等待完成或取消' })
