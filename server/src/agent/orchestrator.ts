@@ -48,10 +48,14 @@ const ROLE_LABELS: Record<AgentRole, string> = {
  * 原来全角色固定 15 —— Generator 做一份 5 页 deck，光 addSlide 就吃掉 5 步，
  * 再加元素和动画必然中途截断，且截断是静默的（没有任何提示）。
  * 按职责分开给：只读角色不需要多，写角色需要充足余量。
+ *
+ * R-33 把 Generator 从 48 提到 60：applyLayout 让「一页 = 两步」（addSlide + applyLayout），
+ * 本来是省步数的；但它同时也让「补一个图表 / 加两个形状 / 对齐一组元素」这类
+ * 精修动作变得值得做了，实际调用数是升的。60 步 ≈ 10 页各排一次版式再各精修两下。
  */
 const ROLE_MAX_STEPS: Record<AgentRole, number> = {
   planner: 12,
-  generator: 48,
+  generator: 60,
   reviewer: 12,
   editor: 24,
 }

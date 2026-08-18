@@ -1,40 +1,41 @@
 /**
- * R-17 · OOXML 动画树生成器（纯函数）
+ * R-17 / R-25 · OOXML 动画树生成器（纯函数）
  *
  * 输入：PPTAnimation[] + spidMap (Map<elId, spid>)
  * 输出：可直接插入 slide XML 的 <p:timing>...</p:timing> 字符串
  *
- * 结构参照 refs/oh-my-ppt 的 @arcsin1/html2pptx 测试套件（animation-writer.test.ts）
- * 逆向得出的 OOXML timing 树：
+ * ## 时间线结构（R-25 重写）
  *
- *   <p:timing>
- *     <p:tnLst>
- *       <p:par>
- *         <p:cTn id="1" dur="indefinite" restart="never" nodeType="tmRoot">
- *           <p:childTnLst>
- *             <p:seq concurrent="1" nextAc="seek">
- *               <p:cTn id="2" dur="indefinite" nodeType="mainSeq">
- *                 <p:childTnLst>
- *                   ... 每个「点击步」一个 <p:par>，内含效果节点 ...
- *                 </p:childTnLst>
- *               </p:cTn>
- *               <p:prevCondLst>...</p:prevCondLst>
- *               <p:nextCondLst>...</p:nextCondLst>
- *             </p:seq>
- *           </p:childTnLst>
- *         </p:cTn>
- *       </p:par>
- *     </p:tnLst>
- *     <p:bldLst>
- *       <p:bldP spid="X" grpId="0"/>
- *     </p:bldLst>
- *   </p:timing>
+ * 第一版是两层 `<p:par>`，和 PowerPoint 自己写出来的文件对不上。真实结构是**三层**，
+ * 每层各管一件事 —— 这是从「点击/之后/同时」三种触发方式推出来的必然形状：
+ *
+ *   <p:seq nodeType="mainSeq">
+ *     <p:par>                       ← ① 点击步：stCondLst 为 indefinite，等用户点
+ *       <p:par>                     ← ② 子步：delay=0，一个「上一条之后」开一个
+ *         <p:par nodeType="...">    ← ③ 效果：真正的 presetID / 行为树
+ *         <p:par nodeType="withEffect"/>  ← 同一子步内的都是「与上一条同时」
+ *
+ * 少了第 ① 层，PowerPoint 拿不到「在这里停下来等点击」的信号，
+ * 整页动画会连成一串自动播完 —— 网页侧看着对，导出后就不对了。
+ *
+ * ## 退场动画的 visibility 时机
+ *
+ * `<p:set style.visibility=hidden>` 必须**延到效果结束**（delay = dur-1），
+ * 第一版写的是 delay=0：元素先瞬间消失，淡出动画再对着空气播。
+ *
+ * 结构参照 ECMA-376 §19.5（CT_TLTimeNodeParallel / CT_TLCommonTimeNodeData）
+ * 与真实 PowerPoint 产物。ground truth 校验方式见 docs/08-expressiveness.md。
  *
  * 不碰 DOM、不碰 ZIP、不碰文件系统。
  */
 
 import type { PPTAnimation, AnimationEffect } from '@/types/slides'
-import { ANIMATION_DEFS, type PptxAnimationPreset, type PptxMotion } from '@/configs/animation'
+import {
+  ANIMATION_DEFS,
+  formatEffectFilter,
+  type PptxAnimationPreset,
+  type PptxMotion,
+} from '@/configs/animation'
 
 export interface TimingBuildResult {
   xml: string
@@ -52,13 +53,31 @@ interface EligibleAnimation {
   spid: number
 }
 
+/** 一个「子步」＝ 同时播放的一组效果；一个「点击步」＝ 若干个顺序执行的子步 */
+type SubStep = EligibleAnimation[]
+interface ClickStep {
+  /** true = 等用户点击（stCondLst 用 indefinite）；false = 进页即播 */
+  waitsForClick: boolean
+  subSteps: SubStep[]
+}
+
 export const getAnimationPreset = (effect: string): PptxAnimationPreset | undefined => {
   const def = ANIMATION_DEFS[effect as AnimationEffect]
   return def?.pptx
 }
 
+// ---------------------------------------------------------------------------
+// id 分配
+//
+// tmRoot 必须是 1、mainSeq 必须是 2（PowerPoint 自己就是这么写的，
+// 虽然规范只要求树内唯一，但对齐它能少一类「为什么我这份不认」的排查）。
+// ---------------------------------------------------------------------------
+
 let _nextId = 0
 const nextId = () => ++_nextId
+const resetIds = () => {
+  _nextId = 0 
+}
 
 const motionFormula = (motion: PptxMotion): { attr: string, from: string, to: string } => {
   switch (motion) {
@@ -105,15 +124,17 @@ const buildBehaviorXml = (anim: EligibleAnimation): string => {
 
   const parts: string[] = []
 
-  // 1. Visibility set (entrance: hidden→visible; exit: visible→hidden)
-  if (!isEmph) {
-    const visFrom = isExit ? 'visible' : 'hidden'
+  // 1. 可见性开关
+  //    入场：一开始就置 visible（delay=0），后面的效果负责「怎么出现」
+  //    退场：效果播完的最后 1ms 才置 hidden，否则元素先没了动画对着空气播
+  const visibilitySet = isEmph ? '' : (() => {
     const visTo = isExit ? 'hidden' : 'visible'
-    parts.push(
+    const delay = isExit ? Math.max(dur - 1, 0) : 0
+    return (
       `<p:set>` +
         `<p:cBhvr>` +
           `<p:cTn id="${nextId()}" dur="1" fill="hold">` +
-            `<p:stCondLst><p:cond delay="0"/></p:stCondLst>` +
+            `<p:stCondLst><p:cond delay="${delay}"/></p:stCondLst>` +
           `</p:cTn>` +
           `<p:tgtEl><p:spTgt spid="${spid}"/></p:tgtEl>` +
           `<p:attrNameLst><p:attrName>style.visibility</p:attrName></p:attrNameLst>` +
@@ -121,9 +142,12 @@ const buildBehaviorXml = (anim: EligibleAnimation): string => {
         `<p:to><p:strVal val="${visTo}"/></p:to>` +
       `</p:set>`
     )
-  }
+  })()
 
-  // 2. Fade effect
+  // 入场的 set 在最前，退场的 set 在最后 —— 和 PowerPoint 自己的写法一致
+  if (!isExit && visibilitySet) parts.push(visibilitySet)
+
+  // 2. 淡入淡出
   if (preset.fade) {
     const trans = preset.transition || 'in'
     parts.push(
@@ -136,14 +160,12 @@ const buildBehaviorXml = (anim: EligibleAnimation): string => {
     )
   }
 
-  // 3. Wipe effect
-  if (preset.effectFilter === 'wipe') {
+  // 3. 转场滤镜（擦除 / 百叶窗 / 棋盘 / 圆形 / 菱形 / 十字 / 轮辐 / 楔入 / 溶解 …）
+  //    第一版这里只有 `effectFilter === 'wipe'` 一个硬编码分支。
+  if (preset.effectFilter) {
     const trans = preset.transition || 'in'
-    const filter = preset.presetSubtype
-      ? `wipe(${['', 'r', 'l', 'd', 'u'][preset.presetSubtype] || 'r'})`
-      : 'wipe(r)'
     parts.push(
-      `<p:animEffect transition="${trans}" filter="${filter}">` +
+      `<p:animEffect transition="${trans}" filter="${formatEffectFilter(preset.effectFilter)}">` +
         `<p:cBhvr>` +
           `<p:cTn id="${nextId()}" dur="${dur}" accel="${accel}" decel="${decel}"/>` +
           `<p:tgtEl><p:spTgt spid="${spid}"/></p:tgtEl>` +
@@ -152,7 +174,7 @@ const buildBehaviorXml = (anim: EligibleAnimation): string => {
     )
   }
 
-  // 4. Motion (entrance/exit with directional movement)
+  // 4. 位移
   if (preset.motion) {
     const m = isExit ? exitMotionFormula(preset.motion) : motionFormula(preset.motion)
     parts.push(
@@ -170,7 +192,7 @@ const buildBehaviorXml = (anim: EligibleAnimation): string => {
     )
   }
 
-  // 5. Scale (non-emphasis entrance/exit)
+  // 5. 缩放（入场 / 退场，单程）
   if (preset.scaleFrom !== undefined && preset.scaleTo !== undefined && !isEmph) {
     parts.push(
       `<p:animScale>` +
@@ -184,52 +206,84 @@ const buildBehaviorXml = (anim: EligibleAnimation): string => {
     )
   }
 
-  // 6. Emphasis scale (rebound: two phases inside a p:seq)
+  // 6. 强调缩放（去而复返，两段）
   if (preset.scaleFrom !== undefined && preset.scaleTo !== undefined && isEmph) {
     const halfDur = Math.floor(dur / 2)
     parts.push(
-      `<p:seq>` +
-        `<p:cTn id="${nextId()}" dur="indefinite" nodeType="mainSeq">` +
-          `<p:childTnLst>` +
-            `<p:animScale>` +
-              `<p:cBhvr>` +
-                `<p:cTn id="${nextId()}" dur="${halfDur}" accel="${accel}" decel="${decel}" fill="hold"/>` +
-                `<p:tgtEl><p:spTgt spid="${spid}"/></p:tgtEl>` +
-              `</p:cBhvr>` +
-              `<p:from x="${preset.scaleFrom}" y="${preset.scaleFrom}"/>` +
-              `<p:to x="${preset.scaleTo}" y="${preset.scaleTo}"/>` +
-            `</p:animScale>` +
-            `<p:animScale>` +
-              `<p:cBhvr>` +
-                `<p:cTn id="${nextId()}" dur="${dur - halfDur}" accel="${accel}" decel="${decel}" fill="remove"/>` +
-                `<p:tgtEl><p:spTgt spid="${spid}"/></p:tgtEl>` +
-              `</p:cBhvr>` +
-              `<p:from x="${preset.scaleTo}" y="${preset.scaleTo}"/>` +
-              `<p:to x="100000" y="100000"/>` +
-            `</p:animScale>` +
-          `</p:childTnLst>` +
-        `</p:cTn>` +
-      `</p:seq>`
+      `<p:animScale>` +
+        `<p:cBhvr>` +
+          `<p:cTn id="${nextId()}" dur="${halfDur}" accel="${accel}" decel="${decel}" fill="hold"/>` +
+          `<p:tgtEl><p:spTgt spid="${spid}"/></p:tgtEl>` +
+        `</p:cBhvr>` +
+        `<p:from x="${preset.scaleFrom}" y="${preset.scaleFrom}"/>` +
+        `<p:to x="${preset.scaleTo}" y="${preset.scaleTo}"/>` +
+      `</p:animScale>` +
+      `<p:animScale>` +
+        `<p:cBhvr>` +
+          `<p:cTn id="${nextId()}" dur="${dur - halfDur}" accel="${accel}" decel="${decel}" fill="remove">` +
+            `<p:stCondLst><p:cond delay="${halfDur}"/></p:stCondLst>` +
+          `</p:cTn>` +
+          `<p:tgtEl><p:spTgt spid="${spid}"/></p:tgtEl>` +
+        `</p:cBhvr>` +
+        `<p:from x="${preset.scaleTo}" y="${preset.scaleTo}"/>` +
+        `<p:to x="100000" y="100000"/>` +
+      `</p:animScale>`
     )
   }
 
-  // 7. Rotation
-  if (preset.rotateFrom !== undefined && preset.rotateTo !== undefined) {
+  // 7. 旋转
+  //    rotateBy  → 相对旋转（陀螺旋转这类强调），一圈 = 21600000
+  //    from/to   → 绝对角度（旋转进入）
+  //    attrNameLst 是必须的：不写 PowerPoint 不知道该动哪个属性
+  if (preset.rotateBy !== undefined) {
     parts.push(
-      `<p:animRot by="0" from="${preset.rotateFrom}" to="${preset.rotateTo}">` +
+      `<p:animRot by="${preset.rotateBy}">` +
+        `<p:cBhvr>` +
+          `<p:cTn id="${nextId()}" dur="${dur}" fill="remove"/>` +
+          `<p:tgtEl><p:spTgt spid="${spid}"/></p:tgtEl>` +
+          `<p:attrNameLst><p:attrName>r</p:attrName></p:attrNameLst>` +
+        `</p:cBhvr>` +
+      `</p:animRot>`
+    )
+  }
+  else if (preset.rotateFrom !== undefined && preset.rotateTo !== undefined) {
+    parts.push(
+      `<p:animRot from="${preset.rotateFrom}" to="${preset.rotateTo}">` +
         `<p:cBhvr>` +
           `<p:cTn id="${nextId()}" dur="${dur}" accel="${accel}" decel="${decel}" fill="hold"/>` +
           `<p:tgtEl><p:spTgt spid="${spid}"/></p:tgtEl>` +
+          `<p:attrNameLst><p:attrName>r</p:attrName></p:attrNameLst>` +
         `</p:cBhvr>` +
       `</p:animRot>`
     )
   }
 
+  // 8. 透明度脉冲（强调「闪烁」）—— 掉到 dip 再回到 1
+  if (preset.opacityDip !== undefined) {
+    parts.push(
+      `<p:anim calcmode="lin" valueType="num">` +
+        `<p:cBhvr>` +
+          `<p:cTn id="${nextId()}" dur="${dur}" fill="remove"/>` +
+          `<p:tgtEl><p:spTgt spid="${spid}"/></p:tgtEl>` +
+          `<p:attrNameLst><p:attrName>style.opacity</p:attrName></p:attrNameLst>` +
+        `</p:cBhvr>` +
+        `<p:tavLst>` +
+          `<p:tav tm="0"><p:val><p:fltVal val="1"/></p:val></p:tav>` +
+          `<p:tav tm="50000"><p:val><p:fltVal val="${preset.opacityDip}"/></p:val></p:tav>` +
+          `<p:tav tm="100000"><p:val><p:fltVal val="1"/></p:val></p:tav>` +
+        `</p:tavLst>` +
+      `</p:anim>`
+    )
+  }
+
+  if (isExit && visibilitySet) parts.push(visibilitySet)
+
   return parts.join('')
 }
 
+/** ③ 效果层：真正带 presetID 的那个 <p:par> */
 const buildEffectXml = (anim: EligibleAnimation, nodeType: string): string => {
-  const { preset, animation } = anim
+  const { preset } = anim
   const id = nextId()
   const sub = preset.presetSubtype !== undefined ? ` presetSubtype="${preset.presetSubtype}"` : ''
 
@@ -247,21 +301,42 @@ const buildEffectXml = (anim: EligibleAnimation, nodeType: string): string => {
 }
 
 /**
- * PPTist trigger → OOXML nodeType
+ * PPTist trigger → 时间线分组
  *
- * click   → clickEffect（需要用户点击）
- * meantime → withEffect（与上一条同时播放）
- * auto    → afterEffect（上一条结束后自动播放）
+ *   click    新开一个「点击步」（① 层），播放时停在这里等用户点
+ *   auto     在当前点击步里新开一个「子步」（② 层），上一子步结束后自动接上
+ *   meantime 并进当前子步，与同组的效果一起播
  *
- * 第一条如果是 click 以外的 trigger，也映射成 withEffect（自动开始），
- * 这样页面切换后 load 动画不需要额外点击。
+ * 第一条动画特殊：它没有「上一条」，所以 auto / meantime 都退化成
+ * 「进页即播」——点击步照开，只是 stCondLst 用 delay=0 而不是 indefinite。
  */
-const triggerToNodeType = (trigger: string, isFirst: boolean): string => {
-  if (trigger === 'click' && !isFirst) return 'clickEffect'
-  if (trigger === 'click' && isFirst) return 'clickEffect'
-  if (trigger === 'meantime') return 'withEffect'
-  if (trigger === 'auto') return 'afterEffect'
-  return 'withEffect'
+const groupIntoSteps = (eligible: EligibleAnimation[]): ClickStep[] => {
+  const steps: ClickStep[] = []
+
+  for (const anim of eligible) {
+    const trigger = anim.animation.trigger
+
+    if (!steps.length) {
+      steps.push({ waitsForClick: trigger === 'click', subSteps: [[anim]] })
+      continue
+    }
+
+    const current = steps[steps.length - 1]
+    if (trigger === 'click') steps.push({ waitsForClick: true, subSteps: [[anim]] })
+    else if (trigger === 'auto') current.subSteps.push([anim])
+    else current.subSteps[current.subSteps.length - 1].push(anim)
+  }
+
+  return steps
+}
+
+/** 效果在时间线里的位置 → OOXML nodeType */
+const nodeTypeFor = (stepIndex: number, subStepIndex: number, effectIndex: number, waitsForClick: boolean): string => {
+  if (effectIndex > 0) return 'withEffect'
+  if (subStepIndex > 0) return 'afterEffect'
+  if (waitsForClick) return 'clickEffect'
+  // 整页第一条且不等点击 —— 进页自动播
+  return stepIndex === 0 ? 'withEffect' : 'afterEffect'
 }
 
 /**
@@ -294,46 +369,53 @@ export const buildTimingXml = (
 
   if (!eligible.length) return { xml: '', skipped }
 
-  // Reset ID counter for this build
-  _nextId = 0
+  // tmRoot=1 / mainSeq=2 先占位，其余节点从 3 开始
+  resetIds()
+  const tmRootId = nextId()
+  const mainSeqId = nextId()
 
-  // Group by click steps: a new click step starts when trigger is 'click'
-  // (unless it's the very first animation)
-  const steps: EligibleAnimation[][] = []
-  for (const anim of eligible) {
-    if (anim.animation.trigger === 'click' && steps.length > 0) {
-      steps.push([anim])
-    }
-    else {
-      if (!steps.length) steps.push([])
-      steps[steps.length - 1].push(anim)
-    }
-  }
+  const steps = groupIntoSteps(eligible)
 
-  // Build main sequence children
-  const stepXmls: string[] = []
-  for (const step of steps) {
-    const effectXmls: string[] = []
-    for (let i = 0; i < step.length; i++) {
-      const anim = step[i]
-      const isFirst = i === 0
-      const nodeType = triggerToNodeType(anim.animation.trigger, isFirst)
-      effectXmls.push(buildEffectXml(anim, nodeType))
-    }
+  // id 必须按**文档顺序**递增：外层容器先取号，再构造子节点。
+  // 反过来写（先建子节点再给容器取号）id 是乱序的 —— 规范只要求唯一，
+  // 但和 PowerPoint 自己的产物对不上，排查时凭空多一个变量。
+  const stepXmls = steps.map((step, stepIndex) => {
+    const stepId = nextId()
+    const startCond = step.waitsForClick ? 'indefinite' : '0'
 
-    stepXmls.push(
+    const subStepXmls = step.subSteps.map((subStep, subStepIndex) => {
+      const subStepId = nextId()
+      const effectXmls = subStep.map((anim, effectIndex) =>
+        buildEffectXml(anim, nodeTypeFor(stepIndex, subStepIndex, effectIndex, step.waitsForClick)),
+      )
+
+      // ② 子步层
+      return (
+        `<p:par>` +
+          `<p:cTn id="${subStepId}" fill="hold">` +
+            `<p:stCondLst><p:cond delay="0"/></p:stCondLst>` +
+            `<p:childTnLst>` +
+              effectXmls.join('') +
+            `</p:childTnLst>` +
+          `</p:cTn>` +
+        `</p:par>`
+      )
+    })
+
+    // ① 点击步层
+    return (
       `<p:par>` +
-        `<p:cTn id="${nextId()}" fill="hold">` +
-          `<p:stCondLst><p:cond delay="0"/></p:stCondLst>` +
+        `<p:cTn id="${stepId}" fill="hold">` +
+          `<p:stCondLst><p:cond delay="${startCond}"/></p:stCondLst>` +
           `<p:childTnLst>` +
-            effectXmls.join('') +
+            subStepXmls.join('') +
           `</p:childTnLst>` +
         `</p:cTn>` +
       `</p:par>`
     )
-  }
+  })
 
-  // Build list: unique spids
+  // build list：每个被动画作用的形状登记一次
   const uniqueSpids = [...new Set(eligible.map(a => a.spid))]
   const bldEntries = uniqueSpids.map(spid => `<p:bldP spid="${spid}" grpId="0"/>`).join('')
 
@@ -341,10 +423,10 @@ export const buildTimingXml = (
     `<p:timing>` +
       `<p:tnLst>` +
         `<p:par>` +
-          `<p:cTn id="${nextId()}" dur="indefinite" restart="never" nodeType="tmRoot">` +
+          `<p:cTn id="${tmRootId}" dur="indefinite" restart="never" nodeType="tmRoot">` +
             `<p:childTnLst>` +
               `<p:seq concurrent="1" nextAc="seek">` +
-                `<p:cTn id="${nextId()}" dur="indefinite" nodeType="mainSeq">` +
+                `<p:cTn id="${mainSeqId}" dur="indefinite" nodeType="mainSeq">` +
                   `<p:childTnLst>` +
                     stepXmls.join('') +
                   `</p:childTnLst>` +

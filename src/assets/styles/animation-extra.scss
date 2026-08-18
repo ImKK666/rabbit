@@ -1,8 +1,8 @@
-// R-07 · 补齐 animate.css 缺失的动画
+// R-07 / R-25 · 补齐 animate.css 缺失的动画
 //
-// configs/animation.ts 的 25 个效果里，13 个能直接用 animate.css
+// configs/animation.ts 的 45 个效果里，13 个能直接用 animate.css
 // （fadeIn / fadeInUp / slideInUp / backInUp / pulse / fadeOut / backOutDown ...），
-// 剩下 12 个 animate.css 表达不了，在这里自定义：
+// 剩下 32 个 animate.css 表达不了，在这里自定义：
 //
 //   缩放强度分级  scaleIn / zoomInSoft / scaleOut / zoomOutSoft
 //                （animate.css 的 zoomIn 固定 scale(.3)，太重且无法分级）
@@ -10,6 +10,9 @@
 //   擦除          wipeIn / wipeOut（animate.css 完全没有擦除）
 //   强调分级      pulseSoft / pulseStrong / growShrinkSoft / growShrink / growShrinkStrong
 //                （animate.css 只有一个固定 1.05 的 pulse）
+//   R-25 新增     擦除四向 · 盒状 / 圆形 / 菱形 / 十字 / 楔入 / 轮辐 ·
+//                百叶窗 / 棋盘 / 溶解 / 随机线条 / 阶梯 · 陀螺旋转 / 闪烁
+//                —— 对应 OOXML 的 <p:animEffect filter> 滤镜词表，见文件后半段
 //
 // 类名一律挂在 animate__ 前缀下（ANIMATION_CLASS_PREFIX），原因：
 // views/Screen/hooks/useExecPlay.ts 清理时按前缀匹配移除类名
@@ -102,3 +105,245 @@
 .animate__growShrinkSoft   { animation-name: rbGrowShrinkSoft; }
 .animate__growShrink       { animation-name: rbGrowShrink; }
 .animate__growShrinkStrong { animation-name: rbGrowShrinkStrong; }
+
+// 陀螺旋转 / 闪烁 —— 强调不该只有「变大一下」，
+// 对应 OOXML 的 presetId 8 emph（Spin）和 9 emph（Transparency）
+@keyframes rbSpin {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+.animate__spin { animation-name: rbSpin; }
+
+@keyframes rbBlink {
+  from { opacity: 1; }
+  50%  { opacity: 0.3; }   // 与 configs/animation.ts 的 opacityDip 对齐
+  to   { opacity: 1; }
+}
+.animate__blink { animation-name: rbBlink; }
+
+// ---------------------------------------------------------------------------
+// R-25 · 几何 / 分块类入场
+//
+// 这一批对应 OOXML 的 <p:animEffect filter="..."> 转场滤镜。
+// PowerPoint 侧是逐块揭示的原生实现，CSS 只能用 clip-path / mask 拼形似的：
+//
+//   clip-path 能精确表达的  盒状 / 圆形 / 菱形 / 十字 / 擦除 → cssExact: true
+//   只能近似的              百叶窗 / 棋盘 / 溶解 / 随机线条 / 阶梯 → cssExact: false
+//
+// 分块类用 @property 注册的自定义属性驱动 mask 的渐变端点 ——
+// 这是 CSS 里唯一能让「重复渐变的分段比例」参与补间的办法。
+// 万一浏览器不支持 @property，var() 无效会让整条 mask-image 声明失效退回
+// mask-image: none，元素直接可见（不动画），**不会变成永久隐形**。
+// ---------------------------------------------------------------------------
+
+@property --rb-reveal {
+  syntax: '<percentage>';
+  inherits: false;
+  initial-value: 0%;
+}
+
+// 项目没有 autoprefixer，mask 相关属性手动带一份 -webkit- 前缀
+// （Safari 16.4 之前只认前缀版）
+@mixin rb-mask($image) {
+  -webkit-mask-image: $image;
+  mask-image: $image;
+}
+@mixin rb-mask-size($size) {
+  -webkit-mask-size: $size;
+  mask-size: $size;
+}
+
+// 擦除四向。方向名指元素「从哪里来」，所以 wipeInUp = 自下往上揭开
+@keyframes rbWipeInRight {
+  from { clip-path: inset(0 0 0 100%); }
+  to   { clip-path: inset(0 0 0 0); }
+}
+.animate__wipeInRight { animation-name: rbWipeInRight; }
+
+@keyframes rbWipeInUp {
+  from { clip-path: inset(100% 0 0 0); }
+  to   { clip-path: inset(0 0 0 0); }
+}
+.animate__wipeInUp { animation-name: rbWipeInUp; }
+
+@keyframes rbWipeInDown {
+  from { clip-path: inset(0 0 100% 0); }
+  to   { clip-path: inset(0 0 0 0); }
+}
+.animate__wipeInDown { animation-name: rbWipeInDown; }
+
+// 盒状 / 圆形 / 菱形 / 十字：全部从中心向外张开
+@keyframes rbBoxIn {
+  from { clip-path: inset(50% 50% 50% 50%); }
+  to   { clip-path: inset(0 0 0 0); }
+}
+.animate__boxIn { animation-name: rbBoxIn; }
+
+@keyframes rbCircleIn {
+  from { clip-path: circle(0% at 50% 50%); }
+  to   { clip-path: circle(75% at 50% 50%); }
+}
+.animate__circleIn { animation-name: rbCircleIn; }
+
+// 菱形和十字的起止点数必须一致，否则 clip-path 无法补间（会变成硬切换）
+@keyframes rbDiamondIn {
+  from { clip-path: polygon(50% 50%, 50% 50%, 50% 50%, 50% 50%); }
+  to   { clip-path: polygon(50% -50%, 150% 50%, 50% 150%, -50% 50%); }
+}
+.animate__diamondIn { animation-name: rbDiamondIn; }
+
+@keyframes rbPlusIn {
+  from {
+    clip-path: polygon(
+      50% 50%, 50% 50%, 50% 50%, 50% 50%, 50% 50%, 50% 50%,
+      50% 50%, 50% 50%, 50% 50%, 50% 50%, 50% 50%, 50% 50%
+    );
+  }
+  to {
+    clip-path: polygon(
+      35% 0%, 65% 0%, 65% 35%, 100% 35%, 100% 65%, 65% 65%,
+      65% 100%, 35% 100%, 35% 65%, 0% 65%, 0% 35%, 35% 35%
+    );
+  }
+}
+.animate__plusIn { animation-name: rbPlusIn; }
+
+// 楔入：两片扇叶从正上方向两侧张开
+@property --rb-wedge {
+  syntax: '<angle>';
+  inherits: false;
+  initial-value: 0deg;
+}
+
+@keyframes rbWedgeIn {
+  from { --rb-wedge: 0deg; }
+  to   { --rb-wedge: 180deg; }
+}
+.animate__wedgeIn {
+  animation-name: rbWedgeIn;
+  @include rb-mask(conic-gradient(
+    from 180deg,
+    transparent 0 calc(180deg - var(--rb-wedge)),
+    #000 calc(180deg - var(--rb-wedge)) calc(180deg + var(--rb-wedge)),
+    transparent calc(180deg + var(--rb-wedge)) 360deg
+  ));
+}
+
+// 轮辐：4 片扇形同时扫过（与 filter wheel(4) 对齐）
+@property --rb-wheel {
+  syntax: '<angle>';
+  inherits: false;
+  initial-value: 0deg;
+}
+
+@keyframes rbWheelIn {
+  from { --rb-wheel: 0deg; }
+  to   { --rb-wheel: 90deg; }
+}
+.animate__wheelIn {
+  animation-name: rbWheelIn;
+  @include rb-mask(repeating-conic-gradient(
+    #000 0 var(--rb-wheel),
+    transparent var(--rb-wheel) 90deg
+  ));
+}
+
+// 百叶窗：12 条窗叶同时打开
+@keyframes rbReveal {
+  from { --rb-reveal: 0%; }
+  to   { --rb-reveal: 100%; }
+}
+
+.animate__blindsH {
+  animation-name: rbReveal;
+  @include rb-mask(repeating-linear-gradient(
+    to right,
+    #000 0 calc(var(--rb-reveal) / 12),
+    transparent calc(var(--rb-reveal) / 12) 8.3333%
+  ));
+}
+
+.animate__blindsV {
+  animation-name: rbReveal;
+  @include rb-mask(repeating-linear-gradient(
+    to bottom,
+    #000 0 calc(var(--rb-reveal) / 12),
+    transparent calc(var(--rb-reveal) / 12) 8.3333%
+  ));
+}
+
+// 随机线条：和百叶窗同构，但条数多、步进跳跃，观感上更「随机」
+.animate__randombar {
+  animation-name: rbReveal;
+  animation-timing-function: steps(8, end);
+  @include rb-mask(repeating-linear-gradient(
+    to bottom,
+    #000 0 calc(var(--rb-reveal) / 24),
+    transparent calc(var(--rb-reveal) / 24) 4.1666%
+  ));
+}
+
+// 棋盘：两阶段揭示 —— 先出一半棋格，再补上另一半。
+// mask-image 不可补间，所以用离散关键帧硬切，正好也是棋盘该有的节奏。
+$rb-checker: conic-gradient(#000 0 25%, transparent 0 50%, #000 0 75%, transparent 0);
+
+@keyframes rbCheckerboard {
+  0%   { opacity: 0; @include rb-mask(#{$rb-checker}); }
+  1%   { opacity: 1; @include rb-mask(#{$rb-checker}); }
+  55%  { opacity: 1; @include rb-mask(#{$rb-checker}); }
+  56%  { opacity: 1; @include rb-mask(none); }
+  100% { opacity: 1; @include rb-mask(none); }
+}
+.animate__checkerboard {
+  animation-name: rbCheckerboard;
+  @include rb-mask-size(12.5% 12.5%);
+}
+
+// 阶梯状：45° 对角线扫过
+@keyframes rbStripsIn {
+  from { clip-path: polygon(0 0, 0 0, 0 0); }
+  to   { clip-path: polygon(0 0, 200% 0, 0 200%); }
+}
+.animate__stripsIn { animation-name: rbStripsIn; }
+
+// 溶解：steps() 让透明度跳变，像素点分批出现的感觉
+@keyframes rbDissolveIn {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+.animate__dissolveIn {
+  animation-name: rbDissolveIn;
+  animation-timing-function: steps(10, end);
+}
+
+// ---------------------------------------------------------------------------
+// R-25 · 新增退场
+// ---------------------------------------------------------------------------
+
+@keyframes rbDissolveOut {
+  from { opacity: 1; }
+  to   { opacity: 0; }
+}
+.animate__dissolveOut {
+  animation-name: rbDissolveOut;
+  animation-timing-function: steps(10, end);
+}
+
+@keyframes rbBlindsOut {
+  from { --rb-reveal: 100%; }
+  to   { --rb-reveal: 0%; }
+}
+.animate__blindsOut {
+  animation-name: rbBlindsOut;
+  @include rb-mask(repeating-linear-gradient(
+    to right,
+    #000 0 calc(var(--rb-reveal) / 12),
+    transparent calc(var(--rb-reveal) / 12) 8.3333%
+  ));
+}
+
+@keyframes rbCircleOut {
+  from { clip-path: circle(75% at 50% 50%); }
+  to   { clip-path: circle(0% at 50% 50%); }
+}
+.animate__circleOut { animation-name: rbCircleOut; }

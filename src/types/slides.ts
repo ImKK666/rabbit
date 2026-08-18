@@ -672,10 +672,12 @@ export type AnimationType = 'in' | 'out' | 'attention'
 export type AnimationTrigger = 'click' | 'meantime' | 'auto'
 
 /**
- * R-04 · 动画效果词表
+ * R-04 / R-25 · 动画效果词表
  *
- * 只收「网页能演」∩「PowerPoint OOXML 能表达」的交集，共 25 个。
+ * 只收「网页能演」∩「PowerPoint OOXML 能表达」的交集，共 45 个。
  * 原 PPTist 用裸 string + animate.css 全集（92 个），导出 PPTX 时全部静默丢失。
+ * 第一版收到 25 个，但它们只落到 5 个 presetId 上，观感雷同 ——
+ * R-25 借 `<p:animEffect filter>` 的滤镜词表扩到 45，详见 configs/animation.ts。
  *
  * 方向命名约定：**方向指元素「从哪里来」**（与 animate.css 一致）。
  * 例如 fade-left = 从左侧淡入。改动画表时务必对齐这一点 ——
@@ -685,15 +687,23 @@ export type AnimationTrigger = 'click' | 'meantime' | 'auto'
  * 未收录：motion path（PPTist 无运动路径概念）。
  */
 export type AnimationEffect =
-  // 入场（14）
+  // 入场 · 柔和（8）
   | 'fade' | 'fade-up' | 'fade-down' | 'fade-left' | 'fade-right'
-  | 'slide-up' | 'slide-down' | 'slide-left' | 'slide-right'
-  | 'scale-in' | 'zoom-in' | 'spin-in' | 'fly-in' | 'wipe'
-  // 强调（6）
+  | 'scale-in' | 'zoom-in' | 'spin-in'
+  // 入场 · 方向（5）
+  | 'slide-up' | 'slide-down' | 'slide-left' | 'slide-right' | 'fly-in'
+  // 入场 · 擦除（4）
+  | 'wipe' | 'wipe-right' | 'wipe-up' | 'wipe-down'
+  // 入场 · 几何 / 分块（12）
+  | 'blinds-h' | 'blinds-v' | 'checkerboard' | 'dissolve-in' | 'randombar' | 'strips-in'
+  | 'box-in' | 'circle-in' | 'diamond-in' | 'plus-in' | 'wedge-in' | 'wheel-in'
+  // 强调（8）
   | 'pulse-soft' | 'pulse' | 'pulse-strong'
   | 'grow-shrink-soft' | 'grow-shrink' | 'grow-shrink-strong'
-  // 退场（5）
+  | 'spin' | 'blink'
+  // 退场（8）
   | 'exit-fade' | 'exit-scale' | 'exit-zoom' | 'exit-wipe' | 'exit-fly'
+  | 'exit-dissolve' | 'exit-blinds' | 'exit-circle'
 
 /**
  * 动画的导出行为
@@ -813,6 +823,16 @@ export interface Slide {
   turningMode?: TurningMode
   sectionTag?: SectionTag
   type?: SlideType
+  /**
+   * R-29: 本页用的语义版式（server/src/agent/layouts.ts 的 LayoutPattern）。
+   *
+   * 由 applyLayout 写入，只服务两件事：
+   *   1. lint 判「相邻两页是不是同一个版式」——「有没有新意」里唯一能机器判的那条
+   *   2. agent 重新排版时知道这页原本是什么结构
+   *
+   * PPTist 本体不读它，导出也不带它，纯粹是编辑期元数据。
+   */
+  layout?: string
 }
 
 /**

@@ -6,15 +6,24 @@
  */
 
 import { z } from 'zod'
-import type { Slide, PPTElement, PPTAnimation, SlideTheme, AnimationEffect } from '@/types/slides'
-import { ANIMATION_DEFS } from '@/configs/animation'
+import type {
+  Slide, PPTElement, PPTAnimation, SlideTheme, AnimationEffect, TurningMode,
+} from '@/types/slides'
+import { ANIMATION_DEFS, TURNING_MODES } from '@/configs/animation'
+import { buildShapeGeometry, SHAPE_CATALOG_KEYS } from '@/configs/shapeCatalog'
+import { buildPalette, CANVAS_WIDTH as DESIGN_W, CANVAS_HEIGHT as DESIGN_H } from './design'
+import {
+  buildLayout, validateLayoutContent, isLayoutPattern,
+  type LayoutPattern, type LayoutContent,
+} from './layouts'
 
 // ---------------------------------------------------------------------------
 // 常量
 // ---------------------------------------------------------------------------
 
-export const VIEWPORT_WIDTH = 1000
-export const VIEWPORT_HEIGHT = 562.5
+/** 画布尺寸的单一真相源在 design.ts —— 版式引擎和 lint 必须用同一组数 */
+export const VIEWPORT_WIDTH = DESIGN_W
+export const VIEWPORT_HEIGHT = DESIGN_H
 
 /** 元素超出画布多少逻辑像素才算越界（留一点浮点容差） */
 const OVERFLOW_TOLERANCE = 1
@@ -151,19 +160,108 @@ export const elementSchema = z.discriminatedUnion('type', [
   lineElementSchema,
 ])
 
-/** agent 会主动产出的 4 种元素 —— 严格校验 */
+// --- 图表 ---
+
+export const CHART_TYPES = ['bar', 'column', 'line', 'pie', 'ring', 'area', 'radar', 'scatter'] as const
+
+export const chartElementSchema = baseElementSchema.extend({
+  type: z.literal('chart'),
+  chartType: z.enum(CHART_TYPES),
+  data: z.object({
+    labels: z.array(z.string()).min(1),
+    legends: z.array(z.string()).min(1),
+    series: z.array(z.array(z.number().finite())).min(1),
+  }),
+  options: z.object({
+    lineSmooth: z.boolean().optional(),
+    stack: z.boolean().optional(),
+  }).optional(),
+  themeColors: z.array(z.string()).min(1),
+  textColor: z.string().optional(),
+  lineColor: z.string().optional(),
+  fill: z.string().optional(),
+  outline: elementOutlineSchema.optional(),
+})
+  // 系列数和图例数对不上、某个系列的点数和标签数对不上 —— 画布上只是少画一根线，
+  // 导出到 PPTX 则会写出一份数据错位的内嵌表格，比不画更糟
+  .refine(el => el.data.series.length === el.data.legends.length, {
+    message: 'data.series 的条数必须等于 data.legends 的条数',
+    path: ['data', 'series'],
+  })
+  .refine(el => el.data.series.every(s => s.length === el.data.labels.length), {
+    message: '每条 series 的数据点数必须等于 data.labels 的个数',
+    path: ['data', 'series'],
+  })
+
+// --- 表格 ---
+
+const tableCellSchema = z.object({
+  id: z.string().min(1),
+  colspan: z.number().int().min(1),
+  rowspan: z.number().int().min(1),
+  text: z.string(),
+  style: z.object({
+    bold: z.boolean().optional(),
+    em: z.boolean().optional(),
+    underline: z.boolean().optional(),
+    strikethrough: z.boolean().optional(),
+    color: z.string().optional(),
+    backcolor: z.string().optional(),
+    fontsize: z.string().optional(),
+    fontname: z.string().optional(),
+    align: z.enum(['left', 'center', 'right', 'justify']).optional(),
+    vAlign: z.enum(['top', 'middle', 'bottom']).optional(),
+  }).optional(),
+}).passthrough()
+
+export const tableElementSchema = baseElementSchema.extend({
+  type: z.literal('table'),
+  outline: elementOutlineSchema,
+  theme: z.object({
+    color: z.string(),
+    rowHeader: z.boolean(),
+    rowFooter: z.boolean(),
+    colHeader: z.boolean(),
+    colFooter: z.boolean(),
+  }).optional(),
+  colWidths: z.array(z.number().positive()).min(1),
+  cellMinHeight: z.number().positive(),
+  data: z.array(z.array(tableCellSchema).min(1)).min(1),
+})
+  .refine(el => el.data.every(row => row.length === el.data[0].length), {
+    message: '每一行的单元格数必须相同（合并单元格用 colspan/rowspan 表达，不要少写格子）',
+    path: ['data'],
+  })
+  .refine(el => el.colWidths.length === el.data[0].length, {
+    message: 'colWidths 的长度必须等于列数',
+    path: ['colWidths'],
+  })
+  .refine(el => Math.abs(el.colWidths.reduce((a, b) => a + b, 0) - 1) < 0.02, {
+    message: 'colWidths 是各列占总宽的比例，加起来必须约等于 1',
+    path: ['colWidths'],
+  })
+
+/**
+ * 严格校验的元素类型。
+ *
+ * R-30 把 chart / table 从「只查基础几何」的放行名单挪到了这里 ——
+ * 它们现在是 agent 会主动产出的类型，再放行就等于给自己开后门
+ * （08-expressiveness.md 第五节点名的那条风险）。
+ */
 const STRICT_ELEMENT_SCHEMAS: Record<string, z.ZodTypeAny> = {
   text: textElementSchema,
   image: imageElementSchema,
   shape: shapeElementSchema,
   line: lineElementSchema,
+  chart: chartElementSchema,
+  table: tableElementSchema,
 }
 
 /**
  * agent 不产出、但导入的 deck 里可能存在的类型。
- * 只校验基础几何字段其余放行 —— 否则一份带表格的 deck 会在 updateSlide 时被整体拒收。
+ * 只校验基础几何字段其余放行 —— 否则一份带公式的 deck 会在 updateSlide 时被整体拒收。
  */
-const PASSTHROUGH_ELEMENT_TYPES = new Set(['chart', 'table', 'latex', 'video', 'audio'])
+const PASSTHROUGH_ELEMENT_TYPES = new Set(['latex', 'video', 'audio'])
 
 const formatZodError = (err: z.ZodError): string =>
   err.issues.map(i => `${i.path.join('.') || '(根)'}: ${i.message}`).join('; ')
@@ -189,7 +287,7 @@ export const validateElement = (el: unknown): { ok: true } | { ok: false, error:
     return r.success ? { ok: true } : { ok: false, error: `${type} 元素基础字段校验失败 —— ${formatZodError(r.error)}` }
   }
 
-  return { ok: false, error: `不支持的元素类型 "${type}"（agent 可用：text / image / shape / line）` }
+  return { ok: false, error: `不支持的元素类型 "${type}"（agent 可用：text / image / shape / line / chart / table）` }
 }
 
 /** 批量校验，返回第一条错误信息（带下标和 id，方便 agent 定位）；全部合法返回 null */
@@ -249,8 +347,9 @@ export const slideSchema = z.object({
   remark: z.string().optional(),
   background: backgroundSchema.optional(),
   animations: z.array(animationSchema).optional(),
-  turningMode: z.string().optional(),
+  turningMode: z.enum(TURNING_MODES as [TurningMode, ...TurningMode[]]).optional(),
   type: z.enum(['cover', 'contents', 'transition', 'content', 'end']).optional(),
+  layout: z.string().optional(),
 })
 
 export const themeSchema = z.object({
@@ -393,8 +492,125 @@ export const lintSlide = (slide: Slide): LintIssue[] => {
   return issues
 }
 
-export const lintDeck = (slides: Slide[]): LintIssue[] => {
-  return slides.flatMap(lintSlide)
+// ---------------------------------------------------------------------------
+// Deck 级 lint —— 「有没有新意」的机器判据
+//
+// 08-expressiveness.md 第四节列了五条验收标准，前三条落在这里。
+// 主观的东西没法自动判，但「相邻两页一模一样」「整份 deck 只有文字」
+// 「45 个效果里只用了一个」这三件事是客观的，而且正是雷同感的直接来源。
+//
+// 全部是 warning 而不是 error：它们是设计建议，不是结构错误。
+// 拿来当硬闸门会把「刻意的极简」也拦掉。
+// ---------------------------------------------------------------------------
+
+/** 一页的结构指纹 —— 没有 layout 标记时用它判「是不是同一个版式」 */
+const structuralSignature = (slide: Slide): string => {
+  const counts: Record<string, number> = {}
+  for (const el of slide.elements) counts[el.type] = (counts[el.type] ?? 0) + 1
+
+  // 元素类型构成 + 前三个元素的粗粒度位置（按 1/8 画布取格）
+  const shape = Object.keys(counts).sort().map(k => `${k}${counts[k]}`).join('')
+  const grid = slide.elements
+    .filter((el): el is PPTElement & { left: number, top: number } => 'left' in el && 'top' in el)
+    .slice()
+    .sort((a, b) => (a.top - b.top) || (a.left - b.left))
+    .slice(0, 3)
+    .map(el => `${Math.round(el.left / (VIEWPORT_WIDTH / 8))},${Math.round(el.top / (VIEWPORT_HEIGHT / 8))}`)
+    .join('|')
+
+  return `${shape}@${grid}`
+}
+
+/** 非文本元素：形状 / 图表 / 表格 / 线条 / 图片 */
+const NON_TEXT_TYPES = new Set(['shape', 'chart', 'table', 'line', 'image', 'latex'])
+
+const hasNonTextElement = (slide: Slide): boolean =>
+  slide.elements.some(el => NON_TEXT_TYPES.has(el.type))
+
+/** 单页元素太少，基本等同于「一个标题一段正文」 */
+const MIN_ELEMENTS_PER_SLIDE = 3
+
+/** 一份 deck 至少该用到几种不同的动画效果 */
+const MIN_EFFECT_VARIETY = 3
+
+export interface DeckLintOptions {
+  /** 关掉设计类检查，只留几何 —— 用户明确要极简风格时 */
+  designChecks?: boolean
+}
+
+export const lintDeckDesign = (slides: Slide[]): LintIssue[] => {
+  const issues: LintIssue[] = []
+  if (slides.length === 0) return issues
+
+  // ① 版式多样性：相邻页不得用同一版式
+  for (let i = 1; i < slides.length; i++) {
+    const prev = slides[i - 1]
+    const cur = slides[i]
+
+    const prevKey = prev.layout ?? structuralSignature(prev)
+    const curKey = cur.layout ?? structuralSignature(cur)
+    // 空页之间的雷同没有意义
+    if (!prev.elements.length || !cur.elements.length) continue
+
+    if (prevKey === curKey) {
+      issues.push({
+        level: 'warning',
+        slideId: cur.id,
+        message: cur.layout
+          ? `第 ${i + 1} 页与上一页用了同一个版式 "${cur.layout}"，换一个（applyLayout 有 10 种）`
+          : `第 ${i + 1} 页与上一页结构完全相同，读者会觉得在原地踏步 —— 换个版式或换个信息组织方式`,
+      })
+    }
+  }
+
+  // ② 每页至少一个非文本元素
+  for (const [i, slide] of slides.entries()) {
+    if (!slide.elements.length) continue
+    if (!hasNonTextElement(slide)) {
+      issues.push({
+        level: 'warning',
+        slideId: slide.id,
+        message: `第 ${i + 1} 页只有文字，没有任何形状 / 图表 / 线条 —— 纯文字排得再好也像 Word 大纲，至少加一条强调条或一个卡片底板`,
+      })
+    }
+    if (slide.elements.length < MIN_ELEMENTS_PER_SLIDE) {
+      issues.push({
+        level: 'warning',
+        slideId: slide.id,
+        message: `第 ${i + 1} 页只有 ${slide.elements.length} 个元素，信息密度太低`,
+      })
+    }
+  }
+
+  // ③ 动画多样性
+  const effects = slides.flatMap(s => (s.animations ?? []).map(a => a.effect))
+  if (effects.length) {
+    const kinds = new Set(effects)
+    if (kinds.size < MIN_EFFECT_VARIETY && slides.length > 2) {
+      issues.push({
+        level: 'warning',
+        slideId: slides[0].id,
+        message: `整份文稿只用了 ${kinds.size} 种动画效果（${[...kinds].join(', ')}），至少用 ${MIN_EFFECT_VARIETY} 种 —— 词表里有 ${Object.keys(ANIMATION_DEFS).length} 个`,
+      })
+    }
+
+    const fadeFamily = [...kinds].every(e => e.startsWith('fade') || e === 'exit-fade')
+    if (fadeFamily && kinds.size > 0) {
+      issues.push({
+        level: 'warning',
+        slideId: slides[0].id,
+        message: '所有动画都是淡入系，观感必然雷同 —— 擦除（wipe）、几何（circle-in / box-in / wedge-in）、分块（blinds-h / checkerboard）都是 PowerPoint 原生效果，导出后照样能播',
+      })
+    }
+  }
+
+  return issues
+}
+
+export const lintDeck = (slides: Slide[], opts: DeckLintOptions = {}): LintIssue[] => {
+  const geometry = slides.flatMap(lintSlide)
+  if (opts.designChecks === false) return geometry
+  return [...geometry, ...lintDeckDesign(slides)]
 }
 
 // ---------------------------------------------------------------------------
@@ -779,4 +995,429 @@ export const applyAnimationPreset = (
   slide.animations = animations
 
   return { ok: true, data: newSlides, issues: lintSlide(slide) }
+}
+
+// ---------------------------------------------------------------------------
+// R-29 / R-30 · 结构化元素构造
+//
+// 这一节的共同点：**agent 不再拼元素 JSON**。
+// 它给语义参数（形状叫什么、图表是什么类型、表格几行几列），
+// 几何和样式由这里算出来，再走同一套 validateElement 闸门。
+//
+// 08-expressiveness.md 诊断 ③ 的症结是 prompt 劝退形状，
+// 但真正的根因是「让模型写 SVG path」这个要求本身不合理。
+// 换成按名字选，问题就不存在了。
+// ---------------------------------------------------------------------------
+
+/** 生成在整份 deck 里唯一的元素 id（纯函数：同样的输入给同样的输出） */
+export const mintElementId = (slides: Slide[], prefix: string): string => {
+  const used = collectElementIds(slides)
+  let n = 1
+  while (used.has(`${prefix}_${n}`)) n++
+  return `${prefix}_${n}`
+}
+
+export interface ShapeSpec {
+  shape: string
+  left: number
+  top: number
+  width: number
+  height: number
+  fill: string
+  opacity?: number
+  rotate?: number
+  outlineColor?: string
+  outlineWidth?: number
+  shadow?: boolean
+  text?: string
+  textColor?: string
+  textSize?: number
+  name?: string
+}
+
+export const applyAddShape = (
+  slides: Slide[],
+  slideId: string,
+  spec: ShapeSpec,
+): KernelOutcome => {
+  const slideIndex = slides.findIndex(s => s.id === slideId)
+  if (slideIndex === -1) return { ok: false, error: `幻灯片 "${slideId}" 不存在` }
+
+  const geometry = buildShapeGeometry(spec.shape, spec.width, spec.height)
+  if (!geometry) {
+    return {
+      ok: false,
+      error: `未知形状 "${spec.shape}"，可用：${SHAPE_CATALOG_KEYS.join(' / ')}`,
+    }
+  }
+
+  const element = {
+    id: mintElementId(slides, 'shp'),
+    type: 'shape' as const,
+    left: spec.left,
+    top: spec.top,
+    width: spec.width,
+    height: spec.height,
+    rotate: spec.rotate ?? 0,
+    viewBox: geometry.viewBox,
+    path: geometry.path,
+    fixedRatio: false,
+    fill: spec.fill,
+    ...(geometry.pathFormula ? { pathFormula: geometry.pathFormula } : {}),
+    ...(geometry.keypoints ? { keypoints: geometry.keypoints } : {}),
+    ...(spec.opacity !== undefined ? { opacity: spec.opacity } : {}),
+    ...(spec.outlineColor
+      ? { outline: { style: 'solid' as const, width: spec.outlineWidth ?? 1, color: spec.outlineColor } }
+      : {}),
+    ...(spec.shadow ? { shadow: { h: 0, v: 4, blur: 12, color: '#00000029' } } : {}),
+    ...(spec.name ? { name: spec.name } : {}),
+    ...(spec.text
+      ? {
+        text: {
+          content: `<p style="text-align:center"><span style="font-size:${spec.textSize ?? 16}px;color:${spec.textColor ?? '#ffffff'}">${
+            spec.text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+          }</span></p>`,
+          defaultFontName: 'Microsoft YaHei',
+          defaultColor: spec.textColor ?? '#ffffff',
+          align: 'middle' as const,
+        },
+      }
+      : {}),
+  }
+
+  return applyAddElement(slides, slideId, element as unknown as PPTElement)
+}
+
+export interface ChartSpec {
+  chartType: typeof CHART_TYPES[number]
+  left: number
+  top: number
+  width: number
+  height: number
+  labels: string[]
+  legends: string[]
+  series: number[][]
+  themeColors?: string[]
+  textColor?: string
+  stack?: boolean
+  lineSmooth?: boolean
+  name?: string
+}
+
+export const applyAddChart = (
+  slides: Slide[],
+  slideId: string,
+  theme: SlideTheme,
+  spec: ChartSpec,
+): KernelOutcome => {
+  const palette = buildPalette(theme)
+  const element = {
+    id: mintElementId(slides, 'cht'),
+    type: 'chart' as const,
+    left: spec.left,
+    top: spec.top,
+    width: spec.width,
+    height: spec.height,
+    rotate: 0,
+    chartType: spec.chartType,
+    data: { labels: spec.labels, legends: spec.legends, series: spec.series },
+    themeColors: spec.themeColors?.length ? spec.themeColors : [palette.primary, palette.accent],
+    textColor: spec.textColor ?? palette.textMuted,
+    ...(spec.stack || spec.lineSmooth
+      ? { options: { ...(spec.stack ? { stack: true } : {}), ...(spec.lineSmooth ? { lineSmooth: true } : {}) } }
+      : {}),
+    ...(spec.name ? { name: spec.name } : {}),
+  }
+
+  return applyAddElement(slides, slideId, element as unknown as PPTElement)
+}
+
+export interface TableSpec {
+  left: number
+  top: number
+  width: number
+  rows: string[][]
+  /** 首行是不是表头 */
+  header?: boolean
+  themeColor?: string
+  colWidths?: number[]
+  rowHeight?: number
+  name?: string
+}
+
+export const applyAddTable = (
+  slides: Slide[],
+  slideId: string,
+  theme: SlideTheme,
+  spec: TableSpec,
+): KernelOutcome => {
+  if (!spec.rows.length) return { ok: false, error: 'rows 不能为空' }
+
+  const cols = spec.rows[0].length
+  if (!cols) return { ok: false, error: '第一行没有单元格' }
+  const ragged = spec.rows.findIndex(r => r.length !== cols)
+  if (ragged !== -1) {
+    return { ok: false, error: `rows[${ragged}] 有 ${spec.rows[ragged].length} 列，与首行的 ${cols} 列对不上` }
+  }
+
+  const palette = buildPalette(theme)
+  const rowHeight = spec.rowHeight ?? 40
+  const colWidths = spec.colWidths?.length === cols
+    ? normalizeWeights(spec.colWidths)
+    : new Array(cols).fill(1 / cols)
+
+  const slideIndex = slides.findIndex(s => s.id === slideId)
+  if (slideIndex === -1) return { ok: false, error: `幻灯片 "${slideId}" 不存在` }
+
+  const id = mintElementId(slides, 'tbl')
+  const element = {
+    id,
+    type: 'table' as const,
+    left: spec.left,
+    top: spec.top,
+    width: spec.width,
+    height: rowHeight * spec.rows.length,
+    rotate: 0,
+    outline: { style: 'solid' as const, width: 1, color: palette.border },
+    theme: {
+      color: spec.themeColor ?? palette.primary,
+      rowHeader: spec.header !== false,
+      rowFooter: false,
+      colHeader: false,
+      colFooter: false,
+    },
+    colWidths,
+    cellMinHeight: rowHeight,
+    data: spec.rows.map((row, r) => row.map((text, c) => ({
+      id: `${id}_${r}_${c}`,
+      colspan: 1,
+      rowspan: 1,
+      text,
+      style: {
+        fontname: theme.fontName || 'Microsoft YaHei',
+        color: r === 0 && spec.header !== false ? palette.onPrimary : palette.text,
+        ...(r === 0 && spec.header !== false ? { bold: true } : {}),
+      },
+    }))),
+    ...(spec.name ? { name: spec.name } : {}),
+  }
+
+  return applyAddElement(slides, slideId, element as unknown as PPTElement)
+}
+
+const normalizeWeights = (weights: number[]): number[] => {
+  const sum = weights.reduce((a, b) => a + b, 0)
+  return sum > 0 ? weights.map(w => w / sum) : weights.map(() => 1 / weights.length)
+}
+
+export interface LineSpec {
+  left: number
+  top: number
+  end: [number, number]
+  color: string
+  style?: 'solid' | 'dashed' | 'dotted'
+  width?: number
+  startPoint?: '' | 'arrow' | 'dot'
+  endPoint?: '' | 'arrow' | 'dot'
+  name?: string
+}
+
+export const applyAddLine = (
+  slides: Slide[],
+  slideId: string,
+  spec: LineSpec,
+): KernelOutcome => {
+  // 线条的 start 恒为 [0,0]，end 是相对 left/top 的偏移 —— PPTist 的约定
+  if (spec.end[0] === 0 && spec.end[1] === 0) {
+    return { ok: false, error: 'end 不能是 [0, 0]，那是一条零长度的线' }
+  }
+
+  const element = {
+    id: mintElementId(slides, 'lin'),
+    type: 'line' as const,
+    left: spec.left,
+    top: spec.top,
+    start: [0, 0] as [number, number],
+    end: spec.end,
+    style: spec.style ?? 'solid',
+    color: spec.color,
+    points: [spec.startPoint ?? '', spec.endPoint ?? ''] as ['' | 'arrow' | 'dot', '' | 'arrow' | 'dot'],
+    width: spec.width ?? 2,
+    ...(spec.name ? { name: spec.name } : {}),
+  }
+
+  return applyAddElement(slides, slideId, element as unknown as PPTElement)
+}
+
+// ---------------------------------------------------------------------------
+// R-31 · 排版几何（对齐 / 分布）
+//
+// 纯算术，但对观感的杠杆率极高：元素差 3px 没对齐，人眼看不出差在哪，
+// 只会觉得「这页有点脏」。让 agent 靠目测填坐标永远解决不了这个问题。
+// ---------------------------------------------------------------------------
+
+export type AlignMode = 'left' | 'right' | 'hcenter' | 'top' | 'bottom' | 'vcenter'
+export type DistributeMode = 'horizontal' | 'vertical'
+
+interface Positioned { id: string, left: number, top: number, width: number, height: number }
+
+const positioned = (el: PPTElement): Positioned | null =>
+  'width' in el && 'height' in el && 'left' in el && 'top' in el
+    ? { id: el.id, left: el.left, top: el.top, width: el.width, height: el.height }
+    : null
+
+export const applyArrangeElements = (
+  slides: Slide[],
+  elementIds: string[],
+  opts: { align?: AlignMode, distribute?: DistributeMode, gap?: number },
+): KernelOutcome => {
+  if (!opts.align && !opts.distribute) {
+    return { ok: false, error: '必须至少指定 align 或 distribute 之一' }
+  }
+  if (elementIds.length < 2) return { ok: false, error: '至少要选 2 个元素' }
+
+  const found = elementIds.map(id => findElement(slides, id))
+  const missing = elementIds.filter((_, i) => !found[i])
+  if (missing.length) return { ok: false, error: `找不到元素：${missing.join(', ')}` }
+
+  const slideIndexes = new Set(found.map(f => f!.slideIndex))
+  if (slideIndexes.size > 1) return { ok: false, error: '所选元素不在同一页，无法一起排列' }
+
+  // line 元素没有 height，几何语义和矩形不同，排列会把它挪歪
+  const skipped = found.filter(f => !positioned(f!.element)).map(f => f!.element.id)
+  if (skipped.length) {
+    return { ok: false, error: `线条元素不参与对齐/分布：${skipped.join(', ')}` }
+  }
+
+  const newSlides = cloneSlides(slides)
+  const slide = newSlides[found[0]!.slideIndex]
+  const targets = elementIds.map(id => slide.elements.find(e => e.id === id)!) as (PPTElement & Positioned)[]
+
+  if (opts.align) {
+    const lefts = targets.map(t => t.left)
+    const rights = targets.map(t => t.left + t.width)
+    const tops = targets.map(t => t.top)
+    const bottoms = targets.map(t => t.top + t.height)
+
+    switch (opts.align) {
+      case 'left': { const v = Math.min(...lefts); targets.forEach(t => { t.left = v }); break }
+      case 'right': { const v = Math.max(...rights); targets.forEach(t => { t.left = v - t.width }); break }
+      case 'hcenter': {
+        const v = (Math.min(...lefts) + Math.max(...rights)) / 2
+        targets.forEach(t => { t.left = v - t.width / 2 })
+        break
+      }
+      case 'top': { const v = Math.min(...tops); targets.forEach(t => { t.top = v }); break }
+      case 'bottom': { const v = Math.max(...bottoms); targets.forEach(t => { t.top = v - t.height }); break }
+      case 'vcenter': {
+        const v = (Math.min(...tops) + Math.max(...bottoms)) / 2
+        targets.forEach(t => { t.top = v - t.height / 2 })
+        break
+      }
+      default:
+        break
+    }
+  }
+
+  if (opts.distribute) {
+    const horizontal = opts.distribute === 'horizontal'
+    const sorted = [...targets].sort((a, b) => (horizontal ? a.left - b.left : a.top - b.top))
+
+    if (opts.gap !== undefined) {
+      // 指定间距：首元素不动，其余按固定间距依次排开
+      let cursor = horizontal ? sorted[0].left + sorted[0].width : sorted[0].top + sorted[0].height
+      for (let i = 1; i < sorted.length; i++) {
+        cursor += opts.gap
+        if (horizontal) { sorted[i].left = cursor; cursor += sorted[i].width }
+        else { sorted[i].top = cursor; cursor += sorted[i].height }
+      }
+    }
+    else {
+      // 不指定：保持首尾不动，中间等间隙铺开（PPT 的「横向分布」语义）
+      const first = sorted[0]
+      const last = sorted[sorted.length - 1]
+      const span = horizontal
+        ? (last.left + last.width) - first.left
+        : (last.top + last.height) - first.top
+      const totalSize = sorted.reduce((sum, t) => sum + (horizontal ? t.width : t.height), 0)
+      const gap = (span - totalSize) / (sorted.length - 1)
+
+      let cursor = horizontal ? first.left : first.top
+      for (const t of sorted) {
+        if (horizontal) { t.left = cursor; cursor += t.width + gap }
+        else { t.top = cursor; cursor += t.height + gap }
+      }
+    }
+  }
+
+  // 浮点尾数会让「已经对齐」的元素下次 lint 时差 0.0000001，四舍五入到 0.1px
+  for (const t of targets) {
+    t.left = Math.round(t.left * 10) / 10
+    t.top = Math.round(t.top * 10) / 10
+  }
+
+  return { ok: true, data: newSlides, issues: lintSlide(slide) }
+}
+
+// ---------------------------------------------------------------------------
+// R-29 · 版式应用
+// ---------------------------------------------------------------------------
+
+export const applyLayoutToSlide = (
+  slides: Slide[],
+  slideId: string,
+  theme: SlideTheme,
+  pattern: string,
+  content: LayoutContent,
+  opts: { animate?: boolean, paletteOverride?: { primary?: string, accent?: string, background?: string } } = {},
+): KernelOutcome => {
+  const slideIndex = slides.findIndex(s => s.id === slideId)
+  if (slideIndex === -1) return { ok: false, error: `幻灯片 "${slideId}" 不存在` }
+
+  if (!isLayoutPattern(pattern)) return { ok: false, error: `未知版式 "${pattern}"` }
+
+  const contentError = validateLayoutContent(pattern, content)
+  if (contentError) return { ok: false, error: contentError }
+
+  const palette = buildPalette(theme, opts.paletteOverride)
+
+  // id 前缀带上页序号和当前元素数，重复套版式不会撞 id
+  const prefix = `ly${slideIndex + 1}x${slides[slideIndex].elements.length}`
+  const result = buildLayout(pattern as LayoutPattern, content, palette, prefix, { animate: opts.animate })
+
+  const elemError = validateElements(result.elements)
+  if (elemError) return { ok: false, error: `版式生成的元素不合法（这是 bug，请报告）—— ${elemError}` }
+
+  const newSlides = cloneSlides(slides)
+  const slide = newSlides[slideIndex]
+  // 整页替换：版式的价值来自「所有元素同属一套网格」，留半页旧元素等于留半套旧网格
+  slide.elements = JSON.parse(JSON.stringify(result.elements))
+  slide.animations = JSON.parse(JSON.stringify(result.animations))
+  slide.background = result.background
+  slide.type = result.slideType
+  slide.layout = pattern
+
+  return { ok: true, data: newSlides, issues: lintSlide(slide) }
+}
+
+// ---------------------------------------------------------------------------
+// R-26 · 页面转场
+// ---------------------------------------------------------------------------
+
+export const applySetSlideTransition = (
+  slides: Slide[],
+  slideId: string,
+  turningMode: string,
+): KernelOutcome => {
+  const slideIndex = slides.findIndex(s => s.id === slideId)
+  if (slideIndex === -1) return { ok: false, error: `幻灯片 "${slideId}" 不存在` }
+
+  if (!(TURNING_MODES as string[]).includes(turningMode)) {
+    return { ok: false, error: `未知转场 "${turningMode}"，可用：${TURNING_MODES.join(' / ')}` }
+  }
+
+  const newSlides = cloneSlides(slides)
+  newSlides[slideIndex].turningMode = turningMode as TurningMode
+
+  return { ok: true, data: newSlides, issues: [] }
 }

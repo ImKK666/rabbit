@@ -13,8 +13,9 @@
 //
 // 所以方案是 pptxgenjs 生成 + 我们后处理注入，而不是换掉它：
 //   ① write({ outputType: 'arraybuffer' }) 拿字节流
-//   ② jszip 解包，在每页 slideN.xml 的 </p:clrMapOvr> 之后插入 <p:timing>
-//      （符合 ECMA-376 对 CT_Slide 的顺序约束：cSld → clrMapOvr → transition → timing）
+//   ② jszip 解包，在每页 slideN.xml 的 </p:clrMapOvr> 之后依次插入
+//      <p:transition>（R-26，页面转场）和 <p:timing>（R-17，元素动画）
+//      —— 顺序由 ECMA-376 对 CT_Slide 的约束定死：cSld → clrMapOvr → transition → timing
 //   ③ 重新打包 → saveAs
 //
 // ★ 本文件要改的只有一处：每次 addText / addImage / addShape / … 时补
@@ -32,6 +33,7 @@ import JSZip from 'jszip'
 import pptxgen from 'pptxgenjs'
 import { buildSpidMap } from '@/utils/ooxml/spidMap'
 import { buildTimingXml, type SkippedAnimation } from '@/utils/ooxml/buildTimingXml'
+import { buildTransitionXml } from '@/utils/ooxml/buildTransitionXml'
 import tinycolor from 'tinycolor2'
 import { toPng, toJpeg } from 'html-to-image'
 import { useSlidesStore } from '@/store'
@@ -1038,21 +1040,33 @@ export default () => {
           const zip = await JSZip.loadAsync(buffer as ArrayBuffer)
 
           const allSkipped: SkippedAnimation[] = []
+          const allDegraded: string[] = []
 
           for (let i = 0; i < _slides.length; i++) {
             const slide = _slides[i]
-            if (!slide.animations?.length) continue
 
+            const { xml: transitionXml, degraded } = buildTransitionXml(slide.turningMode)
+            if (degraded) allDegraded.push(`第 ${i + 1} 页：${degraded}`)
+
+            let timingXml = ''
             const slideFile = zip.file(`ppt/slides/slide${i + 1}.xml`)
             if (!slideFile) continue
 
             const slideXml = await slideFile.async('string')
-            const spidMap = buildSpidMap(slideXml)
-            const { xml: timingXml, skipped } = buildTimingXml(slide.animations, spidMap)
-            allSkipped.push(...skipped)
 
-            if (timingXml) {
-              const injected = slideXml.replace('</p:sld>', `${timingXml}</p:sld>`)
+            if (slide.animations?.length) {
+              const spidMap = buildSpidMap(slideXml)
+              const built = buildTimingXml(slide.animations, spidMap)
+              timingXml = built.xml
+              allSkipped.push(...built.skipped)
+            }
+
+            // ECMA-376 对 CT_Slide 的子元素顺序有强制约束：
+            //   cSld → clrMapOvr → transition → timing
+            // 两段必须一次性按序插入。分两次 replace('</p:sld>') 会把后写的那段
+            // 排在前面，顺序一反 PowerPoint 直接判文件损坏。
+            if (transitionXml || timingXml) {
+              const injected = slideXml.replace('</p:sld>', `${transitionXml}${timingXml}</p:sld>`)
               zip.file(`ppt/slides/slide${i + 1}.xml`, injected)
             }
           }
@@ -1061,6 +1075,10 @@ export default () => {
             const reasons = [...new Set(allSkipped.map(s => s.reason))]
             // eslint-disable-next-line no-console
             console.warn(`[PPTX 导出] ${allSkipped.length} 个动画被跳过：`, reasons)
+          }
+          if (allDegraded.length) {
+            // eslint-disable-next-line no-console
+            console.warn('[PPTX 导出] 页面转场降级：', allDegraded)
           }
 
           const repackedBuffer = await zip.generateAsync({

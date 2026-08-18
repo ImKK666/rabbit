@@ -52,6 +52,8 @@ PPTist 自带的文档已并入 [`docs/upstream/`](./upstream/)（`AI_PPT_SCHEMA
 | **R-22** | `useExecPlay.ts` / `ElementAnimationPanel.vue` | `effect` 改经 `getAnimationCssClass()` 解析 | ● |
 | **R-15** | `server/src/agent/tools.ts` | `addAnimation` 工具 —— agent 可直接添加动画（25 种效果 × 3 种触发） | ● |
 | **R-16** | `server/src/agent/kernel.ts` | `applyAnimationPreset` 语义 API —— 4 个 preset（sequential / title-then-content / all-at-once / none），kernel 展开成合法时间线，一次调用替代 N 次 addAnimation | ● |
+| **R-25** | `src/configs/animation.ts`<br>`src/utils/ooxml/buildTimingXml.ts` | **25 → 45**，`effectFilter` 泛化成完整 OOXML 滤镜词表；时间线结构改成三层 `<p:par>`；退场 visibility 延后；强调回弹去掉嵌套 seq；animRot 补 attrNameLst | ● |
+| **R-26** | `src/utils/ooxml/buildTransitionXml.ts`<br>`useExport.ts` | 页面转场接进导出：12 种 turningMode → `<p:transition>`，转场在前 timing 在后 | ● |
 
 ### 导出
 
@@ -113,6 +115,20 @@ PPTist 自带的文档已并入 [`docs/upstream/`](./upstream/)（`AI_PPT_SCHEMA
 | **S-11** | `server/src/agent/orchestrator.ts` | 任务编排：Planner→Generator→Reviewer（容错）→ 实时同步画布 | ● |
 | **S-12** | `server/src/ws/handler.ts` | WebSocket 连接管理 + 消息路由 | ● |
 
+### 表现力（`08-expressiveness.md` 的 A / B / C 三条工作线）
+
+| ID | 位置 | 改什么 | 状态 |
+|---|---|---|---|
+| **R-27** | `src/configs/shapeCatalog.ts` | 形状语义目录 —— 从 151 个形状里精选 **37 个起语义名**，agent 按名字选、路径由代码生成 | ● |
+| **R-28** | `server/src/agent/design.ts` | 设计系统：字号阶梯 / 8px 间距栅格 / 颜色角色（从主题推导，含 WCAG 对比度） | ● |
+| **R-29** | `server/src/agent/layouts.ts` | 语义版式引擎 —— **10 个版式**，一次调用排完整页（含各不相同的出场编排）；`Slide.layout` 记录版式 | ● |
+| **R-30** | `server/src/agent/kernel.ts` | chart / table 补严格 Zod schema，从 `PASSTHROUGH_ELEMENT_TYPES` 后门挪出；新增 addShape / addChart / addTable / addLine 构造器 | ● |
+| **R-31** | `server/src/agent/kernel.ts` | 排版几何：`applyArrangeElements`（6 种对齐 + 2 向分布，支持固定间距） | ● |
+| **R-32** | `server/src/agent/assets.ts` | 图片 / 图标接口定义 + provider 契约，**本轮不实现、不注册给 LLM** | ● |
+| **R-33** | `server/src/agent/roles.ts` | 4 个角色 prompt 全面重写：删掉三条劝退形状的指引，换成设计规范 + 版式词汇 + 多样性压力 | ● |
+| **R-34** | `server/src/agent/kernel.ts` | `lintDeckDesign` —— 08 号文档验收标准前三条落成机器判据 | ● |
+| **R-35** | `scripts/build-animation-samples.ts` | 动画最小样本生成器，`npm run samples` 产出 20 份分类样本供 PowerPoint 人工验证 | ● |
+
 ### 前端新增页面
 
 | 页面 | 文件 | 说明 | 状态 |
@@ -124,7 +140,7 @@ PPTist 自带的文档已并入 [`docs/upstream/`](./upstream/)（`AI_PPT_SCHEMA
 
 ## 当前状态（2026-08-18）
 
-**已完成 23/24 项改动 + 12 项后端 + 4 个新页面。**
+**已完成 34/35 项改动 + 12 项后端 + 4 个新页面。**
 
 前后端全栈已打通：
 ```
@@ -134,11 +150,14 @@ PPTist 自带的文档已并入 [`docs/upstream/`](./upstream/)（`AI_PPT_SCHEMA
 → 每步实时同步画布 → 完成后保存 DB
 ```
 
-125 个单测（vitest）：assetUrl 19 + spidMap 8 + buildTimingXml 31 + kernel 52 + baseUrl 15。
+**542 个单测**（vitest）：
+assetUrl 19 + spidMap 8 + buildTimingXml 110 + buildTransitionXml 21 + shapeCatalog 38 +
+kernel 53 + kernel-elements 79 + design 30 + layouts 143 + history/baseUrl 41。
 
-`npm run build` exit 0（前端），`tsc --noEmit` exit 0（后端），`bun run dev` 正常启动。
+`npm run build` exit 0（前端），`bunx tsc --noEmit` exit 0（后端），`npx vitest run` 全绿。
 
 功能测试脚本见 [07-agent-test.md](./07-agent-test.md)。
+动画导出的 PowerPoint 人工验证清单见 [09-powerpoint-verify.md](./09-powerpoint-verify.md)。
 
 ### 2026-08-18 第二轮：agent 能力与正确性
 
@@ -226,16 +245,110 @@ messages         role='tool'     枚举里本来就有，此前从没写过
 
 实测：新鲜 token 不换发 · 剩 1 天的 token 换发新的 · 账号删除后立即 401 · 错误密码的 401 不会触发登出。
 
+### 2026-08-18 第六轮：表现力升级（A / B / C 三条线）
+
+诊断见 [08-expressiveness.md](./08-expressiveness.md)：产出「太没有新意」有五个可指认的技术原因。这一轮做了其中四条（图片按决策 P1 推迟）。
+
+**贯穿三条线的一个判断**：雷同不是模型不努力，是**它被要求做的决策本身就不该由它做**。
+坐标、字号、间距、配色、SVG path、动画时间线 —— 这些交给模型，它只能靠 prompt 里的示例发挥，
+而示例只有一份，于是每次产出都长得像那一份。处置是把这些决策**从 prompt 挪进代码**。
+
+#### A 线 · 动画扩容（R-25 / R-26）
+
+25 个效果实际只映射到 5 个 presetId，换的只是方向和缩放参数。扩容的入口是
+`<p:animEffect filter="...">` 的 OOXML 滤镜词表 —— 百叶窗 / 棋盘 / 圆形 / 菱形 / 十字 / 楔入 / 轮辐 / 溶解，
+全是 PowerPoint 原生，导出即可播，且和现有的「淡入 + 位移 + 缩放」完全不同类。**25 → 45**。
+
+顺手修掉四处**写了三年没人验过**的结构问题（`docs/09` 第一节列了表）：
+
+| | 原来 | 现在 |
+|---|---|---|
+| 时间线嵌套 | 2 层 `<p:par>` | 3 层（点击步 / 子步 / 效果）—— 少了最外层，PowerPoint 收不到「停下来等点击」的信号 |
+| 退场 visibility | `delay="0"` | `delay="dur-1"` —— 原来元素先瞬间消失，淡出动画对着空气播 |
+| 强调回弹 | 裹在嵌套的 `<p:seq nodeType="mainSeq">` 里 | 平铺两段 animScale —— 原来一页有两条主时间线 |
+| `wipe` 的 presetId | 5（Checkerboard） | 22（Wipe）；filter 也从 `wipe(r)` 改成规范写法 `wipe(right)` |
+| 方向 presetSubtype | 8 / 1 / 2 / 3 | 标准位掩码 4 / 1 / 8 / 2（下 / 上 / 左 / 右） |
+| `<p:animRot>` | 无 attrNameLst | 补 `<p:attrName>r</p:attrName>` |
+| cTn id | 乱序（子节点先取号） | 文档顺序递增，tmRoot=1 / mainSeq=2，和 PowerPoint 产物一致 |
+
+页面转场（R-26）此前是零支持。ground truth 是现成的 ——
+`refs/PPTAgent/pptagent/templates/default/source.pptx` 是 PowerPoint 亲手写的，
+解包看 `slide1.xml` 末尾就有 `<p:transition spd="med"><p:fade/></p:transition>`，位置在 `</p:clrMapOvr>` 之后。
+我们只写它 `mc:Fallback` 里的那一种（不带 p14 扩展），代价是时长只有三档，换来的是 WPS / Keynote / LibreOffice 都认。
+`slideX3D` / `slideY3D` / `rotate` 基础规范里没有，**声明式降级**（`degraded` 字段会报告降了哪几页）。
+
+**没设过转场的页面导出后不加转场** —— 网页播放器把缺省当 `slideY`，但那是播放器的默认值不是用户的意图，
+导入的 pptx 再导出时平白多出一堆推移动画是实打实的失真。
+
+#### B 线 · 工具扩容（R-27 ~ R-32）
+
+15 → **23 个工具**。
+
+| 工具 | 解决的问题 |
+|---|---|
+| `applyLayout` | **最大的一个杠杆**。10 个语义版式，一次调用排完整页，坐标 / 字号 / 间距 / 配色 / 层次 / 动画全部代码算 |
+| `addShape` | 按名字从 37 个形状里选，**agent 永远不用写 SVG path** |
+| `addChart` / `addTable` / `addLine` | 数字画成图表、结构化数据排成表格、分隔线和箭头 |
+| `arrangeElements` | 对齐 + 等距分布。差 3px 肉眼看不出差在哪，只会觉得这页脏 |
+| `setSlideTransition` | 翻页转场 |
+| `getDesignTokens` | 拿颜色角色 / 字号阶梯 / 间距栅格，**别凭空编数值** |
+
+`applyLayout` 是**整页替换**语义：版式的价值来自「所有元素同属一套网格」，
+留半页旧元素等于留半套旧网格，两套叠在一起比没有网格更糟。
+
+形状目录（R-27）按 `(分类下标, 条目下标)` 引用 `SHAPE_LIST` 而不是复制 path，
+代价是上游重排会静默指错形状 —— 所以有一组测试逐条钉住每个键的 `pathFormula` / `pptxShapeType` / path 前缀。
+带 `pathFormula` 的形状必须按实际宽高重算 path（`viewBox` 换成 `[w, h]`），**不重算宽卡片的圆角就是歪的**。
+
+「其他形状」「线性」两类共 51 个是 1024 viewBox 的图标字形，光看 path 无法可靠命名，**刻意没收录** ——
+猜错名字比没有更糟，等图标能力落地时一起处理。
+
+chart / table 补了严格 Zod schema 并从 `PASSTHROUGH_ELEMENT_TYPES` 挪出（R-30）。
+校验里最要紧的两条是「系列数 = 图例数」和「每条系列的点数 = 标签数」：
+对不上时画布上只是少画一根线，导出到 PPTX 却是一份**数据错位的内嵌表格**，比不画更糟。
+
+图片 / 图标（R-32）按决策 P1 只定接口不实现，且**不注册给 LLM** ——
+一个永远返回「未接入」的工具只会白白消耗步数预算。
+
+#### C 线 · prompt 重写（R-33）
+
+旧 `CANVAS_CONTEXT` 里三条硬指引在**主动劝退形状**（「圆角矩形不容易用 path 表达，可以改用 text 元素带 fill」等），
+于是每页都是「文本框 + 背景色」。但换成三条鼓励只会换一批被照抄的示例 ——
+真正的改法是决策已经进了代码，prompt 只负责讲「什么时候用哪个」和「不许做什么」。
+
+- Planner 输出从 `{action, target, detail}` 操作流水账改成**逐页版式设计**（`{layout, purpose, content}`）
+- Generator 的工作顺序定为 `addSlide → applyLayout → 精修`，并明确列出「别做这些」
+- Reviewer 从「几何合法」升级到 13 条设计质量检查（留白 / 对齐 / 层次 / 对比度 / 版式雷同 / 动画单一）
+- Generator 步数 48 → 60：`applyLayout` 让「一页 = 两步」，但也让精修动作变得值得做了
+
+#### 验收（R-34）
+
+08 号文档第四节前三条落成 `lintDeckDesign`，跟着 `lintDeck` 一起跑（可用 `designChecks:false` 关掉）：
+
+| 检查 | 判据 |
+|---|---|
+| 版式多样性 | 相邻页 `layout` 相同 → warning；没有 `layout` 标记的页用**结构指纹**（元素类型构成 + 前三个元素的 1/8 网格位置）兜底 |
+| 非文本元素 | 整页只有文字 → warning；元素少于 3 个 → warning |
+| 动画多样性 | 整份 deck 效果种类 < 3 → warning；全是 fade 系 → warning |
+
+全部是 **warning 不是 error**：它们是设计建议，当硬闸门会把「刻意的极简」也拦掉。
+
+实测（5 页 deck 全走 `applyLayout`）：**lint 0 问题 · 12 种动画效果 · 每页 4~18 个元素 · 5 个版式各不相同。**
+
+第四条「导出的动画在真实 PowerPoint 里能正常播放」只能人工验，
+样本和操作手册见 [09-powerpoint-verify.md](./09-powerpoint-verify.md)。
+
 ## 待完成
 
 | 项 | 说明 | 优先级 |
 |---|---|---|
-| **表现力升级** | 产出「太没有新意」的五个根因与 A/B/C 三条工作线，见 [08-expressiveness.md](./08-expressiveness.md) | **高** |
+| **E3 地面真相** | 导出的动画在真实 PowerPoint 里逐个验，样本已生成（`samples/animations/`），清单见 [09-powerpoint-verify.md](./09-powerpoint-verify.md) | **高** |
+| **图片 / 图标能力** | 08 号文档诊断 ① 里最大的一条，本轮按决策 P1 只定了接口（`server/src/agent/assets.ts`），provider 未接 | **高** |
 | R-09 / R-18 | 旧 AI 路径包装成 agent 工具 `fillFromTemplate` | 中 |
 | 事务 / 回滚 | 逐工具提交，中途失败留半成品。Oh My PPT 的 job/rollback 还没抄 | 中 |
 | 并发控制 | agent 跑时用户手改画布会被整份 `agent.deck` 覆盖 | 中 |
-| E3 地面真相 | 在 PowerPoint 中验证导出的 PPTX 动画是否正常 | 高 |
-| 图片资产存储 | 对象存储（S3/R2），目前 TODO | 中 |
+| 图片资产存储 | 对象存储（S3/R2），图片能力落地的前置 | 中 |
+| 图标命名 | `configs/shapes.ts` 里「其他形状」「线性」两类共 51 个图标字形没有可靠名字，agent 用不了 | 低 |
 | 调研摄入 | MinerU / 联网搜索，目前 TODO | 低 |
 | OAuth 登录 | GitHub / Google，目前只有账号密码 | 低 |
 | AGPL-3.0 授权 | 需联系 PPTist 作者询价（决策 C） | **高风险** |

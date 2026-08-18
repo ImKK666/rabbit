@@ -88,16 +88,29 @@ describe('validateElement — 元素级闸门', () => {
     expect(r.ok === false && r.error).toContain('hologram')
   })
 
-  it('对 chart / table 等 agent 不产出的类型只校验基础几何，不整体拒收', () => {
-    // 导入的 PPTX 里带表格，不能因为 kernel 没写它的 schema 就让整页进不来
+  it('对 latex / video / audio 这类 agent 不产出的类型只校验基础几何，不整体拒收', () => {
+    // 导入的 PPTX 里带公式，不能因为 kernel 没写它的 schema 就让整页进不来
     expect(validateElement({
-      id: 'el_table', type: 'table', left: 0, top: 0, width: 300, height: 200, rotate: 0,
-      data: [[{ text: 'a' }]], colWidths: [1], theme: {},
+      id: 'el_latex', type: 'latex', left: 0, top: 0, width: 300, height: 200, rotate: 0,
+      latex: 'x^2', path: 'M 0 0', color: '#000', strokeWidth: 2,
     })).toEqual({ ok: true })
 
     // 但基础几何仍然要合法
     expect(validateElement({
-      id: 'el_table', type: 'table', left: 0, top: 0, width: -1, height: 200, rotate: 0,
+      id: 'el_latex', type: 'latex', left: 0, top: 0, width: -1, height: 200, rotate: 0,
+    }).ok).toBe(false)
+  })
+
+  // R-30：chart / table 现在是 agent 会主动产出的类型，
+  // 再走 PASSTHROUGH 就等于给「工具全部经 kernel 校验」开后门
+  it('chart / table 已改为严格校验，不再走 PASSTHROUGH 后门', () => {
+    expect(validateElement({
+      id: 'el_table', type: 'table', left: 0, top: 0, width: 300, height: 200, rotate: 0,
+      data: [[{ text: 'a' }]], colWidths: [1], theme: {},
+    }).ok).toBe(false)
+
+    expect(validateElement({
+      id: 'el_chart', type: 'chart', left: 0, top: 0, width: 300, height: 200, rotate: 0,
     }).ok).toBe(false)
   })
 })
@@ -258,7 +271,8 @@ describe('applyDeleteElement — 级联删动画', () => {
     const data = ok(applyDeleteElement([s], 'el_t1'))
     expect(data[0].animations).toHaveLength(1)
     expect(data[0].animations![0].id).toBe('a2')
-    expect(lintDeck(data)).toHaveLength(0)
+    // 只看几何：设计类检查会对这种极简测试页报「元素太少」，与本用例无关
+    expect(lintDeck(data, { designChecks: false })).toHaveLength(0)
   })
 })
 
@@ -335,8 +349,8 @@ describe('applyDeleteSlide', () => {
 })
 
 describe('动画时间线', () => {
-  it('词表就是 configs/animation.ts 的 25 个，不再各处抄一份', () => {
-    expect(ANIMATION_EFFECTS).toHaveLength(25)
+  it('词表就是 configs/animation.ts 的 45 个，不再各处抄一份', () => {
+    expect(ANIMATION_EFFECTS).toHaveLength(45)
     expect(ANIMATION_EFFECTS).toContain('fade-up')
     expect(ANIMATION_EFFECTS).not.toContain('bounceInDown') // animate.css 原词表已砍掉
   })

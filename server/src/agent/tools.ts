@@ -11,6 +11,8 @@
 import { tool } from 'ai'
 import { z } from 'zod'
 import type { Slide, SlideTheme, PPTElement } from '@/types/slides'
+import { TURNING_MODES } from '@/configs/animation'
+import { SHAPE_CATALOG_KEYS, describeShapeCatalog } from '@/configs/shapeCatalog'
 import {
   findElementsByType,
   applyUpdateElement,
@@ -23,10 +25,20 @@ import {
   applyAddAnimations,
   applyRemoveAnimations,
   applyAnimationPreset,
+  applyAddShape,
+  applyAddChart,
+  applyAddTable,
+  applyAddLine,
+  applyArrangeElements,
+  applyLayoutToSlide,
+  applySetSlideTransition,
   lintDeck,
   ANIMATION_EFFECTS,
+  CHART_TYPES,
   type KernelOutcome,
 } from './kernel'
+import { LAYOUT_PATTERNS, describeLayouts } from './layouts'
+import { buildPalette, TYPE_SCALE, SPACING, SAFE } from './design'
 
 // ---------------------------------------------------------------------------
 // Deck 状态持有者
@@ -143,12 +155,31 @@ export const createAgentTools = (accessor: DeckStateAccessor) => ({
   }),
 
   lintDeck: tool({
-    description: '对整份演示文稿做几何校验，检测越界、空元素、孤儿动画等问题',
+    description: '检查整份演示文稿。两类问题：几何（越界、文本重叠、空元素、孤儿动画）和设计（相邻页版式重复、整页没有非文本元素、动画种类太少）。收尾前必须跑一次',
+    parameters: z.object({
+      designChecks: z.boolean().optional().describe('是否包含设计类检查，默认 true'),
+    }),
+    execute: async ({ designChecks }) => {
+      const { slides } = accessor.get()
+      const issues = lintDeck(slides, { designChecks })
+      return JSON.stringify({ issueCount: issues.length, issues })
+    },
+  }),
+
+  getDesignTokens: tool({
+    description: '获取当前主题推导出的设计规范：颜色角色（主色/强调色/正文/次要文字/卡片底/描边）、字号阶梯、间距栅格、安全区。自己配色前先调这个，别凭空编颜色',
     parameters: z.object({}),
     execute: async () => {
-      const { slides } = accessor.get()
-      const issues = lintDeck(slides)
-      return JSON.stringify({ issueCount: issues.length, issues })
+      const { theme } = accessor.get()
+      const palette = buildPalette(theme)
+      return JSON.stringify({
+        palette,
+        typeScale: TYPE_SCALE,
+        spacing: SPACING,
+        safeArea: { left: SAFE.left, top: SAFE.top, right: SAFE.right, bottom: SAFE.bottom },
+        canvas: { width: 1000, height: 562.5 },
+        hint: '同一个角色在整份文稿里只用一个取值。字号只在阶梯里挑，不要用阶梯之外的数值',
+      })
     },
   }),
 
@@ -285,6 +316,178 @@ export const createAgentTools = (accessor: DeckStateAccessor) => ({
     execute: async ({ slideId, animationIds, elementIds, all }) => {
       const state = accessor.get()
       return applyMutation(accessor, applyRemoveAnimations(state.slides, slideId, { animationIds, elementIds, all }))
+    },
+  }),
+
+  // --- 版式 / 图形 ---
+
+  applyLayout: tool({
+    description: `按语义版式重排一整页 —— **做新页面的首选做法**。你给版式名和内容，坐标、字号、间距、配色、层次、出场动画全部自动算，产出必然对齐、必然符合设计规范。
+
+${describeLayouts()}
+
+注意：会清空该页原有元素重排（版式的价值来自「所有元素同属一套网格」）。要微调请在 applyLayout 之后用 updateElement。
+相邻两页不要用同一个版式 —— lintDeck 会报。`,
+    parameters: z.object({
+      slideId: z.string().describe('幻灯片 ID'),
+      pattern: z.enum(LAYOUT_PATTERNS).describe('版式名'),
+      content: z.object({
+        eyebrow: z.string().optional().describe('标题上方的小标签：章节名/分类/日期。section 版式用它当章节号（如 "03"）'),
+        title: z.string().optional().describe('主标题'),
+        subtitle: z.string().optional().describe('副标题 / 一句话说明'),
+        items: z.array(z.object({
+          label: z.string().optional().describe('时间轴节点的标签，如 "2024" "第一步"'),
+          title: z.string().optional().describe('条目标题'),
+          body: z.string().optional().describe('条目正文，一到两句'),
+        })).optional().describe('并列条目，数量要求见版式说明'),
+        stat: z.object({
+          value: z.string().describe('要放大的数字或短句，如 "87%" "3.2 亿"'),
+          label: z.string().optional().describe('这个数字是什么'),
+          note: z.string().optional().describe('补充说明'),
+        }).optional().describe('stat 版式专用'),
+        quote: z.string().optional().describe('quote 版式专用：引述的那段话'),
+        source: z.string().optional().describe('出处 / 数据来源'),
+      }).describe('版式内容'),
+      animate: z.boolean().optional().describe('是否生成出场动画，默认 true。每个版式的编排各不相同'),
+      primaryColor: z.string().optional().describe('覆盖本页主色，如 #2f6feb'),
+      accentColor: z.string().optional().describe('覆盖本页强调色'),
+      backgroundColor: z.string().optional().describe('覆盖本页背景色'),
+    }),
+    execute: async ({ slideId, pattern, content, animate, primaryColor, accentColor, backgroundColor }) => {
+      const state = accessor.get()
+      const paletteOverride = {
+        ...(primaryColor ? { primary: primaryColor } : {}),
+        ...(accentColor ? { accent: accentColor } : {}),
+        ...(backgroundColor ? { background: backgroundColor } : {}),
+      }
+      return applyMutation(accessor, applyLayoutToSlide(
+        state.slides, slideId, state.theme, pattern, content,
+        { animate, paletteOverride: Object.keys(paletteOverride).length ? paletteOverride : undefined },
+      ))
+    },
+  }),
+
+  addShape: tool({
+    description: `添加一个形状。**按名字选，不要写 SVG path** —— 路径由形状库生成。
+
+${describeShapeCatalog()}
+
+高频用法：bar 做标题下划条 / 分隔线，roundRect 做卡片底板，pill 做标签，chevron 排流程，ellipse 做序号圆点，donut 做进度环。
+纯文字的页面几乎一定不好看 —— 每页至少放一个形状。`,
+    parameters: z.object({
+      slideId: z.string().describe('幻灯片 ID'),
+      shape: z.enum(SHAPE_CATALOG_KEYS).describe('形状名'),
+      left: z.number().describe('左边距'),
+      top: z.number().describe('上边距'),
+      width: z.number().positive().describe('宽'),
+      height: z.number().positive().describe('高'),
+      fill: z.string().describe('填充色 hex，如 #2f6feb。用 getDesignTokens 拿主色/强调色'),
+      opacity: z.number().min(0).max(1).optional().describe('不透明度。装饰性色块建议 0.1~0.2'),
+      rotate: z.number().optional().describe('旋转角度'),
+      outlineColor: z.string().optional().describe('描边色'),
+      outlineWidth: z.number().optional().describe('描边宽度，默认 1'),
+      shadow: z.boolean().optional().describe('加投影。卡片底板建议开'),
+      text: z.string().optional().describe('形状内文字（纯文本，会自动居中）'),
+      textColor: z.string().optional().describe('形状内文字颜色'),
+      textSize: z.number().optional().describe('形状内文字字号'),
+      name: z.string().optional().describe('元素名，方便后续引用'),
+    }),
+    execute: async ({ slideId, ...spec }) => {
+      const state = accessor.get()
+      return applyMutation(accessor, applyAddShape(state.slides, slideId, spec))
+    },
+  }),
+
+  addChart: tool({
+    description: '添加图表。有数字就画图表，别用文字罗列数字 —— 这是提升信息密度最直接的一招。series 的条数要等于 legends 的条数，每条 series 的点数要等于 labels 的个数',
+    parameters: z.object({
+      slideId: z.string().describe('幻灯片 ID'),
+      chartType: z.enum(CHART_TYPES).describe('bar=柱状 / column=条形(横) / line=折线 / area=面积 / pie=饼 / ring=环 / radar=雷达 / scatter=散点'),
+      left: z.number().describe('左边距'),
+      top: z.number().describe('上边距'),
+      width: z.number().positive().describe('宽，建议 ≥ 360'),
+      height: z.number().positive().describe('高，建议 ≥ 240'),
+      labels: z.array(z.string()).min(1).describe('横轴分类，如 ["2021","2022","2023"]'),
+      legends: z.array(z.string()).min(1).describe('系列名，如 ["营收","利润"]'),
+      series: z.array(z.array(z.number())).min(1).describe('每个系列一组数，长度必须等于 labels 长度'),
+      themeColors: z.array(z.string()).optional().describe('系列配色，不传则用主题的主色+强调色'),
+      stack: z.boolean().optional().describe('堆叠（bar/column）'),
+      lineSmooth: z.boolean().optional().describe('平滑曲线（line）'),
+      name: z.string().optional(),
+    }),
+    execute: async ({ slideId, ...spec }) => {
+      const state = accessor.get()
+      return applyMutation(accessor, applyAddChart(state.slides, slideId, state.theme, spec))
+    },
+  }),
+
+  addTable: tool({
+    description: '添加表格。适合规格对比、参数清单这类结构化数据。rows 是二维字符串数组，每行列数必须一致',
+    parameters: z.object({
+      slideId: z.string().describe('幻灯片 ID'),
+      left: z.number().describe('左边距'),
+      top: z.number().describe('上边距'),
+      width: z.number().positive().describe('总宽'),
+      rows: z.array(z.array(z.string())).min(1).describe('二维数据，首行默认是表头'),
+      header: z.boolean().optional().describe('首行是否为表头，默认 true'),
+      colWidths: z.array(z.number()).optional().describe('各列宽度权重，会自动归一化。不传则等宽'),
+      rowHeight: z.number().optional().describe('行高，默认 40'),
+      themeColor: z.string().optional().describe('表头底色，默认用主题主色'),
+      name: z.string().optional(),
+    }),
+    execute: async ({ slideId, ...spec }) => {
+      const state = accessor.get()
+      return applyMutation(accessor, applyAddTable(state.slides, slideId, state.theme, spec))
+    },
+  }),
+
+  addLine: tool({
+    description: '添加线条。做分隔线、连接线、指向箭头。end 是相对起点的偏移量：水平线用 [长度, 0]，垂直线用 [0, 长度]',
+    parameters: z.object({
+      slideId: z.string().describe('幻灯片 ID'),
+      left: z.number().describe('起点 x'),
+      top: z.number().describe('起点 y'),
+      end: z.tuple([z.number(), z.number()]).describe('终点相对起点的偏移，如 [800, 0] 是一条 800 长的水平线'),
+      color: z.string().describe('颜色 hex'),
+      style: z.enum(['solid', 'dashed', 'dotted']).optional().describe('线型，默认 solid'),
+      width: z.number().optional().describe('线宽，默认 2'),
+      startPoint: z.enum(['', 'arrow', 'dot']).optional().describe('起点样式'),
+      endPoint: z.enum(['', 'arrow', 'dot']).optional().describe('终点样式，指向关系用 arrow'),
+      name: z.string().optional(),
+    }),
+    execute: async ({ slideId, ...spec }) => {
+      const state = accessor.get()
+      return applyMutation(accessor, applyAddLine(state.slides, slideId, spec))
+    },
+  }),
+
+  arrangeElements: tool({
+    description: '对齐 / 等距分布一组元素。手填的坐标差几像素肉眼看不出差在哪，只会觉得这页「有点脏」—— 摆完一组并列元素就调一次这个',
+    parameters: z.object({
+      elementIds: z.array(z.string()).min(2).describe('要排列的元素 ID，必须在同一页'),
+      align: z.enum(['left', 'right', 'hcenter', 'top', 'bottom', 'vcenter']).optional()
+        .describe('对齐方式：left/right/hcenter 管水平，top/bottom/vcenter 管垂直'),
+      distribute: z.enum(['horizontal', 'vertical']).optional()
+        .describe('等距分布方向。不传 gap 时保持首尾不动、中间均分'),
+      gap: z.number().optional().describe('固定间距（配合 distribute）。首元素不动，其余按此间距排开'),
+    }),
+    execute: async ({ elementIds, align, distribute, gap }) => {
+      const state = accessor.get()
+      return applyMutation(accessor, applyArrangeElements(state.slides, elementIds, { align, distribute, gap }))
+    },
+  }),
+
+  setSlideTransition: tool({
+    description: '设置翻页转场。整份文稿建议只用一到两种（统一节奏），章节转场页可以用不一样的强调切换。全部会写进 PPTX 的 <p:transition>，导出后照样播',
+    parameters: z.object({
+      slideId: z.string().describe('幻灯片 ID'),
+      turningMode: z.enum(TURNING_MODES as [string, ...string[]]).describe(
+        'no=无 / fade=淡入淡出（最稳妥）/ slideX=左右推移 / slideY=上下推移 / scale=放大 / scaleReverse=缩小 / scaleX=左右展开 / scaleY=上下展开 / rotate=旋转 / random=随机。slideX3D / slideY3D 导出时会降级成普通推移',
+      ),
+    }),
+    execute: async ({ slideId, turningMode }) => {
+      const state = accessor.get()
+      return applyMutation(accessor, applySetSlideTransition(state.slides, slideId, turningMode))
     },
   }),
 

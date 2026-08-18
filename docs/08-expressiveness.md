@@ -2,7 +2,15 @@
 
 **问题**：agent 产出的 PPT 和动画「太没有新意」。
 
-这不是玄学，有五个可指认的技术原因。本文是诊断 + 规划，执行交给后续会话。
+这不是玄学，有五个可指认的技术原因。本文是诊断 + 规划。
+
+> **执行状态（2026-08-18）**：A / B / C 三条线**已完成**，落成 R-25 ~ R-35。
+> 实施记录见 [04-changes.md](./04-changes.md#2026-08-18-第六轮表现力升级a--b--c-三条线)。
+> 只有 ① 图片能力按决策 P1 推迟（接口已定义在 `server/src/agent/assets.ts`）。
+> 第四节验收标准的前三条已落成 `lintDeckDesign`，第四条的人工验证手册见
+> [09-powerpoint-verify.md](./09-powerpoint-verify.md)。
+>
+> 执行过程中与本文规划有出入的地方，见文末「九 · 执行回顾」。
 
 前置阅读：[04-changes.md](./04-changes.md)（改动清单）· [05-pptx-export.md](./05-pptx-export.md)（导出方案）· [03-architecture.md](./03-architecture.md) 第六节（动画决策）
 
@@ -161,3 +169,54 @@ plan_asset({ kind: 'image' | 'icon', prompt, targetBox: {width, height},
 - **收紧的校验闸门会挡住新元素类型** —— `server/src/agent/kernel.ts` 的 `PASSTHROUGH_ELEMENT_TYPES` 目前只对 chart / table 做基础几何校验。B3 / B4 落地时要补严格 schema，否则等于开了后门
 - **工具数量膨胀** —— 现 15 个，B 线做完约 23 个。每个工具的 description 都占 system prompt，工具越多模型选择越容易犯迷糊。C6 重写描述时要连带考虑「哪些工具该合并」
 - **步数预算** —— Generator 现在 48 步。版式变复杂、元素变多之后要重新评估
+
+## 九 · 执行回顾
+
+三条线都做了，但有四处和规划不一样，记下来免得下次照着旧规划找。
+
+### ① 扩容的入口不是「多凑几个 presetId」，是滤镜词表
+
+规划里 A2 写的是「扩 presetId：现只有 5 个，用起已实现的 animRot / presetSubtype」。
+实际做下来，`animRot` / `presetSubtype` 只够再挤出两三个效果（陀螺旋转、闪烁），
+**真正的量在 `<p:animEffect filter="...">`** —— 那是一张有 13 个滤镜名、共 30 多种组合的现成词表，
+每一个都是 PowerPoint 原生。25 → 45 里有 14 个是从这张表来的。
+
+所以 `effectFilter` 不只是「从 `'wipe'` 泛化成联合类型」，而是把整张词表建模成
+`{ name, subtype }` 的绑定类型 —— `{ name: 'wipe', subtype: 'across' }` 这种组合在编译期就被拒。
+
+### ② 顺手修了四处从未被验证过的结构问题
+
+第五节的风险写的是「如果 `<p:timing>` 的基础结构有问题，错误会被放大数倍」。
+读代码时确认了**基础结构确实有问题**，而且是四处：三层 par 塌成两层、退场 visibility 时机、
+强调回弹嵌了第二条 mainSeq、`wipe` 的 presetId 指向 Checkerboard。
+
+这些不修的话，扩容确实会把错误放大 —— 但反过来说，正因为要扩容才去逐行读了 writer，
+才发现这些问题。缓解措施（每类一份最小样本）照做了，见 `samples/animations/`。
+
+### ③ 转场的 ground truth 不用手工做，仓库里就有
+
+第五节说反解 `<p:timing>` / `<p:transition>` 需要「在 PowerPoint 里手工做一份」。
+实际上 `refs/PPTAgent/pptagent/templates/default/source.pptx` 就是 PowerPoint 亲手写的，
+13 页全带 `<p:transition>`，解包即可读到确切写法和插入位置。
+
+`<p:timing>` 那边没这运气 —— 扫遍 refs 里所有 pptx，`p:animEffect` 计数为 0，
+所以动画树只能按 ECMA-376 推，人工验证仍然必要。
+
+### ④ 「没新意」的根因收敛成了一句话
+
+诊断列了五条，但做完发现 ②③④ 是同一件事的三个切面：
+**模型被要求做的决策本身就不该由它做。**
+
+坐标、字号、间距、配色、SVG path、动画时间线 —— 交给模型，它只能靠 prompt 里的示例发挥，
+而示例只有一份，于是每次产出都长得像那一份。C1 写的是「删掉三条『别用 shape』，换成形状库 + 版式词汇」，
+但只换指引是不够的 —— 换成三条鼓励，模型照抄的就是新那三条。
+
+真正起作用的是把决策挪进代码：`applyLayout` 管版面，`addShape` 管路径，版式自带动画编排。
+prompt 只剩下「什么时候用哪个」和「不许做什么」。
+
+### 没做的
+
+- **图片 / 图标**（诊断 ①，决策 P1 推迟）。接口定义在 `server/src/agent/assets.ts`，**刻意不注册给 LLM**
+- **`configs/shapes.ts` 里 51 个图标字形**没起名字 —— 1024 viewBox 的复杂路径，光看 path 没法可靠命名，猜错比没有更糟
+- **工具合并**（C6 提到的「哪些工具该合并」）。15 → 23 个，逐个看都有独立职责，暂时没合。
+  真正的降载来自角色分工：Planner / Reviewer 只拿 5 个只读工具
