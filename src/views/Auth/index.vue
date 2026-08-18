@@ -77,7 +77,7 @@ const handleSubmit = async () => {
     emit('success')
   }
   catch (err: any) {
-    errorMsg.value = err?.response?.data?.error || err?.message || '操作失败'
+    errorMsg.value = err?.message || err?.data?.error || '操作失败'
   }
   finally {
     loading.value = false
