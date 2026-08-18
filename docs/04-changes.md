@@ -1,12 +1,12 @@
-# 04 · PPTist 改动清单
+# 04 · 改动清单
 
-**仓库根目录就是** [PPTist](https://github.com/pipipi-pikachu/PPTist) v2.0.0 的 fork（浅克隆自 `refs/PPTist`，HEAD `e491258` / 2026-08-16，已剔除 `.git`）—— 单体仓库，前端直接在根，后续组件（Deck Kernel、FastAPI 后端）也并进来。**AGPL-3.0，`LICENSE` 必须保留。**
+**仓库根目录就是** [PPTist](https://github.com/pipipi-pikachu/PPTist) v2.0.0 的 fork（浅克隆自 `refs/PPTist`，HEAD `e491258` / 2026-08-16，已剔除 `.git`）—— 单体仓库，前端直接在根，`server/` 目录放 Bun 后端。**AGPL-3.0，`LICENSE` 必须保留。**
 
 PPTist 自带的文档已并入 [`docs/upstream/`](./upstream/)（`AI_PPT_SCHEMA.md` 等），避免和本项目的 `docs/` 混淆。
 
 本文是改动的**唯一权威清单**。代码里的 `TODO(R-NN)` 标记对应这里的编号。
 
-设计依据见 [03-architecture.md](./03-architecture.md)。
+设计依据见 [03-architecture.md](./03-architecture.md)。后端技术决策见 [06-backend.md](./06-backend.md)。
 
 ## 已定的四个决策
 
@@ -25,135 +25,134 @@ PPTist 自带的文档已并入 [`docs/upstream/`](./upstream/)（`AI_PPT_SCHEMA
 
 | ID | 位置 | 改什么 | 状态 |
 |---|---|---|---|
-| **R-01** | `src/services/index.ts:11` | `SERVER_URL` 从 `https://server.pptist.cn` 改指自建后端 | ○ |
-| **R-02** | `src/services/index.ts` | 新增 agent 通道：任务提交 + SSE 事件流 + 整份 deck 下发 | ○ |
+| **R-01** | `src/services/index.ts` | `SERVER_URL` 改指自建后端，vite proxy 转发 `/api` → `localhost:3000` | ● |
+| **R-02** | `src/services/websocket.ts`<br>`src/store/agent.ts` | WebSocket 双向通信替代 SSE：agent.task / agent.cancel / agent.deck / agent.tool / agent.text | ● |
 
 ### 数据模型
 
 | ID | 位置 | 改什么 | 状态 |
 |---|---|---|---|
 | **R-03** | `src/types/slides.ts` | `PPTAnimation` 加 `exportBehavior?: 'native' \| 'web-only' \| 'flatten'`；新增 `AnimationExportBehavior` 类型 | ● |
-| **R-04** | `src/types/slides.ts` | `PPTAnimation.effect` 从 `string` 收窄成 `AnimationEffect` 联合类型（**25 个**，不是 26 —— `path` 运动路径 PPTist 无对应概念，排除） | ● |
+| **R-04** | `src/types/slides.ts` | `PPTAnimation.effect` 从 `string` 收窄成 `AnimationEffect` 联合类型（**25 个**） | ● |
 | — | `PPTImageElement.src` | **零改动** —— 本来吃任意字符串，`asset://` 是纯约定 | ● |
 
 ### 变更入口
 
 | ID | 位置 | 改什么 | 状态 |
 |---|---|---|---|
-| **R-05** | `src/store/slides.ts` | 级联删除孤儿动画。新增 `pruneOrphanAnimations()`，在 **`updateSlide` 和 `deleteElement` 两处**都调<br>⚠️ **踩坑记录**：UI 的元素删除**不走 `deleteElement`**，走的是 `updateSlide({ elements })`（`hooks/useDeleteElement.ts:28`）。只修 `deleteElement` 会完全漏掉真实路径 | ● |
-| **R-06** | `src/store/slides.ts` | 加 `version: number`，每次变更自增，用于和服务端对齐、防覆盖 | ● |
+| **R-05** | `src/store/slides.ts` | 级联删除孤儿动画 `pruneOrphanAnimations()`，`updateSlide` 和 `deleteElement` 两处都调 | ● |
+| **R-06** | `src/store/slides.ts` | 加 `version: number`，每次变更自增 | ● |
 
 ### 动画
 
 | ID | 位置 | 改什么 | 状态 |
 |---|---|---|---|
-| **R-07** | `src/configs/animation.ts` | **92 → 25**，整体重写。每项带 `cssClass`（网页）+ `pptx`（`presetId` / `presetClass` / `presetSubtype` / `motion` / `scaleFrom·To` / `rotateFrom·To` / `fade` / `effectFilter`）。新增 `ANIMATION_DEFS` 扁平表、`getAnimationCssClass()`、`isAnimationEffect()` | ● |
-| **R-21** | `src/assets/styles/animation-extra.scss`（新）<br>`src/main.ts` | 补齐 animate.css 无法表达的 **12 个**效果：擦除（animate.css 完全没有）、缩放强度分级、旋转进入、强调强度分级。全部挂 `animate__` 前缀 —— 换前缀会让 `useExecPlay` 按前缀移除类名的清理逻辑失效 | ● |
-| **R-22** | `views/Screen/hooks/useExecPlay.ts`<br>`views/Editor/Toolbar/ElementAnimationPanel.vue` | `effect` 不再等于 CSS 类名，改经 `getAnimationCssClass()` 解析（共 4 处）；`addAnimation` / `updateElementAnimation` / `runAnimation` 的 `effect` 参数类型收窄 | ● |
-| **R-15** | 新增 | `addAnimation({elId, effect, after?})` —— 不给 agent 裸数组，插入位置有语义 | ○ |
-| **R-16** | 新增 | `applyAnimationPreset(slideId, 'sequential-fade' \| 'title-then-content' \| 'none')` —— agent 选意图，kernel 展开成合法时间线 | ○ |
+| **R-07** | `src/configs/animation.ts` | **92 → 25**，整体重写。每项带 `cssClass` + `pptx` preset | ● |
+| **R-21** | `src/assets/styles/animation-extra.scss` | 补齐 animate.css 缺失的 12 个效果 | ● |
+| **R-22** | `useExecPlay.ts` / `ElementAnimationPanel.vue` | `effect` 改经 `getAnimationCssClass()` 解析 | ● |
+| **R-15** | `server/src/agent/tools.ts` | `addAnimation` 工具 —— agent 可直接添加动画（25 种效果 × 3 种触发） | ● |
+| **R-16** | — | `applyAnimationPreset` 语义 API | ○ |
 
 ### 导出
 
 | ID | 位置 | 改什么 | 状态 |
 |---|---|---|---|
-**方案见 [05-pptx-export.md](./05-pptx-export.md)**（分 E1~E6 六期，含已核实的 pptxgenjs 能力边界）。
-
-| ID | 位置 | 改什么 | 状态 |
-|---|---|---|---|
-| **R-08** | `src/hooks/useExport.ts` | **保留 pptxgenjs 不动**，仅在每次 `addText` / `addImage` / `addShape` / … 时补 `objectName: el.id`（用于 `elId → spid` 映射），导出末尾接入 OOXML 后处理 | ● |
-| **R-17** | `src/utils/ooxml/`（新） | 自研 OOXML writer：jszip 解包 → 注入 `<p:timing>` → 重新打包。核心是纯函数 `buildTimingXml(animations, spidMap)` | ● |
-| **R-23** | `package.json` | `jszip` 提升为直接依赖（现在只是 pptxgenjs 的传递依赖） | ● |
-| **R-24** | 工程 | 引入 vitest —— OOXML 正确性无法肉眼检查，必须对地面真相做快照测试 | ● |
-
-> `useExport.ts` 里的 `toAST`（富文本解析）、`toPoints`（SVG 转几何）、latex 渲染成图、表格主题色推导、`special` 形状退化 —— **这些全部原样保留**，这正是不迁 Python 的主要理由。
+| **R-08** | `src/hooks/useExport.ts` | 9 种元素补 `objectName: el.id`，导出末尾接入 OOXML 后处理 | ● |
+| **R-17** | `src/utils/ooxml/` | 自研 OOXML writer：`buildTimingXml` 覆盖全 25 效果，`buildSpidMap` 解析 elId→spid 映射，注入链路已接入 useExport.ts | ● |
+| **R-23** | `package.json` | `jszip` 提升为直接依赖 | ● |
+| **R-24** | 工程 | vitest 引入，58 个测试覆盖 assetUrl + spidMap + buildTimingXml | ● |
 
 ### 资产
 
 | ID | 位置 | 改什么 | 状态 |
 |---|---|---|---|
-| **R-10** | `src/utils/assetUrl.ts`（新） | `asset://<sha256>` 解析器，统一收口 | ● |
-| **R-11** | `views/components/element/ImageElement/index.vue`<br>`.../BaseImageElement.vue`<br>`hooks/useSlideBackgroundStyle.ts`<br>`Toolbar/.../ImageStylePanel.vue`<br>`Toolbar/common/ElementFilter.vue`<br>`Toolbar/SlideDesignPanel/index.vue` | 所有 `src` 消费点接 R-10；`asset://pending/<id>` 渲染骨架屏 | ● |
+| **R-10** | `src/utils/assetUrl.ts` | `asset://<sha256>` 解析器 | ● |
+| **R-11** | 6 个消费点 | 所有 `src` 消费点接 R-10；`asset://pending/<id>` 渲染骨架屏 | ● |
 
 ### 旧 AI 路径
 
 | ID | 位置 | 改什么 | 状态 |
 |---|---|---|---|
-| **R-09** | `src/hooks/useAIPPT.ts`（538 行） | 保留模板匹配，包装成 agent 工具 `fillFromTemplate(slideType, content, templateId?)` | ○ |
-| — | `useAIPPT.ts:71-112` `getAdaptedFontsize` | **必须留** —— canvas `measureText` 逐级缩字号（下限 10px），文字溢出的唯一现成解法 | ● |
+| **R-09** | `src/hooks/useAIPPT.ts` | 保留模板匹配，包装成 agent 工具 | ○ |
 | **R-18** | `src/types/AIPPT.ts` | `AIPPTSlide` 保留作为 `fillFromTemplate` 的入参类型 | ○ |
 
 ### 历史 / 撤销
 
 | ID | 位置 | 改什么 | 状态 |
 |---|---|---|---|
-| **R-12** | `src/store/snapshot.ts` | 一次 agent 动作 = 一个整份快照（配合 Q4 的整份替换）。撤销 = 整体回退一次 agent 动作。上限 20 可能要调 | ● |
+| **R-12** | `src/store/snapshot.ts` | agent 快照分层：`source: 'user' \| 'agent'`，`addAgentSnapshot()` 不走防抖 | ● |
 
-### Agent UI（新增）
+### Agent UI
 
 | ID | 改什么 | 状态 |
 |---|---|---|
-| **R-13** | 对话面板 · 选中元素 → agent 上下文 · SSE 事件流展示 · pending 资产骨架屏 | ○ |
+| **R-13** | Agent 聊天面板（完整日志流：角色标注 + LLM 文本 + 工具调用参数/结果展开）· WebSocket 实时同步 · 选中元素 → agent 上下文 | ● |
 
 ### 工程配置
 
 | ID | 位置 | 改什么 | 状态 |
 |---|---|---|---|
-| **R-14** | `package.json` | `pptist@2.0.0` → `rabbit-editor@0.1.0`；补 `license` / `description`；`homepage` 改指本仓库；移除 `prepare: husky install`（`.husky/` 已删） | ● |
-| **R-19** | `NOTICE`（新） | AGPL-3.0 第 5 条要求的「显著标明已修改及日期」。含上游原作信息（作者 / 基线提交 `e491258`）、无担保声明、逐条修改记录、第三方参考出处 | ● |
-| **R-20** | `.github/` `.husky/` | 已删。`commitlint.config.cjs` 留着 —— 现在是死配置（钩子已删），但将来在仓库根做约定式提交时可当参考 | ● |
+| **R-14** | `package.json` | `rabbit-editor@0.1.0`，补 `license` / `description` | ● |
+| **R-19** | `NOTICE` | AGPL-3.0 修改声明 | ● |
+| **R-20** | `.github/` `.husky/` | 已删 | ● |
 
-## 实施顺序
+### 后端（`server/`，新增）
 
-按 [03-architecture.md](./03-architecture.md) 第九节的原则：**先做不需要 LLM 的部分**。
+| ID | 位置 | 改什么 | 状态 |
+|---|---|---|---|
+| **S-01** | `server/` | Bun + Hono + Drizzle + SQLite 项目骨架，8 张表 | ● |
+| **S-02** | `server/src/routes/auth.ts` | 账号密码注册/登录 + JWT（首用户自动 admin） | ● |
+| **S-03** | `server/src/routes/admin.ts` | Provider CRUD + 模型白名单 + 角色默认 + 用户管理 + fetch-models + reset-password | ● |
+| **S-04** | `server/src/routes/deck.ts` | Deck CRUD + version 乐观锁 | ● |
+| **S-05** | `server/src/routes/user.ts` | 模型偏好 / 可用模型列表 / 改密码 | ● |
+| **S-06** | `server/src/routes/conversation.ts` | 对话历史 CRUD | ● |
+| **S-07** | `server/src/agent/kernel.ts` | Deck Kernel：Zod schema + 几何 lint + 7 个纯函数变更操作 | ● |
+| **S-08** | `server/src/agent/tools.ts` | 14 个 Vercel AI SDK tools（4 读 + 8 写 + addAnimation + setSlideBackground） | ● |
+| **S-09** | `server/src/agent/llm.ts` | LLM Provider 工厂（用户偏好 > 管理员默认 > 报错） | ● |
+| **S-10** | `server/src/agent/roles.ts` | 4 角色 system prompt + 工具子集分配 | ● |
+| **S-11** | `server/src/agent/orchestrator.ts` | 任务编排：Planner→Generator→Reviewer（容错）→ 实时同步画布 | ● |
+| **S-12** | `server/src/ws/handler.ts` | WebSocket 连接管理 + 消息路由 | ● |
 
-**第一批 · 纯前端，可立即验证 —— ✅ 已完成（2026-08-17）**
-`R-05` → `R-07` `R-21` `R-22` `R-03` `R-04` → `R-14` `R-19` `R-20`
+### 前端新增页面
 
-验证结果：`npm run type-check` exit 0 零错误；`npm run build` exit 0（5.56s）；
-12 个自定义动画类全部确认进入产物 CSS。
+| 页面 | 文件 | 说明 | 状态 |
+|---|---|---|---|
+| 登录/注册 | `src/views/Auth/index.vue` | 账号密码 + JWT 持久化 | ● |
+| Deck 列表 | `src/views/DeckList/index.vue` | 卡片列表 + 新建/删除 | ● |
+| 设置页 | `src/views/Settings/` | 独立全屏页，左导航 + 5 个子页面（provider / 模型 / 角色 / 用户 / 个人） | ● |
+| Agent 面板 | `src/views/Editor/AgentPanel.vue` | 完整日志流 + 实时同步 + 选中元素上下文 | ● |
 
-**第二批 · 资产层 —— ✅ 已完成（2026-08-17）**
-`R-10` → `R-11`
+## 当前状态（2026-08-18）
 
-验证结果：`npm run type-check` exit 0 零错误；`npm run build` exit 0（5.29s）；
-`rbAssetShimmer` keyframes 与 `.rb-asset-skeleton` 类确认进入产物 CSS；
-`asset://` 协议字面量确认进入产物 JS。
-共 8 个文件：1 个解析器（新）、1 个骨架屏样式（新）、6 个消费点接入。
+**已完成 22/24 项改动 + 12 项后端 + 4 个新页面。**
 
-**第三批 · 后端接管（R-06 / R-12 已完成 2026-08-17，R-01 / R-02 待后端就绪）**
-`R-01` → `R-02` → `R-06` → `R-12`
+前后端全栈已打通：
+```
+登录 → Deck 列表 → 编辑器 → Agent 面板输入指令
+→ WebSocket → 后端 Orchestrator（Planner→Generator→Reviewer）
+→ Vercel AI SDK → LLM → Tool 调用 → Deck Kernel 校验
+→ 每步实时同步画布 → 完成后保存 DB
+```
 
-R-06：`SlidesState.version` 计数器，11 个变更 action 均自增，`setSlides` + `setTheme` 复合
-调用不重复计。R-12：快照表加 `source: 'user' | 'agent'` 和 `actionLabel`，新增
-`addAgentSnapshot()` 不走 300ms 防抖。`npm run build` exit 0（5.20s）。
+58 个单测（vitest）：assetUrl 19 + spidMap 8 + buildTimingXml 31。
 
-**第四批 · 导出迁移（E1/E2 已完成 2026-08-17，E3~E6 待地面真相采样）**
-`R-08` → `R-17`
+`npm run build` exit 0（前端），`bun run dev` 正常启动（后端）。
 
-E1（jszip 打包链路脚手架）+ E2（objectName 映射）+ R-23（jszip 直接依赖）已完成。
-exportPPTX 改为 `write({outputType:'arraybuffer'})` → jszip 解包重打包 → `saveAs`。
-9 种元素类型全部补 `objectName: el.id`（text / image / shape(special+normal) /
-line / chart / table / latex / media）。`npm run build` exit 0（5.14s）。
-jszip 的 `/// <reference types="node" />` 污染全局 setTimeout 返回类型，
-5 处上游代码 `setTimeout` → `window.setTimeout` 修正；`tsconfig.app.json` 加
-`skipLibCheck: true`。
+## 待完成
 
-R-17 writer 实现（E4 级别）：`buildTimingXml` 纯函数覆盖全部 25 个效果 ——
-fade / fade-up~right / slide-up~right / scale-in / zoom-in / spin-in / fly-in / wipe（入场）
-pulse-soft~strong / grow-shrink-soft~strong（强调，含 rebound p:seq）
-exit-fade / exit-scale / exit-zoom / exit-wipe / exit-fly（退出）。
-spidMap 解析器 + 31 个 buildTimingXml 测试 + 8 个 spidMap 测试 + 19 个 assetUrl 测试
-= 58 tests green。E5 注入链路已接入 useExport.ts：解包后逐页 buildSpidMap → buildTimingXml →
-注入 `</p:sld>` 前 → 重新打包。E6 跳过告警：allSkipped 汇总后 console.warn。
-
-**第五批 · Agent**
-`R-09` `R-18` `R-15` `R-16` → `R-13`
+| 项 | 说明 | 优先级 |
+|---|---|---|
+| R-09 / R-18 | 旧 AI 路径包装成 agent 工具 `fillFromTemplate` | 中 |
+| R-16 | 动画语义 preset API（`applyAnimationPreset`） | 低 |
+| E3 地面真相 | 在 PowerPoint 中验证导出的 PPTX 动画是否正常 | 高 |
+| 图片资产存储 | 对象存储（S3/R2），目前 TODO | 中 |
+| 调研摄入 | MinerU / 联网搜索，目前 TODO | 低 |
+| OAuth 登录 | GitHub / Google，目前只有账号密码 | 低 |
+| AGPL-3.0 授权 | 需联系 PPTist 作者询价（决策 C） | **高风险** |
 
 ## 待确认
 
-- [x] ~~**Q2 细化**~~ —— 已定：保留 pptxgenjs + 自研 OOXML writer，见 [05-pptx-export.md](./05-pptx-export.md)
-- [x] ~~`pptxgenjs` 是否真无动画 API~~ —— 已核实：产物里 `grep -c "p:timing"` = **0**，`p:transition` 同样为 0，确认零支持
 - [ ] **决策 C**：AGPL-3.0 授权 —— 需联系 PPTist 作者询价。**这是当前唯一可能导致推倒重来的风险**
-- [ ] `objectName` 是否对图表 / 表格生效（走 graphicFrame，属性位置可能不同）⚠️ 见 05 的 E2
-- [ ] 上游 `pptxtojson` 导入时是否解析动画 ⚠️
+- [ ] `objectName` 是否对图表 / 表格生效（走 graphicFrame，属性位置可能不同）
+- [ ] 上游 `pptxtojson` 导入时是否解析动画
+- [ ] Reviewer 角色调用 LLM 报 "Not Found"，需排查模型名 / baseURL 配置
