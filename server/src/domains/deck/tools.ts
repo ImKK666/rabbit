@@ -355,6 +355,11 @@ ${describeLayouts()}
         }).optional().describe('stat 版式专用'),
         quote: z.string().optional().describe('quote 版式专用：引述的那段话'),
         source: z.string().optional().describe('出处 / 数据来源'),
+        image: z.object({
+          src: z.string().describe('必须是 searchImage / generateImage 返回的 asset:// 地址，不能填图库网址'),
+          width: z.number().optional().describe('图片真实宽度，把工具返回值原样抄进来'),
+          height: z.number().optional().describe('图片真实高度，把工具返回值原样抄进来'),
+        }).optional().describe('本页配图。只有标了「可配图」的版式吃它，摆放位置/裁剪/遮罩全部自动算'),
       }).describe('版式内容'),
       animate: z.boolean().optional().describe('是否生成出场动画，默认 true。每个版式的编排各不相同'),
       primaryColor: z.string().optional().describe('覆盖本页主色，如 #2f6feb'),

@@ -123,6 +123,31 @@ const saveMessage = async (
 }
 
 /**
+ * 收尾动作的统一包装：**失败只记日志，绝不向上抛**。
+ *
+ * 这条是实测撞出来的。任务跑着的时候演示文稿被删掉（另一个标签页、
+ * 别的客户端），catch 分支里那句 `saveMessage` 会撞
+ * `FOREIGN KEY constraint failed` —— 而它在 **catch 里**，再抛就没人接了：
+ * `runAgentTask` 是 fire-and-forget 调的（`ws/handler.ts`），
+ * 未捕获的 rejection 直接把**整个后端进程**带走，所有用户的所有任务一起死。
+ *
+ * 触发面不止「删 deck」：磁盘满、库锁超时，任何让写库失败的东西都算。
+ *
+ * **只有收尾动作能这么吞。** 主路径上的写库失败必须往上抛
+ * （见 `runtime/commit.ts` ③：吞掉的话工具会回一句 ok，
+ * agent 不会重试，那次修改从此谁也不知道丢了）。收尾不一样 ——
+ * 它记的是日志和时间戳，丢了不影响任何人手里的数据。
+ */
+const settle = async (what: string, run: () => Promise<unknown>) => {
+  try {
+    await run()
+  }
+  catch (err) {
+    console.error(`[agent] 收尾动作「${what}」失败（已忽略，不影响任务结果）:`, err)
+  }
+}
+
+/**
  * 定位本次任务写进哪条会话。
  *
  * 前端带 conversationId → 续那条（记忆也从那条载入）
@@ -565,7 +590,8 @@ export const runDeckTask = async ({
       catch (reviewErr) {
         const msg = reviewErr instanceof Error ? reviewErr.message : '审查阶段出错'
         channel.emit({ type: 'agent.text', role: 'reviewer', content: `⚠ 审查跳过: ${msg}` })
-        await saveMessage(conv.id, 'system', `Reviewer 跳过: ${msg}`)
+        // 同上：这也是错误处理路径，再抛一次就逃到没人接的地方去了
+        await settle('落库审查跳过', () => saveMessage(conv.id, 'system', `Reviewer 跳过: ${msg}`))
       }
     }
 
@@ -586,15 +612,18 @@ export const runDeckTask = async ({
       const msg = err instanceof Error ? err.message : '未知错误'
       channel.emit({ type: 'agent.status', status: 'error', message: msg })
     }
-    await saveMessage(conv.id, 'system', `错误: ${err instanceof Error ? err.message : '未知错误'}`)
+    // 已经在处理一个错误了，这里再抛第二个就没人接得住 —— 见 settle
+    await settle('落库错误消息', () =>
+      saveMessage(conv.id, 'system', `错误: ${err instanceof Error ? err.message : '未知错误'}`))
   }
   finally {
     // 排队中的提交必须全部落地才算收尾 —— 否则「任务结束了」和
-    // 「库里是最终态」之间还留着一个窗口，而那正是这一轮要关掉的东西
-    await channel.drain()
+    // 「库里是最终态」之间还留着一个窗口，而那正是这一轮要关掉的东西。
+    // drain 自己承诺永不 reject，但包一层是为了将来换实现时这条不会悄悄破
+    await settle('排干在途提交', () => channel.drain())
 
     // 无论成败都刷新时间戳，会话列表按「最近活动」排序才准
-    await touchConversation(conv.id)
+    await settle('刷新会话时间戳', () => touchConversation(conv.id))
 
     const { delivered, reclaimed, committed } = channel.stats()
     if (reclaimed > 0) {

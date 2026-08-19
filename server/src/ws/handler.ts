@@ -77,7 +77,28 @@ export const handleWsMessage = async (
 
     switch (msg.type) {
       case 'agent.task':
+        /**
+         * **故意不 await**：任务要跑几分钟，等它结束就没法处理这条连接上的
+         * 其它消息了（首先就是 `agent.cancel` —— 取消按钮会彻底失灵）。
+         *
+         * 但不 await 就必须自己接住 rejection。少了这个 `.catch`，
+         * 任务里任何逃出来的异常都是**未捕获的 Promise 拒绝**，
+         * Bun 会直接把整个后端进程杀掉 —— 所有用户的所有任务一起死。
+         * 实测撞到过：任务跑着时演示文稿被删，`pipeline` 的 catch 分支里
+         * 那句落库撞了外键约束，进程当场退出（exit code 1）。
+         *
+         * 剧本内部已经把收尾动作都包了（`pipeline.ts` 的 `settle`），
+         * 这里是**最后一道**：只要还有一条没想到的路径，它兜住。
+         */
         runAgentTask(ws, msg.deckId, msg.prompt, msg.selectedElementIds, msg.conversationId)
+          .catch((err) => {
+            console.error('[ws] agent 任务异常退出:', err)
+            ws.send(JSON.stringify({
+              type: 'agent.status',
+              status: 'error',
+              message: err instanceof Error ? err.message : '任务异常退出',
+            } satisfies ServerMessage))
+          })
         break
 
       case 'agent.cancel': {

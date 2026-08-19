@@ -150,13 +150,14 @@ PPTist 自带的文档已并入 [`docs/upstream/`](./upstream/)（`AI_PPT_SCHEMA
 → 每步实时同步画布 → 完成后保存 DB
 ```
 
-**1087 个单测**（vitest，截至 2026-08-19 第十八轮）：
+**1170 个单测**（vitest，截至 2026-08-19 第十九轮）：
 layouts 224 + buildTimingXml 114 + kernel-elements 106 + shapeCatalog 92 + animation 71 +
-kernel 53 + assetResults 30 + design 30 + rateLimiter 27 + history 26 + imageCodec 25 +
-buildTransitionXml 21 + objectStore 20 + searchCache 20 + assetUrl 19 + reasoning 18 +
-taskRegistry 18 + toolGroups 18 + deckWriter 15 + baseUrl 15 + budget 15 + commit 15 +
-boundary 14 + imageSearch 13 + toolRegistry 11 + animation-reach 11 + channel 10 +
-animationSteps 8 + spidMap 8 + cancellation 8 + toolCommit 7 + events 5。
+layoutImage 69 + kernel 53 + assetResults 30 + design 30 + rateLimiter 27 + history 26 +
+imageCodec 25 + buildTransitionXml 21 + objectStore 20 + searchCache 20 + assetUrl 19 +
+reasoning 18 + taskRegistry 18 + toolGroups 18 + deckWriter 15 + baseUrl 15 + budget 15 +
+commit 15 + useStickToBottom 14 + boundary 14 + imageSearch 13 + toolRegistry 11 +
+animation-reach 11 + channel 10 + animationSteps 8 + spidMap 8 + cancellation 8 +
+toolCommit 7 + events 5。
 
 `npm run build` exit 0（前端），`bunx tsc --noEmit` exit 0（后端），`npx vitest run` 全绿。
 
@@ -1828,6 +1829,189 @@ DOM 上的图已经正常加载，那个探针**仍然报 `/assets`**。
 - 上游实际配额比库里配的紧（实测中转只放 2 次/分钟，库里是 3）。
   代码已经能优雅处理，但**那个数字该由管理员调**，不是代码问题。
 
+### 2026-08-19 第十九轮：让图真的落到页面上，外加三个实测撞出来的 bug（R-48）
+
+上一轮把图片工具接通了，这一轮是**用户实测反馈的一轮** —— 三个问题全是真跑出来的，
+不是读代码推理出来的。
+
+#### ① 图搜到了不用 —— 设计缺口，不是代码 bug
+
+用户跑完一份 26 页的稿子，日志里 `searchImage` × 5、`generateImage` × 2 **全部成功**，
+而 deck 里**图片元素 0 个**。
+
+查出来是两条同时缺：
+
+| | 状态 |
+|---|---|
+| 10 个版式**一个图片位都没有** | `grep image/src layouts.ts` → 0 处。而 `applyLayout` 是**整页替换语义**、是 agent 造页的主力（那一轮调了 14 次） |
+| Generator 的 prompt **一个字没提这两个工具** | `roles.ts` 是 R-33 写的，那时图片工具还不存在 |
+
+所以它拿到 src 之后，在整个工作流里**找不到能把图放进去的地方**，就丢了。
+这是 R-32 那条「注册了不等于用得上」的教科书案例 ——
+上一轮我在「没做的」里写过这条风险，用户第一次实测就撞上了。
+
+**修法按「决策从 prompt 挪进代码」那条红线来**：
+
+- `LayoutContent.image` + `LAYOUT_META[p].image`（`'panel'` / `'backdrop'` / `null`）
+- **7 个版式吃图**：封面两种、章节页、要点列表、单点强调、引用、结尾页
+- **cards / compare / timeline 刻意不吃**：版面已被 2~5 个并列块占满，
+  再塞图只有两个结果 —— 图被挤成邮票，或把条目挤出安全区。
+  硬塞会被拒，并**告诉它哪些版式可用**（静默忽略是最糟的：模型花 15 秒生成一张图，
+  交上来石沉大海，而它永远学不到该换个版式）
+- 摆放、cover 裁剪、层级、出场动画**全部在代码里算**，模型只说「这页配这张图」
+
+两个只有实测才看得见的判断：
+
+**背景图必须压遮罩。** 照片背后压文字，对比度几乎必然不合格 ——
+而 `lintDeck` 只检查**纯色背景**与文字的对比度，**它看不见照片**，
+于是「一页字全糊在图上」会安安静静通过所有检查。用背景色本身当遮罩
+（不是纯黑/纯白），主题换了它自动跟着换。
+
+**装饰环不能叠在照片上。** `title-split` 那个半透明圆环是给纯色块加质感的，
+叠在照片上像块污渍 —— 这条是**看截图看出来的**，任何断言都不会报。
+
+prompt 那一半只写「内容决策」：什么时候用搜图什么时候用生图、
+**取图和排版要一页一页一起做完**、不是每页都要图
+（「满篇配图和满篇没图一样廉价」）。版式清单里的「可配图」标记
+是从 `LAYOUT_META` **自动带出来**的 —— 加一个吃图的版式，prompt 里自动就有，
+不靠有人记得改文案。
+
+#### ② 空 deck 上跑 agent，画布被清成 0 页并永久转圈
+
+用户报的：agent 跑完画布白屏 + 转圈，刷新进去还是空的。
+
+链条是**两个真相源对不上**：
+
+```
+① 新建 deck → 库里 slides_json = '[]'
+② openDeck 见 0 页 → 只在**本地**补一页，从不落库
+③ agent 从**库**读 → 拿到 []
+④ 跑完收尾那次 commit（R-44 加的）→ 把 [] 原样推回前端
+⑤ applyAgentDeck([]) → slides = [] → v-else-if="slides.length" 落空 → 永久转圈
+```
+
+kernel 守着「不能删除最后一页」（`kernel.ts:816`），所以 agent 不可能把非空 deck
+删到 0 页 —— **唯一入口就是「deck 从一开始就是空的」**。
+
+修两层：**源头**（openDeck 补的那页立刻落库，agent 从此读到同一份真相）+
+**兜底**（区分 `deckLoading` 与「加载完但 0 页」。原来两者共用
+`slides.length === 0` 这一个条件，分不开）。
+
+**光改转圈条件不是修复** —— 负对照证明它只是把「永久转圈」换成「一片空白」。
+
+#### ③ 错误处理路径二次失败会带走整个后端进程
+
+我自己的验证脚本在任务还跑着的时候删了 deck，**后端进程直接死了**：
+
+```
+[agent] task failed: FOREIGN KEY constraint failed   ← catch 接住了
+SQLiteError: FOREIGN KEY constraint failed           ← catch 里的 saveMessage 又抛，没人接
+error: script "start" exited with code 1
+```
+
+`runAgentTask` 是 **fire-and-forget** 调的（`ws/handler.ts`，故意不 await ——
+await 了就没法处理同一条连接上的 `agent.cancel`，取消按钮会彻底失灵），
+而 `pipeline.ts` 的 **catch 和 finally 里还有 await 落库**。
+错误处理路径上再失败一次，rejection 就逃到没人接的地方 → Bun 杀进程 →
+**所有用户的所有任务一起死**。
+
+触发面不止「删 deck」：磁盘满、库锁超时，任何让写库失败的东西都算。
+
+修法：收尾动作统一包一层 `settle`（只记日志不上抛）+ 调用点补 `.catch()`。
+**只有收尾动作能这么吞** —— 主路径的写库失败必须往上抛，
+理由见 `runtime/commit.ts` ③（吞掉的话工具会回一句 ok，agent 不会重试，
+那次修改从此谁也不知道丢了）。
+
+#### 顺带修的：agent 面板一滚就回弹
+
+用户报的第四件。原来是一行**无条件**的 `scrollTop = scrollHeight`，
+每条日志变化都执行 —— 而 reasoning 增量是几个字符一条、每秒几十条，
+用户往上滚，滚轮确实生效了（内容动了一下），然后 `nextTick` 里那行把它按回去。
+
+新增 `useStickToBottom`：`pinned` **只在容器自己的 `scroll` 事件里更新**，
+内容变化时只读不写。顺序不能反 —— 在内容变化时重新测量的话，
+「内容变长了、用户没动」会被算成「用户滚开了」，跟随在第一次增长后就永久失效，
+而且失效得悄无声息。
+
+思考块抽成 `AgentReasoningEntry.vue`（它自己是滚动容器，要拿自己那个 DOM 元素）。
+`scroll` 不冒泡，两个容器各持有自己的 `pinned`，天然互不干扰。
+
+#### 测试 1087 → 1170
+
+| 文件 | 条数 | 守什么 |
+|---|---:|---|
+| `layoutImage.test.ts` | 69 | 裁剪算术 / backdrop 必压遮罩 / panel 顶掉色块 / 文字不压图 / 不吃图的版式拦得住 / **合规：图库 URL 进不了 deck** / 清单会告诉模型 |
+| `useStickToBottom.test.ts` | 14 | 贴底跟随 / 用户滚开后不打扰 / 阈值 / 元素反复挂载卸载 / 监听清理 |
+
+原有 224 条 `layouts.test.ts` **一字未改**。
+
+#### 负对照：14 条源码级 + 3 条真浏览器 + 1 条真进程
+
+版式图片位 8 条（去掉图片位 / 不压遮罩 / 图放最后 / 裁剪判反 / 静默忽略 /
+不校验 asset:// / 清单不提图 / 文字不缩窄）、滚动 6 条 —— **全红**。
+
+**空 deck 那条在真浏览器 + 真 agent 任务下做的**：
+
+| | 结果 |
+|---|---|
+| 只摘源头落库 | 兜底触发（告警可见）、画布正常 → 证明 0 页真的会发生 |
+| 两层全摘 | `editor=false` 缩略图 0 → 证明测试能检出这个 bug |
+| 还原 | 库里 1 页、兜底不触发 → 两层分工正确 |
+
+**崩溃那条在真进程上做的**：摘掉 `settle` + `.catch` → 删 deck 后 **+50 秒进程死**
+（`exited with code 1`）；还原后**同样的 FK 错误照样发生**，
+但被 `收尾动作「落库错误消息」失败（已忽略）` 接住，进程活到 +120 秒。
+
+#### 验证：agent 真跑了一遍，图真的进了页面
+
+四道闸门（1170 / build / type-check / server tsc）+ 后端实起。
+外加一次真实 agent 任务（「3 页简报，每页配图」）：
+
+```
+3 页 3 张图
+ p1 title-split panel  400×562.5  clip=有  imageType=pageFigure
+ p2 bullets     panel  400×562.5  clip=有  imageType=pageFigure
+ p3 end         backdrop 1000×562.5 clip=有 imageType=background
+```
+
+**并且在浏览器里逐页看了截图**：左文右图出血、文字完全不压图、
+backdrop 遮罩下「感谢观看」清晰可读、无控制台错误。
+
+意外之喜：agent **自己在每页底部加了一行「图：作者 / Pixabay」**——
+它读了 prompt 里的署名指引。合规②比预期落地得早。
+
+#### 判断错过的地方
+
+**① 我的验证脚本自己有 bug，差点把假成功记成真。**
+第一次验空 deck 修复时，脚本用 `.first()` 点 deck，而三份测试 deck **同名** ——
+它点开的是旧的那份（后端日志里 `GET /api/decks/25` 而不是 27）。
+那次「通过」完全不作数。改成唯一标题重跑才算数。
+
+**② 差点把「光改转圈条件」当成修复。**
+负对照②（两层全摘）跑出来不是「转圈」而是「一片空白」——
+因为我同时改了转圈条件。**改判据的同时改实现，会让负对照测的东西悄悄变掉。**
+
+**③ 我加过一个不必要的响应式改造（上一轮的延续）。**
+`assetUrl.ts` 那个 `shallowRef`，负对照证明它不解决任何问题，已去掉。
+
+**④ 环境里的坑（不是项目问题，但会咬人）**：
+`no_proxy=locahost,...` —— **`localhost` 拼错了**，于是 bun 的 fetch 把
+`http://localhost` 走 HTTP_PROXY，回 502。curl 不受影响所以一直没露出来。
+调试脚本一律用 `127.0.0.1`。
+
+**⑤ `cd` 又泄漏了一次。** 上一轮「判断错过的地方 ⑥」原样记着这条，这一轮起 vite 时照犯。
+
+#### 没做的
+
+- **背景图遮罩浓度（0.82 / 0.78）是拍的，没调过。** 截图上文字清晰可读、
+  照片略偏淡。往下调更好看但可能压不住浅色照片 —— 这是审美工作的活，
+  该在有一批真实样张之后统一定
+- **agent 仍然先囤图再排版**（连着 5 次 `searchImage` 再开始 `applyLayout`），
+  prompt 里写了「一页一页一起做完」它没照做。结果是对的，所以没管 ——
+  但这说明 prompt 里的**流程约束模型未必遵守**，真要保证得靠代码
+- `cards` / `compare` / `timeline` 仍然不吃图。要给它们配图得**新增版式**
+  （图文网格、左图右表），那是审美扩容的活
+
 ## 待完成
 
 > 下面这张表是**当前**的权威清单。其中 agent 相关的多项已被
@@ -1842,8 +2026,9 @@ DOM 上的图已经正常加载，那个探针**仍然报 `/assets`**。
 | **E3 地面真相** | 导出的动画在真实 PowerPoint 里逐个验，样本已生成（`samples/animations/`），清单见 [09-powerpoint-verify.md](./09-powerpoint-verify.md)。**网页侧已在无头浏览器里逐帧验完**（R-36），剩下的确实只有 PowerPoint 那一半 | **高** |
 | **`in` / `out` 光圈方向** | `box-in` / `circle-in` / `diamond-in` / `plus-in` 网页侧一律「自中心向外张开」。若 PowerPoint 的 `filter=circle(in)` 实际是「自外向内收拢」，这四个方向就是反的 —— 只能开 PowerPoint 看，判法见 [09](./09-powerpoint-verify.md) 第三节 | **高** |
 | ~~**图片 / 图标能力**~~ | 08 号诊断 ① 里最大的一条。**第十七轮配置层 + 第十八轮工具层已完成**：两个工具已注册、限流已执行（含上游 429）、压缩已实现（PNG→JPEG 6~13 倍）、`assets` 票据表 + 24h 搜图缓存已建，全链路实测通过并在浏览器里看过 | ✅ |
-| **图片署名要显示出来** | 合规②「必须署名」目前只做到「数据落在 `assets` 表 + 工具返回值带着」，**界面上没有任何地方显示**。要做：画布选中图片时显示来源与作者、导出时附一页来源清单。往元素加字段不需要动 kernel（`validateElement` 用 safeParse 丢弃产物） | **高** |
-| **agent 用图的功能测试** | 工具逐项验过了，但**没跑过一次真实的「做一份带图的 PPT」** —— 模型会不会用、用得对不对是另一回事。照 07 号文档补一轮 | **高** |
+| **图片署名要显示出来** | 合规②：`assets` 表有权威副本，且第十九轮实测中 agent **自己**在每页底部加了署名小字 —— 但那是模型自觉，不是保证。要做成不依赖模型的：画布选中图片时显示来源、导出时附一页来源清单 | 中 |
+| ~~**agent 用图的功能测试**~~ | **第十九轮已做**：真实任务「3 页简报每页配图」跑通，3 页 3 张图全部落进 deck，浏览器里逐页看过 | ✅ |
+| **给 cards / compare / timeline 配图** | 这三个版式版面已满，塞不下图。要配图得**新增版式**（图文网格、左图右表、满屏图 + 浮层卡片）—— 属于审美扩容 | 中 |
 | **生图 prompt 模板化** | 现在 agent 写什么就发什么，产出风格一致性全靠模型自觉。「决策不该由模型做」这条红线在这里还没落实 | 中 |
 | R-09 / R-18 | 旧 AI 路径包装成 agent 工具 `fillFromTemplate` | 中 |
 | **事务 / 回滚** | 逐工具提交，中途失败留半成品。Oh My PPT 的 job/rollback 还没抄。**第十五轮之后这条变重了**：中途落库把原来那个「失败时库是干净的」的意外回滚拿掉了，现在半成品会永久留在库里 —— checkpoint 是把它还回来的那一步 | **高** |

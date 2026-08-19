@@ -37,7 +37,7 @@
  */
 
 import type {
-  PPTElement, PPTTextElement, PPTShapeElement, PPTLineElement,
+  PPTElement, PPTTextElement, PPTShapeElement, PPTLineElement, PPTImageElement,
   PPTAnimation, SlideBackground, SlideType, AnimationEffect,
 } from '@/types/slides'
 import { buildShapeGeometry } from '@/configs/shapeCatalog'
@@ -79,7 +79,23 @@ export interface LayoutContent {
   quote?: string
   /** 引用出处 / 图表来源 */
   source?: string
+  /**
+   * 配图。**只收 `asset://<sha256>`** —— 图库 URL 不许进 deck（合规要求，
+   * 见 `runtime/imageSearch.ts` 头注释），`searchImage` / `generateImage`
+   * 返回的就是这个形状。
+   *
+   * `width` / `height` 是**图片的真实像素**，直接把工具返回值抄进来。
+   * 用来算 cover 裁剪 —— 少了就只能拉伸变形。
+   */
+  image?: { src: string, width?: number, height?: number }
 }
+
+/** 版式怎么用这张图 */
+export type LayoutImageSlot =
+  /** 侧栏／色块位换成图片 */
+  | 'panel'
+  /** 满屏背景图，上面自动压一层遮罩保证文字可读 */
+  | 'backdrop'
 
 export interface LayoutResult {
   elements: PPTElement[]
@@ -97,20 +113,37 @@ export interface LayoutMeta {
   items: [number, number] | null
   /** 除 title 外必须提供的字段 */
   requires: (keyof LayoutContent)[]
+  /**
+   * 这个版式**吃不吃 `content.image`**，以及怎么用。`null` = 不吃。
+   *
+   * 这条会自动进 prompt（`describeLayouts`）—— 第十八轮 D1 上线后，agent
+   * 搜了 5 张图、生成了 2 张，**一张都没用上**，就是因为它在整个工作流里
+   * 找不到能把图放进去的地方：`applyLayout` 是整页替换语义，而 10 个版式
+   * 当时一个图片位都没有。能力存在但没有任何路径够得着，等于不存在。
+   */
+  image: LayoutImageSlot | null
 }
 
 export const LAYOUT_META: Record<LayoutPattern, LayoutMeta> = {
-  'title-center': { pattern: 'title-center', name: '居中封面', usage: '封面：标题居中，上下留白最大，最正式', items: null, requires: ['title'] },
-  'title-split': { pattern: 'title-split', name: '分栏封面', usage: '封面：左文右色块，比居中封面更现代、更有版面感', items: null, requires: ['title'] },
-  'section': { pattern: 'section', name: '章节转场', usage: '章节之间的过渡页：大章节号 + 章节名', items: null, requires: ['title'] },
-  'bullets': { pattern: 'bullets', name: '要点列表', usage: '内容页：3~5 条并列要点，每条一句话说明', items: [2, 6], requires: ['title', 'items'] },
-  'cards': { pattern: 'cards', name: '卡片网格', usage: '内容页：2~4 个并列概念，每个有独立底板，最通用', items: [2, 4], requires: ['title', 'items'] },
-  'compare': { pattern: 'compare', name: '二栏对比', usage: '内容页：A vs B、优点 vs 缺点、现状 vs 目标', items: [2, 2], requires: ['title', 'items'] },
-  'timeline': { pattern: 'timeline', name: '横向时间轴', usage: '内容页：时间顺序、流程步骤、演进过程', items: [3, 5], requires: ['title', 'items'] },
-  'stat': { pattern: 'stat', name: '单点强调', usage: '内容页：一个超大数字或一句结论撑满整页，用来制造节奏停顿', items: null, requires: ['stat'] },
-  'quote': { pattern: 'quote', name: '引用语', usage: '内容页：引述一段话 + 出处，同样用来制造节奏', items: null, requires: ['quote'] },
-  'end': { pattern: 'end', name: '结尾页', usage: '最后一页：致谢 / 联系方式', items: null, requires: ['title'] },
+  'title-center': { pattern: 'title-center', name: '居中封面', usage: '封面：标题居中，上下留白最大，最正式', items: null, requires: ['title'], image: 'backdrop' },
+  'title-split': { pattern: 'title-split', name: '分栏封面', usage: '封面：左文右色块，比居中封面更现代、更有版面感', items: null, requires: ['title'], image: 'panel' },
+  'section': { pattern: 'section', name: '章节转场', usage: '章节之间的过渡页：大章节号 + 章节名', items: null, requires: ['title'], image: 'backdrop' },
+  'bullets': { pattern: 'bullets', name: '要点列表', usage: '内容页：3~5 条并列要点，每条一句话说明', items: [2, 6], requires: ['title', 'items'], image: 'panel' },
+  'cards': { pattern: 'cards', name: '卡片网格', usage: '内容页：2~4 个并列概念，每个有独立底板，最通用', items: [2, 4], requires: ['title', 'items'], image: null },
+  'compare': { pattern: 'compare', name: '二栏对比', usage: '内容页：A vs B、优点 vs 缺点、现状 vs 目标', items: [2, 2], requires: ['title', 'items'], image: null },
+  'timeline': { pattern: 'timeline', name: '横向时间轴', usage: '内容页：时间顺序、流程步骤、演进过程', items: [3, 5], requires: ['title', 'items'], image: null },
+  'stat': { pattern: 'stat', name: '单点强调', usage: '内容页：一个超大数字或一句结论撑满整页，用来制造节奏停顿', items: null, requires: ['stat'], image: 'backdrop' },
+  'quote': { pattern: 'quote', name: '引用语', usage: '内容页：引述一段话 + 出处，同样用来制造节奏', items: null, requires: ['quote'], image: 'backdrop' },
+  'end': { pattern: 'end', name: '结尾页', usage: '最后一页：致谢 / 联系方式', items: null, requires: ['title'], image: 'backdrop' },
 }
+
+/**
+ * cards / compare / timeline **刻意不吃图**。
+ *
+ * 它们的版面已经被 2~5 个并列块占满，再塞一张图只有两个结果：图被挤成邮票，
+ * 或者把条目挤出安全区。「哪一页能放图」是排版决策，不该让模型现场判断 ——
+ * 它看不见结果。要配图就换一个吃图的版式，这本身就是有意义的信息。
+ */
 
 // ---------------------------------------------------------------------------
 // 元素工厂
@@ -208,6 +241,59 @@ class Builder {
     return el
   }
 
+  /**
+   * 放一张图，按 cover 裁剪填满 box。
+   *
+   * **必须在别的元素之前调用** —— PPTist 的层级就是数组顺序，图片是底板，
+   * 排在文字后面会把整页盖住。所以吃图的版式都在函数第一行处理它。
+   */
+  image(
+    box: Box,
+    image: { src: string, width?: number, height?: number },
+    opts: { imageType?: 'pageFigure' | 'background', name?: string } = {},
+  ): PPTImageElement {
+    const clip = coverClip(box.width, box.height, image.width, image.height)
+    const el: PPTImageElement = {
+      id: this.id(),
+      type: 'image',
+      ...box,
+      rotate: 0,
+      src: image.src,
+      // cover 裁剪过就不能再让编辑器锁比例，否则拖动时会跳
+      fixedRatio: !clip,
+      ...(clip ? { clip } : {}),
+      ...(opts.imageType ? { imageType: opts.imageType } : {}),
+      ...(opts.name ? { name: opts.name } : {}),
+    }
+    this.elements.push(el)
+    return el
+  }
+
+  /**
+   * 满屏背景图 + 遮罩。返回 `[图, 遮罩]`，都可能为 null（没给图时）。
+   *
+   * **遮罩不是可选项。** 照片背后压文字，对比度几乎必然不合格 ——
+   * 而 `lintDeck` 只检查纯色背景与文字的对比度，它看不见照片，
+   * 于是「一页字全糊在图上」会安安静静地通过所有检查。
+   * 用背景色本身当遮罩（而不是纯黑/纯白），主题换了它自动跟着换。
+   */
+  backdrop(
+    image: { src: string, width?: number, height?: number } | undefined,
+  ): [PPTImageElement | null, PPTShapeElement | null] {
+    if (!image?.src) return [null, null]
+    const p = this.palette
+    const img = this.image(
+      { left: 0, top: 0, width: CANVAS_WIDTH, height: CANVAS_HEIGHT },
+      image,
+      { imageType: 'background', name: '背景图' },
+    )
+    // 深色主题的图往往更压不住，遮罩给厚一点
+    const scrim = this.shape('rect', { left: 0, top: 0, width: CANVAS_WIDTH, height: CANVAS_HEIGHT }, {
+      fill: p.background, opacity: p.dark ? 0.78 : 0.82, name: '背景遮罩',
+    })
+    return [img, scrim]
+  }
+
   line(start: [number, number], end: [number, number], left: number, top: number, color: string, width = 1): PPTLineElement {
     const el: PPTLineElement = {
       id: this.id(),
@@ -246,6 +332,34 @@ class Builder {
   }
 }
 
+/**
+ * cover 裁剪：把原图居中裁到目标框的比例，`clip.range` 是百分比坐标。
+ *
+ * 拿不到原图宽高就返回 `null`（调用方改用 `fixedRatio` 让编辑器自己等比缩）——
+ * **不猜一个比例**：猜错的表现是图被拉变形，而变形比留白难看得多，
+ * 且没有任何检查能发现它。
+ *
+ * 纯函数，导出是为了单测能钉住算术。
+ */
+export const coverClip = (
+  boxW: number, boxH: number, srcW?: number, srcH?: number,
+): { shape: 'rect', range: [[number, number], [number, number]] } | null => {
+  if (!srcW || !srcH || !boxW || !boxH) return null
+
+  const boxRatio = boxW / boxH
+  const srcRatio = srcW / srcH
+  // 比例一致就不用裁 —— 裁一个 0% 出来只是给 deck 添一份无意义的数据
+  if (Math.abs(boxRatio - srcRatio) < 0.001) return null
+
+  // 原图更宽 → 左右各切掉一条；更高 → 上下各切掉一条
+  const [x0, y0, x1, y1] = srcRatio > boxRatio
+    ? [(1 - boxRatio / srcRatio) / 2, 0, 1 - (1 - boxRatio / srcRatio) / 2, 1]
+    : [0, (1 - srcRatio / boxRatio) / 2, 1, 1 - (1 - srcRatio / boxRatio) / 2]
+
+  const pct = (v: number) => Math.round(v * 1000) / 10
+  return { shape: 'rect', range: [[pct(x0), pct(y0)], [pct(x1), pct(y1)]] }
+}
+
 /** 封面大标题的候选字号：从 display 往下退，长标题自动降一级而不是溢出 */
 const DISPLAY_STEPS = [TYPE_SCALE.display, 52, 44, TYPE_SCALE.title, TYPE_SCALE.subtitle]
 
@@ -270,6 +384,9 @@ const LAYOUTS: Record<LayoutPattern, LayoutFn> = {
   // 居中封面：装饰性斜切块压在角落，标题居中，下方一道强调条
   'title-center': (b, c) => {
     const p = b.palette
+
+    // 背景图必须最先放：PPTist 的层级就是数组顺序
+    const [bgImage, scrim] = b.backdrop(c.image)
 
     const stripe = b.shape('diagStripe', { left: CANVAS_WIDTH - 320, top: 0, width: 320, height: 300 }, {
       fill: p.primary, opacity: 0.14, name: '装饰斜块',
@@ -319,24 +436,34 @@ const LAYOUTS: Record<LayoutPattern, LayoutFn> = {
     b.animate(stripe2, 'wipe-up', 'meantime', 700)
     b.animate(bar, 'wipe', 'auto', 500)
     b.animate(subtitle, 'fade-up', 'auto', 500)
+    // 背景图和遮罩是舞台不是内容，跟标题同步铺开，不单独占一步
+    b.animate(bgImage, 'fade', 'meantime', 800)
+    b.animate(scrim, 'fade', 'meantime', 800)
 
     return { background: { type: 'solid', color: p.background }, slideType: 'cover' }
   },
 
-  // 分栏封面：右侧整块主色，左侧文字
+  // 分栏封面：右侧整块主色，左侧文字。给了图就用图顶掉那块主色
   'title-split': (b, c) => {
     const p = b.palette
     const splitX = 600
+    const panelBox = { left: splitX, top: 0, width: CANVAS_WIDTH - splitX, height: CANVAS_HEIGHT }
 
-    const panel = b.shape('rect', { left: splitX, top: 0, width: CANVAS_WIDTH - splitX, height: CANVAS_HEIGHT }, {
-      fill: p.primary, name: '主色块',
-    })
+    // 图直接顶掉主色块 —— 不是叠在上面：叠的话主色块永远看不见，
+    // 白白多一个元素，用户想换回纯色还得先删图
+    const panel = c.image?.src
+      ? b.image(panelBox, c.image, { imageType: 'pageFigure', name: '封面图' })
+      : b.shape('rect', panelBox, { fill: p.primary, name: '主色块' })
     const panelAccent = b.shape('rect', { left: splitX, top: 0, width: 10, height: CANVAS_HEIGHT }, {
       fill: p.accent, name: '分界线',
     })
-    const mark = b.shape('donut', { left: splitX + 96, top: 180, width: 200, height: 200 }, {
-      fill: mixHex(p.primary, p.onPrimary, 0.28), name: '装饰环',
-    })
+    // 装饰环是给**纯色块**加质感用的。照片自带纹理，再叠一个半透明圆环
+    // 只会像块污渍 —— 实测截图上一眼就看出来了
+    const mark = c.image?.src
+      ? null
+      : b.shape('donut', { left: splitX + 96, top: 180, width: 200, height: 200 }, {
+        fill: mixHex(p.primary, p.onPrimary, 0.28), name: '装饰环',
+      })
 
     const colW = splitX - SAFE.left - SPACING.gutter
     let y = 170
@@ -386,6 +513,8 @@ const LAYOUTS: Record<LayoutPattern, LayoutFn> = {
     const p = b.palette
     const number = c.eyebrow || '01'
 
+    const [bgImage, scrim] = b.backdrop(c.image)
+
     const num = b.text({ left: SAFE.left, top: 150, width: 260, height: 180 }, number, {
       size: TYPE_SCALE.stat, color: p.accent, bold: true, lineHeight: LINE_HEIGHT.tight,
       textType: 'partNumber', name: '章节号',
@@ -416,6 +545,8 @@ const LAYOUTS: Record<LayoutPattern, LayoutFn> = {
     b.animate(rule, 'wipe-down', 'meantime', 500)
     b.animate(title, 'fade-left', 'auto', 500)
     b.animate(subtitle, 'fade-left', 'auto', 400)
+    b.animate(bgImage, 'fade', 'meantime', 800)
+    b.animate(scrim, 'fade', 'meantime', 800)
 
     return { background: { type: 'solid', color: p.background }, slideType: 'transition' }
   },
@@ -425,19 +556,37 @@ const LAYOUTS: Record<LayoutPattern, LayoutFn> = {
     const p = b.palette
     const items = clampItems(c.items, 2, 6)
 
+    /**
+     * 给了图就让出右侧 40%，整页文字缩进左栏；没给图则一切照旧。
+     *
+     * 图**贴着右边和上下出血**（不留白边）：一张四周留白的照片在版面里
+     * 会显得像贴纸，出血才是版面感的来源。
+     */
+    const hasImage = !!c.image?.src
+    const figureW = Math.round(CANVAS_WIDTH * 0.4)
+    const colW = hasImage ? CANVAS_WIDTH - figureW - SAFE.left - SPACING.gutter : SAFE.width
+
+    const figure = hasImage
+      ? b.image(
+        { left: CANVAS_WIDTH - figureW, top: 0, width: figureW, height: CANVAS_HEIGHT },
+        c.image!,
+        { imageType: 'pageFigure', name: '配图' },
+      )
+      : null
+
     const accentBar = b.shape('bar', { left: SAFE.left, top: SAFE.top + 6, width: 8, height: 40 }, {
       fill: p.accent, rotate: 90, name: '标题强调条',
     })
     const title = b.text(
-      { left: SAFE.left + 28, top: SAFE.top, width: SAFE.width - 28, height: 52 },
+      { left: SAFE.left + 28, top: SAFE.top, width: colW - 28, height: 52 },
       c.title ?? '', { size: TYPE_SCALE.title, color: p.text, bold: true, lineHeight: LINE_HEIGHT.heading, textType: 'title' },
     )
 
     let y = SAFE.top + 52 + SPACING.headingGap
     let subtitle: PPTElement | null = null
     if (c.subtitle) {
-      const h = estimateTextHeight(c.subtitle, TYPE_SCALE.body, SAFE.width - 28)
-      subtitle = b.text({ left: SAFE.left + 28, top: y, width: SAFE.width - 28, height: h }, c.subtitle, {
+      const h = estimateTextHeight(c.subtitle, TYPE_SCALE.body, colW - 28)
+      subtitle = b.text({ left: SAFE.left + 28, top: y, width: colW - 28, height: h }, c.subtitle, {
         size: TYPE_SCALE.body, color: p.textMuted, textType: 'content',
       })
       y += h + SPACING.paragraphGap
@@ -450,6 +599,9 @@ const LAYOUTS: Record<LayoutPattern, LayoutFn> = {
 
     b.animate(title, 'fade-left', 'click', 500)
     b.animate(accentBar, 'wipe-down', 'meantime', 400)
+    // 配图跟标题同步擦入 —— 它是版面的一半，不该等要点讲完才出现。
+    // 图在右侧，用「自右擦除」朝画面内推，方向和它的位置一致
+    b.animate(figure, 'wipe-right', 'meantime', 700)
     b.animate(subtitle, 'fade-up', 'auto', 400)
 
     items.forEach((item, i) => {
@@ -465,7 +617,7 @@ const LAYOUTS: Record<LayoutPattern, LayoutFn> = {
       })
 
       const textLeft = SAFE.left + markerSize + SPACING.paragraphGap
-      const textWidth = SAFE.width - markerSize - SPACING.paragraphGap
+      const textWidth = colW - markerSize - SPACING.paragraphGap
       const head = b.text({ left: textLeft, top, width: textWidth, height: 26 }, item.title ?? '', {
         size: TYPE_SCALE.itemTitle, color: p.text, bold: true, lineHeight: LINE_HEIGHT.heading, textType: 'itemTitle',
       })
@@ -689,6 +841,8 @@ const LAYOUTS: Record<LayoutPattern, LayoutFn> = {
     const p = b.palette
     const stat = c.stat ?? { value: '' }
 
+    const [bgImage, scrim] = b.backdrop(c.image)
+
     // 装饰元素也要留在画布内 —— 出血一点点在网页上看不出来，
     // 但 lintSlide 会对每一页报「超出画布」，把真正的越界警告淹掉
     const halo = b.shape('ellipse', { left: 600, top: 60, width: 400, height: 400 }, {
@@ -740,6 +894,8 @@ const LAYOUTS: Record<LayoutPattern, LayoutFn> = {
     b.animate(label, 'fade-up', 'auto', 400)
     b.animate(barEl, 'wipe', 'meantime', 400)
     b.animate(note, 'fade-up', 'auto', 400)
+    b.animate(bgImage, 'fade', 'meantime', 800)
+    b.animate(scrim, 'fade', 'meantime', 800)
 
     return { background: { type: 'solid', color: p.background }, slideType: 'content' }
   },
@@ -747,6 +903,8 @@ const LAYOUTS: Record<LayoutPattern, LayoutFn> = {
   // 引用语：巨大的引号 + 一段话 + 出处
   'quote': (b, c) => {
     const p = b.palette
+
+    const [bgImage, scrim] = b.backdrop(c.image)
 
     const mark = b.text({ left: SAFE.left - 8, top: 110, width: 120, height: 120 }, '“', {
       size: 140, color: p.accent, bold: true, lineHeight: LINE_HEIGHT.tight, name: '引号',
@@ -776,6 +934,8 @@ const LAYOUTS: Record<LayoutPattern, LayoutFn> = {
     b.animate(quote, 'fade-up', 'auto', 700)
     b.animate(rule, 'wipe', 'auto', 400)
     b.animate(source, 'fade-left', 'meantime', 400)
+    b.animate(bgImage, 'fade', 'meantime', 800)
+    b.animate(scrim, 'fade', 'meantime', 800)
 
     return { background: { type: 'solid', color: p.background }, slideType: 'content' }
   },
@@ -783,6 +943,8 @@ const LAYOUTS: Record<LayoutPattern, LayoutFn> = {
   // 结尾页：居中致谢
   'end': (b, c) => {
     const p = b.palette
+
+    const [bgImage, scrim] = b.backdrop(c.image)
 
     const ring = b.shape('donut', { left: (CANVAS_WIDTH - 260) / 2, top: 120, width: 260, height: 260 }, {
       fill: p.primary, opacity: 0.12, name: '装饰环',
@@ -812,6 +974,8 @@ const LAYOUTS: Record<LayoutPattern, LayoutFn> = {
     b.animate(ring, 'spin-in', 'meantime', 800)
     b.animate(bar, 'wipe', 'auto', 400)
     b.animate(subtitle, 'fade-up', 'auto', 400)
+    b.animate(bgImage, 'fade', 'meantime', 800)
+    b.animate(scrim, 'fade', 'meantime', 800)
 
     return { background: { type: 'solid', color: p.background }, slideType: 'end' }
   },
@@ -849,8 +1013,24 @@ export const validateLayoutContent = (pattern: LayoutPattern, content: LayoutCon
     if (empty !== -1) return `items[${empty}] 是空的，每一项至少要有 title 或 body`
   }
 
+  if (content.image?.src) {
+    if (!meta.image) {
+      // 静默忽略是最糟的处置：模型花了 15 秒生成一张图，交上来石沉大海，
+      // 而它永远学不到该换个版式
+      const usable = LAYOUT_PATTERNS.filter(x => LAYOUT_META[x].image).join(' / ')
+      return `版式 "${pattern}" 不放图（版面已被并列块占满）。要配图请改用：${usable}`
+    }
+    // 合规：图库 URL 绝不许进 deck，只收内容寻址的 asset://
+    if (!ASSET_SRC.test(content.image.src)) {
+      return `image.src 必须是 searchImage / generateImage 返回的 asset:// 地址，收到 "${content.image.src.slice(0, 60)}"`
+    }
+  }
+
   return null
 }
+
+/** `asset://` + 64 位十六进制。和 `domains/deck/assetResults.ts` 的 `ASSET_SRC_PATTERN` 是同一条规矩 */
+const ASSET_SRC = /^asset:\/\/[0-9a-f]{64}$/
 
 /**
  * 生成一页的完整元素与动画。
@@ -875,10 +1055,21 @@ export const buildLayout = (
   }
 }
 
-/** 给 prompt 用的版式清单 */
+/**
+ * 给 prompt 用的版式清单。
+ *
+ * 图片位是从 `LAYOUT_META.image` 自动带出来的 —— 加一个吃图的版式，
+ * prompt 里自动就有了，不需要有人记得去改文案。第十八轮 agent
+ * 「搜了图不知道往哪放」，根子就是这份清单里当时一个字都没提图。
+ */
 export const describeLayouts = (): string =>
   LAYOUT_PATTERNS.map(p => {
     const m = LAYOUT_META[p]
     const items = m.items ? `，items ${m.items[0]}~${m.items[1]} 项` : ''
-    return `- ${p}（${m.name}）：${m.usage}${items}`
+    const image = m.image === 'backdrop'
+      ? '，**可配图**（满屏背景图，自动压遮罩保证文字可读）'
+      : m.image === 'panel'
+        ? '，**可配图**（占右侧的整幅配图，文字自动缩到左栏）'
+        : ''
+    return `- ${p}（${m.name}）：${m.usage}${items}${image}`
   }).join('\n')

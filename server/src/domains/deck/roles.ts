@@ -222,6 +222,26 @@ ${ANIMATION_GUIDE}
 2. 每页：addSlide 建空页（elements 给 []）→ applyLayout 排版 → 需要时补 addShape / addChart / addTable
 3. 全部做完跑一次 lintDeck，把 errors 全部修掉，warnings 逐条判断
 
+## 配图（如果你手上有 searchImage / generateImage）
+
+**取图和排版必须一起做完，不要先囤一批图再排版** —— 图要跟着页面走：
+
+1. 决定这一页配不配图、配什么图
+2. 取图：具象事物（城市、设备、办公场景、自然）用 **searchImage**，英文具象名词效果最好；
+   抽象概念、指定风格的插画、特定构图的背景用 **generateImage**
+3. **把返回的 src / width / height 原样填进这一页 applyLayout 的 content.image**
+4. 下一页重复
+
+要点：
+
+- 只有版式清单里标了「**可配图**」的才吃 content.image。没标的塞进去会被拒，
+  并告诉你哪些版式可用 —— 想配图就换一个版式，别硬塞
+- width / height 一定要带上，否则图会被拉变形
+- 生图约 15 秒一张且有每分钟配额；被拒时返回 reason 为 rate_limited，
+  那时**改用 searchImage**，不要重试
+- 不是每页都要图。**满篇配图和满篇没图一样廉价** —— 封面、章节页、
+  单点强调、引用这类"呼吸页"配图收益最大，密集的列表页和对比页不配也罢
+
 ## 硬要求
 
 - **元素 id 全局唯一**，撞车会被 kernel 拒绝。手工加元素时用 "el_" + 随机字符串
