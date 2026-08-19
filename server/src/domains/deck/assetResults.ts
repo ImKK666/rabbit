@@ -78,6 +78,17 @@ export interface ToolAsset {
   /** 压缩/缩放**之后**的真实像素。版式拿它算 cover / contain */
   width: number
   height: number
+  /**
+   * 图片亮度，`[p5, p95]`，0~1。
+   *
+   * 版式拿它算**背景图遮罩该多浓**（`domains/deck/design.ts` 的 `scrimFor`）。
+   * 给区间而不是单个均值：照片不均匀，一行字压在最亮/最暗的那一小块上就看不见了，
+   * 而均值对此一无所知。哪一头是最坏取决于文字颜色，交给 `scrimFor` 挑。
+   *
+   * 少了它遮罩会退回一个中位数常量 —— 能用，但深色照片会被压得过狠、
+   * 浅色照片压不住。改之前整整两轮就是那个样子（0.82 的常量，实测把照片压没了）。
+   */
+  luminance?: [number, number]
   /** 图库来源时必有。生图没有来源可署 */
   attribution?: Attribution
   /** 票据 id，和 `agent.asset.*` 两条消息对得上 */
@@ -99,19 +110,27 @@ export const ASSET_SRC_PATTERN = /^asset:\/\/[0-9a-f]{64}$/
  * 硬要求就该在**产生的那一刻**验，不是等 lint 事后发现。
  */
 export const toolAsset = (
-  { hash, width, height, ticket, attribution }: {
+  { hash, width, height, ticket, attribution, luminance }: {
     hash: string
     width: number
     height: number
     ticket: string
     attribution?: Attribution
+    luminance?: [number, number]
   },
 ): ToolAsset => {
   const src = `asset://${hash}`
   if (!ASSET_SRC_PATTERN.test(src)) {
     throw new Error(`资产 src 不合法："${src}" —— 必须是 asset:// 加 64 位十六进制 sha256`)
   }
-  return { src, width, height, ticket, ...(attribution ? { attribution } : {}) }
+  return {
+    src,
+    width,
+    height,
+    ticket,
+    ...(luminance ? { luminance } : {}),
+    ...(attribution ? { attribution } : {}),
+  }
 }
 
 /**

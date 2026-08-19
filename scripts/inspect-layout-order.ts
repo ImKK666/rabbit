@@ -24,7 +24,7 @@
  * - 元素与动画：直接调 `buildLayout`，即 agent 走的那个函数
  * - 网页分步：起一个真的 pinia store 读 `formatedAnimations`（`src/store/slides.ts`）
  * - PPTX 分步：调 `groupTriggersIntoSteps`（`src/utils/animationSteps.ts`，导出侧同一份）
- * - 判据：调 `lintSlideAnimationOrder`（`server/src/agent/animationOrder.ts`，lintDeck 同一份）
+ * - 判据：调 `lintSlideAnimationOrder`（`server/src/domains/deck/animationOrder.ts`，lintDeck 同一份）
  *
  * 四处都是生产代码。这个文件里没有任何一行是「顺序规则」或「判据」的第二实现，
  * 它只负责把它们摆到一起看。唯一属于工具自己的检查是最后一条：
@@ -40,76 +40,18 @@ import type { PPTElement, PPTAnimation, Slide } from '../src/types/slides'
 import {
   LAYOUT_PATTERNS, LAYOUT_META, buildLayout,
   type LayoutPattern, type LayoutContent,
-} from '../server/src/agent/layouts'
-import { buildPalette } from '../server/src/agent/design'
-import { lintSlideAnimationOrder } from '../server/src/agent/animationOrder'
+} from '../server/src/domains/deck/layouts'
+import { buildPalette } from '../server/src/domains/deck/design'
+import { FULL, MINIMAL, THEME_LIGHT } from './layout-fixtures'
+import { lintSlideAnimationOrder } from '../server/src/domains/deck/animationOrder'
 
-const THEME = {
-  themeColors: ['#2f6feb', '#f2596b', '#a5a5a5', '#ffc000', '#4472c4', '#70ad47'],
-  fontColor: '#1a1a1a',
-  fontName: '',
-  backgroundColor: '#ffffff',
-  shadow: { h: 3, v: 3, blur: 2, color: '#808080' },
-  outline: { width: 2, color: '#525252', style: 'solid' as const },
-}
-const PALETTE = buildPalette(THEME)
-
-/** 内容给满 —— 可选字段（eyebrow / subtitle / body）全部填上，暴露最多的元素 */
-const FULL: Record<LayoutPattern, LayoutContent> = {
-  'title-center': { title: '年度产品回顾', subtitle: '2026 上半年', eyebrow: 'ANNUAL REVIEW' },
-  'title-split': { title: '重新定义协作', subtitle: '一个更快的工作方式', eyebrow: '产品发布' },
-  'section': { title: '市场表现', subtitle: '三个季度的关键数据', eyebrow: '02' },
-  'bullets': {
-    title: '三个核心结论',
-    subtitle: '本季度复盘的结论摘要',
-    items: [
-      { title: '响应更快', body: '端到端时延从 800ms 降到 200ms' },
-      { title: '成本更低', body: '单位成本下降 40%' },
-      { title: '零运维', body: '不再需要专职值班' },
-    ],
-  },
-  'cards': {
-    title: '产品能力',
-    subtitle: '三块能力互相独立又能组合',
-    items: [
-      { title: '实时协作', body: '多人同时编辑同一份文稿' },
-      { title: '版本回溯', body: '任意时点可回滚' },
-      { title: '权限分级', body: '按组织架构继承' },
-    ],
-  },
-  'compare': {
-    title: '迁移前后',
-    items: [
-      { title: '迁移前', body: '三套系统各自维护，数据对不上' },
-      { title: '迁移后', body: '单一数据源，口径统一' },
-    ],
-  },
-  'timeline': {
-    title: '演进路线',
-    items: [
-      { label: '2024', title: '立项', body: '完成技术选型' },
-      { label: '2025', title: '内测', body: '首批 20 家客户' },
-      { label: '2026', title: '正式发布', body: '全量开放' },
-    ],
-  },
-  'stat': { stat: { value: '87%', label: '客户续约率', note: '同比提升 12 个百分点' }, eyebrow: '关键指标' },
-  'quote': { quote: '最好的界面是没有界面。', source: '—— 某产品负责人' },
-  'end': { title: '谢谢', subtitle: 'hello@example.com' },
-}
-
-/** 只给必填字段 —— 条件元素全部缺席，编排里的「可选项」会不会串位 */
-const MINIMAL: Record<LayoutPattern, LayoutContent> = {
-  'title-center': { title: '年度产品回顾' },
-  'title-split': { title: '重新定义协作' },
-  'section': { title: '市场表现' },
-  'bullets': { title: '三个核心结论', items: [{ title: 'A' }, { title: 'B' }] },
-  'cards': { title: '产品能力', items: [{ title: 'A' }, { title: 'B' }] },
-  'compare': { title: '迁移前后', items: [{ title: 'A' }, { title: 'B' }] },
-  'timeline': { title: '演进路线', items: [{ title: 'A' }, { title: 'B' }, { title: 'C' }] },
-  'stat': { stat: { value: '87%' } },
-  'quote': { quote: '少即是多。' },
-  'end': { title: '谢谢' },
-}
+/**
+ * 样本内容共用 `layout-fixtures.ts`。
+ *
+ * 原来这里自己写了一套 FULL / MINIMAL，和联系表那套是两份 ——
+ * 两边看到的不是同一页，「顺序对了但版面歪了」会从两个工具之间的缝里漏掉。
+ */
+const PALETTE = buildPalette(THEME_LIGHT)
 
 // ---------------------------------------------------------------------------
 // 元素画像

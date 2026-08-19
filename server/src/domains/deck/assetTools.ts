@@ -185,6 +185,8 @@ interface StoredImage {
   bytes: number
   originalBytes: number
   compressReason: string
+  /** `[p5, p95]` 亮度，给背景遮罩算浓度 */
+  luminance: [number, number]
 }
 
 /**
@@ -214,6 +216,8 @@ const storeBytes = async (
     bytes: out.bytes.byteLength,
     originalBytes: out.originalBytes,
     compressReason: out.reason,
+    // 解码时顺手量的亮度分布 —— 版式拿它算背景遮罩浓度
+    luminance: [out.luminance.p5, out.luminance.p95] as [number, number],
   }
 }
 
@@ -363,7 +367,7 @@ const runSearch = async (
       await closeTicketReady(ticket, ctx, { ...stored, attribution: candidate.attribution })
       images.push(toolAsset({
         hash: stored.hash, width: stored.width, height: stored.height,
-        ticket, attribution: candidate.attribution,
+        ticket, attribution: candidate.attribution, luminance: stored.luminance,
       }))
     }
     catch (err) {
@@ -459,6 +463,7 @@ const runGenerate = async (
       ok: true,
       images: [toolAsset({
         hash: stored.hash, width: stored.width, height: stored.height, ticket,
+        luminance: stored.luminance,
       })],
       // 报的是**解码出来的真实像素**，不是请求时的比例 ——
       // 实测 aspectRatio:'16:9' 给的是 1376×768（1.792，不是 1.778）

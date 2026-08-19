@@ -43,3 +43,10 @@ server/node_modules/
 
 # 参考项目（外部仓库 clone，不纳入本仓库）
 refs/
+
+# 版式样张与量测报告：`npm run layout-shoot` / `layout-text` 一条命令重生成，
+# 而全套 13 张 2 倍图有 17 MB（对比 shape-sheet.png 只有 541 KB）。
+# 动画那批 .pptx 之所以入库，是因为它们要拿去 PowerPoint 里人工验、没法重生成；
+# 这批不是。
+samples/layout-*.png
+samples/layout-text-overflow.json

@@ -60,6 +60,24 @@ const CONTENT: Record<LayoutPattern, LayoutContent> = {
   'stat': { stat: { value: '87%', label: '客户续约率', note: '同比提升 12 个百分点' }, eyebrow: '关键指标' },
   'quote': { quote: '最好的界面是没有界面。', source: '—— 某产品负责人' },
   'end': { title: '谢谢', subtitle: 'hello@example.com' },
+  'image-grid': {
+    title: '三块核心能力',
+    subtitle: '每一块都可以单独采购',
+    items: [
+      { title: '实时协作', body: '多人同时编辑同一份文稿' },
+      { title: '版本回溯', body: '任意时点可回滚' },
+      { title: '权限分级', body: '按组织架构继承' },
+    ],
+  },
+  'split-figure': {
+    title: '为什么是现在',
+    subtitle: '三个条件同时成熟',
+    items: [
+      { title: '算力便宜了', body: '单位推理成本三年降到 1/40' },
+      { title: '模型能用了', body: '长上下文与工具调用都已可靠' },
+    ],
+  },
+  'full-figure': { title: '把复杂留给自己', subtitle: '把简单留给用户', eyebrow: '产品理念' },
 }
 
 /**
@@ -80,6 +98,9 @@ const MINIMAL: Record<LayoutPattern, LayoutContent> = {
   'stat': { stat: { value: '87%' } },
   'quote': { quote: '少即是多。' },
   'end': { title: '谢谢' },
+  'image-grid': { title: '三块能力', items: [{ title: '甲' }, { title: '乙' }] },
+  'split-figure': { title: '为什么是现在', items: [{ title: '甲' }, { title: '乙' }] },
+  'full-figure': { title: '把复杂留给自己' },
 }
 
 const box = (el: PPTElement) =>
@@ -450,6 +471,54 @@ describe('layouts · robustness', () => {
       if (!b) continue
       expect(b.top + b.height, el.id).toBeLessThanOrEqual(CANVAS_HEIGHT + 1)
     }
+  })
+
+  it('条目多且正文长时，字号/行距会真的降级', () => {
+    /**
+     * 「先量后排」解决了内容少时版面空洞，但内容多的时候必须有退路 ——
+     * 六条带长正文的要点按三条的字号排，量出来比版心还高，多出来的会掉到画布外。
+     *
+     * 这条盯的是**退路真的走了**。原来只有一条 `survives maximum item counts`，
+     * 但它用的是「第 N 条 / 说明」这种短内容，任何一档都放得下，
+     * 于是降级阶梯是死的也测不出来 —— 负对照跑批时才发现这个洞。
+     */
+    // 三重压力叠加：六条 + 副标题 + 配图（配图会把文字栏压到 60% 宽）。
+    // 少任何一样都还放得下 15px —— 这个组合是实测出来的，不是编的
+    const long = buildLayout('bullets', {
+      title: '本季度复盘得出的六条核心结论',
+      subtitle: '结论按影响面从大到小排列，每条都附了对应的量化指标与责任团队',
+      image: { src: `asset://${'c'.repeat(64)}`, width: 1280, height: 853 },
+      items: Array.from({ length: 6 }, (_, i) => ({
+        title: `第 ${i + 1} 条结论`,
+        body: '从 800ms 降到 200ms，P99 由 2.4s 收敛到 610ms，覆盖全部核心链路',
+      })),
+    }, PALETTE, 'long')
+
+    const short = buildLayout('bullets', {
+      title: '三条结论',
+      items: [{ title: '甲', body: '短' }, { title: '乙', body: '短' }],
+    }, PALETTE, 'short')
+
+    const bodySize = (r: ReturnType<typeof buildLayout>) => {
+      const el = r.elements.find(e => e.type === 'text' && e.textType === 'item')!
+      return Number(/font-size:(\d+)px/.exec((el as { content: string }).content)![1])
+    }
+
+    expect(bodySize(long), '六条长正文应该降级到更小的字号').toBeLessThan(bodySize(short))
+    // 降级之后必须真的放得下 —— 兜底夹高度是最后一道，不该被用到
+    expect(long.clampedIds).toEqual([])
+  })
+
+  it.each(LAYOUT_PATTERNS)('%s 的产物不依赖兜底截断（clampedIds 为空）', (pattern) => {
+    /**
+     * `Builder.text` 会把超出画布的框夹回来。夹完之后 `lintSlide` 的「超出画布」
+     * 结构上就不可能响 —— 第二十轮之前 66 张样张跑出 0 告警，
+     * 其中好几张肉眼可见文字压在一起，就是被这道兜底盖住的。
+     *
+     * 所以兜底必须留痕，而这条断言它**从来不该被用到**。
+     */
+    expect(buildLayout(pattern, CONTENT[pattern], PALETTE, 'c').clampedIds).toEqual([])
+    expect(buildLayout(pattern, MINIMAL[pattern], PALETTE, 'm').clampedIds).toEqual([])
   })
 
   it('keeps ids stable for the same prefix and input', () => {

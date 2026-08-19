@@ -179,6 +179,64 @@ export type CompressReason =
   /** 本来就是 JPEG 且不超尺寸，原样放过 —— 再编一次只会二次损失画质 */
   | 'kept-as-is'
 
+export interface LuminanceStats {
+  /** 平均相对亮度，0~1 */
+  mean: number
+  /** 第 5 百分位（最暗那一档）—— 深色文字压上去时的最坏情况 */
+  p5: number
+  /** 第 95 百分位（最亮那一档）—— 浅色文字压上去时的最坏情况 */
+  p95: number
+}
+
+/**
+ * 量一张图的亮度分布。
+ *
+ * ## 为什么要三个数而不是一个平均值
+ *
+ * 这是给背景图遮罩用的（`domains/deck/design.ts` 的 `scrimFor`）。
+ * 改之前遮罩浓度是两个拍脑袋的常量（0.82 / 0.78），实测把照片压成了一层幽灵。
+ * 要按图算浓度就得知道图有多亮 —— 而**平均值不够**：
+ *
+ * 照片是不均匀的。一行字压在天空上会消失，尽管整张图的均值完全达标。
+ * 所以取百分位，对着最坏情况算。哪一头是「最坏」取决于文字颜色：
+ * 深色字怕暗部（p5），浅色字怕亮部（p95）。两个都给，让 `scrimFor` 自己挑。
+ *
+ * ## 抽样而不是全量
+ *
+ * 一张 1280×853 是 109 万像素，逐个算 gamma 要几十毫秒。
+ * 按固定步长抽样到 ~1 万点，统计上完全够用（我们只要两位有效数字），
+ * 而且**步长是固定的**，同一张图每次算出来一模一样 —— 结果要落库，
+ * 不能这次 0.42 下次 0.43。
+ */
+export const luminanceStats = (rgba: Uint8Array, width: number, height: number): LuminanceStats => {
+  const total = width * height
+  if (!total) return { mean: 0.5, p5: 0.5, p95: 0.5 }
+
+  const TARGET_SAMPLES = 10000
+  const step = Math.max(1, Math.floor(Math.sqrt(total / TARGET_SAMPLES)))
+
+  const srgb = (v: number) => {
+    const c = v / 255
+    return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4
+  }
+
+  const values: number[] = []
+  let sum = 0
+  for (let y = 0; y < height; y += step) {
+    for (let x = 0; x < width; x += step) {
+      const i = (y * width + x) * 4
+      const l = 0.2126 * srgb(rgba[i]) + 0.7152 * srgb(rgba[i + 1]) + 0.0722 * srgb(rgba[i + 2])
+      values.push(l)
+      sum += l
+    }
+  }
+  if (!values.length) return { mean: 0.5, p5: 0.5, p95: 0.5 }
+
+  values.sort((a, b) => a - b)
+  const at = (q: number) => values[Math.min(values.length - 1, Math.floor(q * values.length))]
+  return { mean: sum / values.length, p5: at(0.05), p95: at(0.95) }
+}
+
 export interface CompressResult {
   bytes: Uint8Array
   /** 传对象存储时用；也决定 `Content-Type` */
@@ -188,6 +246,13 @@ export interface CompressResult {
   height: number
   originalBytes: number
   reason: CompressReason
+  /**
+   * 亮度分布，给背景图遮罩算浓度用。
+   *
+   * **在这里算是因为这是唯一已经把图解开的地方** —— 解码是压缩流程的第一步，
+   * 顺手统计几乎不要钱；单独为它再解一次图就是白白多花一次解码。
+   */
+  luminance: LuminanceStats
 }
 
 export interface CompressOptions {
@@ -214,20 +279,23 @@ export const compressImage = (
   const { width: sw, height: sh, rgba } = decodeImage(input)
   const target = scaleToMaxEdge(sw, sh, maxEdgePx)
   const needsResize = target.width !== sw || target.height !== sh
+  // 在原图上量：缩放后的像素是插值出来的，极值会被抹平，
+  // 而 p5 / p95 要的正好是极值
+  const luminance = luminanceStats(rgba, sw, sh)
 
   // 透明图不能转 JPEG（透明会变黑）。缩放同样会走 JPEG 编码，所以一并放弃 ——
   // 保留原 PNG 比「小了但花了」强
   if (hasTransparency(rgba)) {
     return {
       bytes: input, ext: 'png', contentType: 'image/png',
-      width: sw, height: sh, originalBytes: input.byteLength, reason: 'kept-transparent',
+      width: sw, height: sh, originalBytes: input.byteLength, reason: 'kept-transparent', luminance,
     }
   }
 
   if (format === 'jpeg' && !needsResize) {
     return {
       bytes: input, ext: 'jpg', contentType: 'image/jpeg',
-      width: sw, height: sh, originalBytes: input.byteLength, reason: 'kept-as-is',
+      width: sw, height: sh, originalBytes: input.byteLength, reason: 'kept-as-is', luminance,
     }
   }
 
@@ -245,5 +313,6 @@ export const compressImage = (
     height: target.height,
     originalBytes: input.byteLength,
     reason: needsResize ? 'resized-and-recoded' : 'recoded',
+    luminance,
   }
 }

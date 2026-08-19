@@ -16,7 +16,7 @@
 | [05-pptx-export.md](./05-pptx-export.md) | PPTX 导出与**自研 OOXML writer** —— pptxgenjs 能力边界、`elId → spid` 映射、动画树结构、E1~E6 分期 | 要做导出 |
 | [06-backend.md](./06-backend.md) | 后端技术决策（Bun / Hono / Drizzle / AI SDK / WebSocket）与不用 Python 的理由 | 要动后端 |
 | [07-agent-test.md](./07-agent-test.md) | 覆盖全部工具的分轮功能测试脚本 + 预期结果对照 | 要验证 agent 是否正常 |
-| [08-expressiveness.md](./08-expressiveness.md) | **产出「没有新意」的五个根因诊断** + 动画扩容 / 工具扩容 / prompt 重写三条工作线 | 要提升生成质量 |
+| [08-expressiveness.md](./08-expressiveness.md) | **产出「没有新意」的五个根因诊断** + 动画扩容 / 工具扩容 / prompt 重写三条工作线（R-49 补：审美那一轮的结论与三个看版面的工具） | 要提升生成质量 |
 | [09-powerpoint-verify.md](./09-powerpoint-verify.md) | 45 个动画 + 12 转场在真实 PowerPoint 里的人工验证手册 | 要验动画导出是否真的能播 |
 | [10-agent-runtime-study.md](./10-agent-runtime-study.md) | **BitFun 与 Claude Code 的 runtime / 交互规则研究** —— 阻塞式提问、权限闸门、取消语义、单一权威写者、上下文压缩 | 要动 agent 编排或交互 |
 | [11-agent-roadmap.md](./11-agent-roadmap.md) | **通用 agent 化路线** —— 目标架构、A~D 分期、机器可判的验收判据、四笔隐藏成本 | 要规划 agent 的下一步 |

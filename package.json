@@ -17,6 +17,9 @@
     "samples": "vite-node scripts/build-animation-samples.ts",
     "lab": "vite-node scripts/build-animation-lab.ts",
     "layout-order": "vite-node scripts/inspect-layout-order.ts",
+    "layout-audit": "vite-node scripts/audit-layouts.ts",
+    "layout-shoot": "node scripts/shoot-layout-sheet.mjs",
+    "layout-text": "node scripts/measure-layout-text.mjs",
     "shapes": "vite-node scripts/build-shape-sheet.ts"
   },
   "homepage": "https://github.com/ImKK666/rabbit",

@@ -30,6 +30,7 @@ import type { AssetTools } from './assetTools'
 import { DECK_TOOL_GROUPS, deckRoleGroups, type DeckTools } from './toolGroups'
 import { describeShapeCatalog } from '@/configs/shapeCatalog'
 import { describeLayouts } from './layouts'
+import { describePaletteStyles } from './design'
 
 const CANVAS_CONTEXT = `
 你正在操作一个演示文稿编辑器。
@@ -54,6 +55,16 @@ const CANVAS_CONTEXT = `
 - **字号阶梯**：display / stat / title / subtitle / itemTitle / body / caption / eyebrow。
   只在阶梯里挑，相邻层级之间差得足够多，层次才立得住。自己发明 17px、23px 这种数值是版面显业余的主要来源。
 - **间距栅格**：8 的整数倍。页边距、栏间距、段间距都从 spacing 里取。
+
+## 配色风格
+
+整份文稿选**一个**风格，每次 applyLayout 都传同一个 style 参数：
+
+${describePaletteStyles()}
+
+选哪个是**内容决策** —— 一份学术汇报和一份产品发布会本来就不该长得一样，
+而只有你知道这份稿子是什么。但风格里的九个色值是排版决策，代码定好了，
+你只要选名字。**别每页换一个** —— 换来换去等于没有风格。
 
 ## 排版底线
 
@@ -229,14 +240,15 @@ ${ANIMATION_GUIDE}
 1. 决定这一页配不配图、配什么图
 2. 取图：具象事物（城市、设备、办公场景、自然）用 **searchImage**，英文具象名词效果最好；
    抽象概念、指定风格的插画、特定构图的背景用 **generateImage**
-3. **把返回的 src / width / height 原样填进这一页 applyLayout 的 content.image**
+3. **把返回的 src / width / height / luminance 原样填进这一页 applyLayout 的 content.image**
 4. 下一页重复
 
 要点：
 
 - 只有版式清单里标了「**可配图**」的才吃 content.image。没标的塞进去会被拒，
   并告诉你哪些版式可用 —— 想配图就换一个版式，别硬塞
-- width / height 一定要带上，否则图会被拉变形
+- width / height / luminance 三个都要带上：少了宽高图会被拉变形，
+  少了 luminance 背景遮罩只能按中位数压 —— 深色照片会被压成一层灰
 - 生图约 15 秒一张且有每分钟配额；被拒时返回 reason 为 rate_limited，
   那时**改用 searchImage**，不要重试
 - 不是每页都要图。**满篇配图和满篇没图一样廉价** —— 封面、章节页、

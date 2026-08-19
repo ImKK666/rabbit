@@ -43,7 +43,8 @@ import type {
 import { buildShapeGeometry } from '@/configs/shapeCatalog'
 import {
   CANVAS_WIDTH, CANVAS_HEIGHT, SAFE, SPACING, TYPE_SCALE, LINE_HEIGHT,
-  richText, estimateTextHeight, fitFontSize, mixHex, type Palette,
+  richText, textBoxHeight, fitFontSize, fitSteps, mixHex, snapY, stack, scrimFor, ensureContrast, UNIT, LAYOUT_INSET,
+  type Palette,
 } from './design'
 
 export const LAYOUT_PATTERNS = [
@@ -57,15 +58,36 @@ export const LAYOUT_PATTERNS = [
   'stat',
   'quote',
   'end',
+  'image-grid',
+  'split-figure',
+  'full-figure',
 ] as const
 
 export type LayoutPattern = typeof LAYOUT_PATTERNS[number]
+
+/** 一张配图。工具返回值原样抄进来即可 */
+export interface LayoutImage {
+  src: string
+  width?: number
+  height?: number
+  /** `[p5, p95]` 亮度，算遮罩浓度用 */
+  luminance?: [number, number]
+}
 
 export interface LayoutItem {
   title?: string
   body?: string
   /** 时间轴 / 步骤条上的标签，如 "2024" 或 "第一步" */
   label?: string
+  /**
+   * **这一条自己的配图**（只有 `image-grid` 吃）。
+   *
+   * 整页一张图（`content.image`）解决的是「这一页配张图」，
+   * 但「三个概念各配一张图」是另一回事 —— 第十九轮把 cards / compare / timeline
+   * 判为「版面已满、塞不下图」，结论没错，错在**没有第二种图文关系可选**。
+   * 一页三张小图的网格是标准做法，它不该挤进 cards，而该是一个自己的版式。
+   */
+  image?: LayoutImage
 }
 
 export interface LayoutContent {
@@ -86,22 +108,51 @@ export interface LayoutContent {
    *
    * `width` / `height` 是**图片的真实像素**，直接把工具返回值抄进来。
    * 用来算 cover 裁剪 —— 少了就只能拉伸变形。
+   *
+   * `luminance` 是图片的 **p95 亮度**（0~1），同样直接抄工具返回值。
+   * 用来算背景遮罩该多浓 —— 少了就退回一个中位数常量，
+   * 表现是深色照片被压得过狠、浅色照片压不住。取 p95 而不是均值，
+   * 因为一行字只要压在**最亮那一小块**上就看不见了（见 `scrimFor`）。
    */
-  image?: { src: string, width?: number, height?: number }
+  image?: LayoutImage
 }
 
 /** 版式怎么用这张图 */
 export type LayoutImageSlot =
   /** 侧栏／色块位换成图片 */
   | 'panel'
-  /** 满屏背景图，上面自动压一层遮罩保证文字可读 */
+  /**
+   * 满屏背景图，上面自动压一层遮罩保证文字可读。
+   * **文字直接压在照片上**，所以遮罩浓度必须按图片亮度算。
+   */
   | 'backdrop'
+  /**
+   * 满屏图 + **不透明浮层卡片**，文字装在卡片里。
+   *
+   * 和 `backdrop` 的区别不是程度而是种类：`backdrop` 的可读性由遮罩承担，
+   * 所以浓度得跟着照片亮度走；`overlay` 的可读性由那块实心卡片承担，
+   * **和照片有多亮完全无关**，遮罩只是让卡片浮起来的装饰。
+   *
+   * 分成两个名字是因为测试按 slot 分组断言 —— 混用一个名字，
+   * 「遮罩必须随亮度变化」那条判据就会套到一个根本不靠遮罩的版式上。
+   */
+  | 'overlay'
 
 export interface LayoutResult {
   elements: PPTElement[]
   animations: PPTAnimation[]
   background: SlideBackground
   slideType: SlideType
+  /**
+   * 被兜底夹过高度的元素 id —— **正常应该永远是空数组**。
+   *
+   * 非空 = 某个版式算出来的版面比画布还高，兜底把框截了，而框一截
+   * `lintSlide` 的「超出画布」就永远不会响（它比的是框，不是渲染出来的字）。
+   * 第二十轮之前这件事完全无声：66 张样张 0 告警，其中好几张肉眼可见文字压在一起。
+   *
+   * 现在它至少留下痕迹，`layouts.test.ts` 对全部样本断言它为空。
+   */
+  clampedIds: string[]
 }
 
 export interface LayoutMeta {
@@ -122,6 +173,14 @@ export interface LayoutMeta {
    * 当时一个图片位都没有。能力存在但没有任何路径够得着，等于不存在。
    */
   image: LayoutImageSlot | null
+  /**
+   * 这个版式吃不吃**每一条自己的图**（`items[].image`）。
+   *
+   * 和 `image` 是两回事：`image` 是「整页一张图」，这个是「三个概念各一张图」。
+   * 只有 `image-grid` 是后者 —— 它的 `image` 反而是 null，
+   * 因为整页再压一张背景图会和三张小图打架。
+   */
+  itemImage?: boolean
 }
 
 export const LAYOUT_META: Record<LayoutPattern, LayoutMeta> = {
@@ -135,6 +194,9 @@ export const LAYOUT_META: Record<LayoutPattern, LayoutMeta> = {
   'stat': { pattern: 'stat', name: '单点强调', usage: '内容页：一个超大数字或一句结论撑满整页，用来制造节奏停顿', items: null, requires: ['stat'], image: 'backdrop' },
   'quote': { pattern: 'quote', name: '引用语', usage: '内容页：引述一段话 + 出处，同样用来制造节奏', items: null, requires: ['quote'], image: 'backdrop' },
   'end': { pattern: 'end', name: '结尾页', usage: '最后一页：致谢 / 联系方式', items: null, requires: ['title'], image: 'backdrop' },
+  'image-grid': { pattern: 'image-grid', name: '图文网格', usage: '内容页：2~3 个概念**各配一张图**，图在上文字在下。产品特性、案例展示、团队介绍', items: [2, 3], requires: ['title', 'items'], image: null, itemImage: true },
+  'split-figure': { pattern: 'split-figure', name: '左图右列', usage: '内容页：左边一张大图，右边 2~4 条要点。既要配图又要讲清条目时用它，是 cards / bullets 的配图替身', items: [2, 4], requires: ['title', 'items'], image: 'panel' },
+  'full-figure': { pattern: 'full-figure', name: '满屏图 + 浮层卡片', usage: '内容页：整幅照片当背景，文字装在一块实心浮层卡片里。视觉冲击最强，适合章节开场、金句、单一论断', items: null, requires: ['title'], image: 'overlay' },
 }
 
 /**
@@ -157,11 +219,37 @@ class Builder {
   private n = 0
   readonly elements: PPTElement[] = []
   readonly animations: PPTAnimation[] = []
+  /**
+   * 被兜底夹过高度的元素 —— **正常情况下应该永远是空的**。
+   *
+   * 它非空就说明某个版式算出来的版面比画布还高，兜底把它截了。
+   * 改之前这件事完全无声：夹完之后元素框永远在画布内，
+   * `lintSlide` 的「超出画布」结构上就不可能响，于是 66 张样张跑出 0 告警，
+   * 而其中好几张肉眼可见文字压在一起。现在它至少留下痕迹，
+   * `layouts.test.ts` 对全部样本断言这个数组为空。
+   */
+  readonly clampedIds: string[] = []
 
   constructor(private prefix: string, readonly palette: Palette) {}
 
   private id(): string {
     return `${this.prefix}_${++this.n}`
+  }
+
+  /**
+   * 量一段文字在给定**元素框宽**下需要多高。
+   *
+   * 版式一律「先量后排」：把每一块的高度量出来交给 `stack`，由它决定整组放哪。
+   * 直接 `y += 常量` 的写法是第二十轮之前版面又挤又空的总根源。
+   */
+  measure(
+    text: string,
+    size: number,
+    width: number,
+    lineHeight: number = LINE_HEIGHT.body,
+    bold = false,
+  ): number {
+    return textBoxHeight(text, size, width, lineHeight, { bold })
   }
 
   text(
@@ -183,10 +271,12 @@ class Builder {
     // 兜底：估高再准也可能被超长内容顶穿，统一夹到画布底边。
     // 溢出的文本在 PPTist 里会照常渲染（文本框不裁剪），但元素框本身
     // 留在画布内，lint 就不会对每一页都报「超出画布」把真警告淹掉。
+    const maxH = CANVAS_HEIGHT - box.top - 8
     const clamped = {
       ...box,
-      height: Math.max(16, Math.min(box.height, CANVAS_HEIGHT - box.top - 8)),
+      height: Math.max(16, Math.min(box.height, maxH)),
     }
+    if (box.height > maxH + 0.5) this.clampedIds.push(`${this.prefix}_${this.n + 1}`)
     const el: PPTTextElement = {
       id: this.id(),
       type: 'text',
@@ -195,6 +285,9 @@ class Builder {
       content: richText(content, opts),
       defaultFontName: FONT,
       defaultColor: opts.color,
+      // 必须真的写到元素上：`measure` 是按 LAYOUT_INSET 算的，
+      // 不写就等于按一个框算、按另一个框渲染。导出侧 useExport 也读它（转成 margin）
+      inset: [...LAYOUT_INSET],
       lineHeight: opts.lineHeight ?? LINE_HEIGHT.body,
       ...(opts.textType ? { textType: opts.textType } : {}),
       ...(opts.vAlign ? { vAlign: opts.vAlign, fixedHeight: true } : {}),
@@ -210,6 +303,7 @@ class Builder {
     box: Box,
     opts: {
       fill: string
+      gradient?: PPTShapeElement['gradient']
       opacity?: number
       outline?: PPTShapeElement['outline']
       shadow?: PPTShapeElement['shadow']
@@ -232,6 +326,7 @@ class Builder {
       fill: opts.fill,
       ...(geometry.pathFormula ? { pathFormula: geometry.pathFormula } : {}),
       ...(geometry.keypoints ? { keypoints: geometry.keypoints } : {}),
+      ...(opts.gradient ? { gradient: opts.gradient } : {}),
       ...(opts.opacity !== undefined ? { opacity: opts.opacity } : {}),
       ...(opts.outline ? { outline: opts.outline } : {}),
       ...(opts.shadow ? { shadow: opts.shadow } : {}),
@@ -250,7 +345,7 @@ class Builder {
   image(
     box: Box,
     image: { src: string, width?: number, height?: number },
-    opts: { imageType?: 'pageFigure' | 'background', name?: string } = {},
+    opts: { imageType?: 'pageFigure' | 'itemFigure' | 'background', name?: string } = {},
   ): PPTImageElement {
     const clip = coverClip(box.width, box.height, image.width, image.height)
     const el: PPTImageElement = {
@@ -276,22 +371,62 @@ class Builder {
    * 而 `lintDeck` 只检查纯色背景与文字的对比度，它看不见照片，
    * 于是「一页字全糊在图上」会安安静静地通过所有检查。
    * 用背景色本身当遮罩（而不是纯黑/纯白），主题换了它自动跟着换。
+   *
+   * ## 第二十轮：从「一个常量」换成「按图算 + 渐变」
+   *
+   * 改之前是 `opacity: dark ? 0.78 : 0.82` 两个拍出来的常量。实测下来那不是
+   * 「照片偏淡」，是**照片没了** —— 白底亮图那张压完只剩一点点人影，
+   * 搜图/生图的钱白花。业界通行区间是 40~60%，我们高出去 20 个点还带反方向。
+   *
+   * 现在浓度由 `scrimFor` 按**图片实际亮度**算（`content.image.luminance`，
+   * 解码时顺手量的 p95 亮度），并且是**渐变**：文字那一侧压住，另一侧照片留着。
+   * 导出 PPTX 时渐变会被压平成均匀遮罩 —— 那恰好就是业界那种平铺遮罩，见 `scrimFor` 的说明。
+   *
+   * `direction` 跟着文字在哪一侧走：文字在左就从左压。
    */
   backdrop(
-    image: { src: string, width?: number, height?: number } | undefined,
+    image: { src: string, width?: number, height?: number, luminance?: [number, number] } | undefined,
+    direction: 'left' | 'right' | 'down' | 'none' = 'left',
+    /** 文字在 `direction` 方向上占到画布的哪里（0~1）—— 遮罩要一直罩到那儿 */
+    hold = 0.55,
   ): [PPTImageElement | null, PPTShapeElement | null] {
     if (!image?.src) return [null, null]
-    const p = this.palette
     const img = this.image(
       { left: 0, top: 0, width: CANVAS_WIDTH, height: CANVAS_HEIGHT },
       image,
       { imageType: 'background', name: '背景图' },
     )
-    // 深色主题的图往往更压不住，遮罩给厚一点
+    const spec = scrimFor(this.palette, image, { direction, hold })
     const scrim = this.shape('rect', { left: 0, top: 0, width: CANVAS_WIDTH, height: CANVAS_HEIGHT }, {
-      fill: p.background, opacity: p.dark ? 0.78 : 0.82, name: '背景遮罩',
+      fill: spec.color,
+      gradient: spec.gradient,
+      opacity: spec.opacity,
+      name: '背景遮罩',
     })
+    // 记下文字实际踩在什么颜色上，供 `onPhoto` 给彩色文字兜底
+    this.scrimBg = spec.effectiveBg
     return [img, scrim]
+  }
+
+  /**
+   * 背景图压完遮罩之后，文字踩在什么颜色上；没有背景图时是 null。
+   * 只由 `backdrop()` 写，`onPhoto()` 读。
+   */
+  private scrimBg: string | null = null
+
+  /**
+   * 彩色文字压在照片上时的兜底颜色。
+   *
+   * `scrimFor` 是照着 `palette.text` 算遮罩浓度的，但一页上还有别的颜色在当文字用：
+   * stat 的大数字是 `primary`（蓝）、eyebrow 是 `accent`（黄）。
+   * **实测截图上「关键指标」那行黄字压在照片上几乎看不见，而所有断言都是绿的** ——
+   * 因为 lint 只看纯色背景，它看不见照片。
+   *
+   * 没有背景图时原样返回：纯色背景上的对比度有 lint 守着，不该在这里二次加工，
+   * 那会把用户主题色悄悄改掉。
+   */
+  onPhoto(color: string): string {
+    return this.scrimBg ? ensureContrast(color, this.scrimBg) : color
   }
 
   line(start: [number, number], end: [number, number], left: number, top: number, color: string, width = 1): PPTLineElement {
@@ -385,47 +520,61 @@ const LAYOUTS: Record<LayoutPattern, LayoutFn> = {
   'title-center': (b, c) => {
     const p = b.palette
 
-    // 背景图必须最先放：PPTist 的层级就是数组顺序
-    const [bgImage, scrim] = b.backdrop(c.image)
+    // 背景图必须最先放：PPTist 的层级就是数组顺序。
+    //
+    // 居中构图**用均匀遮罩**（direction: 'none'）：文字横跨整幅、上下也居中，
+    // 任何方向的渐变都会有一头压不住。封面本来就是「整张图当舞台」，
+    // 均匀压反而对 —— 关键是浓度现在按图算，不再是那个 0.82
+    const [bgImage, scrim] = b.backdrop(c.image, 'none')
 
-    const stripe = b.shape('diagStripe', { left: CANVAS_WIDTH - 320, top: 0, width: 320, height: 300 }, {
+    // 有照片就不放斜块。理由和 R-48 去掉 title-split 那个装饰环一模一样：
+    // 半透明色块叠在照片上像块污渍，照片自带纹理，不需要再加「质感」
+    const hasImage = !!c.image?.src
+    const stripe = hasImage ? null : b.shape('diagStripe', { left: CANVAS_WIDTH - 320, top: 0, width: 320, height: 300 }, {
       fill: p.primary, opacity: 0.14, name: '装饰斜块',
     })
-    const stripe2 = b.shape('diagStripe', { left: 0, top: CANVAS_HEIGHT - 220, width: 260, height: 220 }, {
+    const stripe2 = hasImage ? null : b.shape('diagStripe', { left: 0, top: CANVAS_HEIGHT - 220, width: 260, height: 220 }, {
       fill: p.accent, opacity: 0.1, rotate: 180, name: '装饰斜块',
     })
 
-    let y = 176
-    let eyebrow: PPTElement | null = null
-    if (c.eyebrow) {
-      eyebrow = b.text({ left: SAFE.left, top: y, width: SAFE.width, height: 24 }, c.eyebrow, {
-        size: TYPE_SCALE.eyebrow, color: p.accent, bold: true, align: 'center',
+    const subW = SAFE.width - 160
+    const titleSize = fitFontSize(c.title ?? '', SAFE.width, 200, DISPLAY_STEPS)
+    const titleH = b.measure(c.title ?? '', titleSize, SAFE.width, LINE_HEIGHT.heading, true)
+    const eyebrowH = b.measure(c.eyebrow ?? '', TYPE_SCALE.eyebrow, SAFE.width, LINE_HEIGHT.tight, true)
+    const subH = b.measure(c.subtitle ?? '', TYPE_SCALE.subtitle, subW)
+
+    // 整组垂直居中 —— 封面的内容量天然少，顶端对齐就是下面空一大片
+    const rows = stack([
+      ...(c.eyebrow ? [{ height: eyebrowH }] : []),
+      { height: titleH, gap: c.eyebrow ? SPACING.paragraphGap : 0 },
+      { height: 16, gap: SPACING.headingGap },
+      ...(c.subtitle ? [{ height: subH, gap: SPACING.headingGap }] : []),
+    ], SAFE, 'middle')
+
+    let i = 0
+    const eyebrow = c.eyebrow
+      ? b.text({ left: SAFE.left, top: rows.tops[i++], width: SAFE.width, height: eyebrowH }, c.eyebrow, {
+        size: TYPE_SCALE.eyebrow, color: b.onPhoto(p.accent), bold: true, align: 'center',
         letterSpacing: 2, lineHeight: LINE_HEIGHT.tight, textType: 'header',
       })
-      y += 34
-    }
+      : null
 
-    const titleSize = fitFontSize(c.title ?? '', SAFE.width, 190, DISPLAY_STEPS)
-    const titleH = estimateTextHeight(c.title ?? '', titleSize, SAFE.width, LINE_HEIGHT.heading)
-    const title = b.text({ left: SAFE.left, top: y, width: SAFE.width, height: titleH }, c.title ?? '', {
+    const title = b.text({ left: SAFE.left, top: rows.tops[i++], width: SAFE.width, height: titleH }, c.title ?? '', {
       size: titleSize, color: p.text, bold: true, align: 'center',
       lineHeight: LINE_HEIGHT.heading, textType: 'title',
     })
-    y += titleH + SPACING.headingGap
 
-    const bar = b.shape('bar', { left: (CANVAS_WIDTH - 96) / 2, top: y, width: 96, height: 16 }, {
+    const bar = b.shape('bar', { left: (CANVAS_WIDTH - 96) / 2, top: rows.tops[i++], width: 96, height: 16 }, {
       fill: p.accent, name: '强调条',
     })
-    y += 16 + SPACING.headingGap
 
-    let subtitle: PPTElement | null = null
-    if (c.subtitle) {
-      subtitle = b.text(
-        { left: SAFE.left + 80, top: y, width: SAFE.width - 160, height: estimateTextHeight(c.subtitle, TYPE_SCALE.subtitle, SAFE.width - 160) },
+    const subtitle = c.subtitle
+      ? b.text(
+        { left: SAFE.left + 80, top: rows.tops[i++], width: subW, height: subH },
         c.subtitle,
-        { size: TYPE_SCALE.subtitle, color: p.textMuted, align: 'center', textType: 'subtitle' },
+        { size: TYPE_SCALE.subtitle, color: b.onPhoto(p.textMuted), align: 'center', textType: 'subtitle' },
       )
-    }
+      : null
 
     // 封面用几何效果开场，和内容页的 fade/slide 拉开距离。
     // 但斜块是装饰，不能自己占一步排在标题前面 —— 和标题同步擦入，
@@ -448,52 +597,61 @@ const LAYOUTS: Record<LayoutPattern, LayoutFn> = {
     const p = b.palette
     const splitX = 600
     const panelBox = { left: splitX, top: 0, width: CANVAS_WIDTH - splitX, height: CANVAS_HEIGHT }
+    const hasImage = !!c.image?.src
 
     // 图直接顶掉主色块 —— 不是叠在上面：叠的话主色块永远看不见，
     // 白白多一个元素，用户想换回纯色还得先删图
-    const panel = c.image?.src
-      ? b.image(panelBox, c.image, { imageType: 'pageFigure', name: '封面图' })
+    const panel = hasImage
+      ? b.image(panelBox, c.image!, { imageType: 'pageFigure', name: '封面图' })
       : b.shape('rect', panelBox, { fill: p.primary, name: '主色块' })
-    const panelAccent = b.shape('rect', { left: splitX, top: 0, width: 10, height: CANVAS_HEIGHT }, {
+    // 那条 10px 的强调色分界线是给**纯色块**用的：两块纯色相接需要一条边来收口。
+    // 贴在照片边上就成了一条突兀的彩色描边 —— 照片自己的边缘就是边界，
+    // 实测样张上一眼看出来它像贴纸。和下面的装饰环是同一条理由
+    const panelAccent = hasImage ? null : b.shape('rect', { left: splitX, top: 0, width: 10, height: CANVAS_HEIGHT }, {
       fill: p.accent, name: '分界线',
     })
     // 装饰环是给**纯色块**加质感用的。照片自带纹理，再叠一个半透明圆环
     // 只会像块污渍 —— 实测截图上一眼就看出来了
-    const mark = c.image?.src
+    const mark = hasImage
       ? null
       : b.shape('donut', { left: splitX + 96, top: 180, width: 200, height: 200 }, {
         fill: mixHex(p.primary, p.onPrimary, 0.28), name: '装饰环',
       })
 
     const colW = splitX - SAFE.left - SPACING.gutter
-    let y = 170
-    let eyebrow: PPTElement | null = null
-    if (c.eyebrow) {
-      eyebrow = b.text({ left: SAFE.left, top: y, width: colW, height: 22 }, c.eyebrow, {
-        size: TYPE_SCALE.eyebrow, color: p.accent, bold: true, letterSpacing: 2,
+    const titleSize = fitFontSize(c.title ?? '', colW, 220, DISPLAY_STEPS)
+    const titleH = b.measure(c.title ?? '', titleSize, colW, LINE_HEIGHT.heading, true)
+    const eyebrowH = b.measure(c.eyebrow ?? '', TYPE_SCALE.eyebrow, colW, LINE_HEIGHT.tight, true)
+    const subH = b.measure(c.subtitle ?? '', TYPE_SCALE.subtitle, colW)
+
+    const rows = stack([
+      ...(c.eyebrow ? [{ height: eyebrowH }] : []),
+      { height: titleH, gap: c.eyebrow ? SPACING.paragraphGap : 0 },
+      { height: 12, gap: SPACING.headingGap },
+      ...(c.subtitle ? [{ height: subH, gap: SPACING.headingGap }] : []),
+    ], SAFE, 'middle')
+
+    let i = 0
+    const eyebrow = c.eyebrow
+      ? b.text({ left: SAFE.left, top: rows.tops[i++], width: colW, height: eyebrowH }, c.eyebrow, {
+        size: TYPE_SCALE.eyebrow, color: b.onPhoto(p.accent), bold: true, letterSpacing: 2,
         lineHeight: LINE_HEIGHT.tight, textType: 'header',
       })
-      y += 32
-    }
+      : null
 
-    const titleSize = fitFontSize(c.title ?? '', colW, 210, DISPLAY_STEPS)
-    const titleH = estimateTextHeight(c.title ?? '', titleSize, colW, LINE_HEIGHT.heading)
-    const title = b.text({ left: SAFE.left, top: y, width: colW, height: titleH }, c.title ?? '', {
+    const title = b.text({ left: SAFE.left, top: rows.tops[i++], width: colW, height: titleH }, c.title ?? '', {
       size: titleSize, color: p.text, bold: true, lineHeight: LINE_HEIGHT.heading, textType: 'title',
     })
-    y += titleH + SPACING.headingGap
 
-    const bar = b.shape('bar', { left: SAFE.left, top: y, width: 72, height: 12 }, { fill: p.accent, name: '强调条' })
-    y += 12 + SPACING.headingGap
+    const bar = b.shape('bar', { left: SAFE.left, top: rows.tops[i++], width: 72, height: 12 }, { fill: p.accent, name: '强调条' })
 
-    let subtitle: PPTElement | null = null
-    if (c.subtitle) {
-      subtitle = b.text(
-        { left: SAFE.left, top: y, width: colW, height: estimateTextHeight(c.subtitle, TYPE_SCALE.subtitle, colW) },
+    const subtitle = c.subtitle
+      ? b.text(
+        { left: SAFE.left, top: rows.tops[i++], width: colW, height: subH },
         c.subtitle,
-        { size: TYPE_SCALE.subtitle, color: p.textMuted, textType: 'subtitle' },
+        { size: TYPE_SCALE.subtitle, color: b.onPhoto(p.textMuted), textType: 'subtitle' },
       )
-    }
+      : null
 
     // 主色块是舞台不是内容 —— 和标题同时铺开。装饰环挪到最后，
     // 跟着副标题一起点出来（原来它在标题之前，等于让一个圆环抢了封面的第一眼）
@@ -513,31 +671,54 @@ const LAYOUTS: Record<LayoutPattern, LayoutFn> = {
     const p = b.palette
     const number = c.eyebrow || '01'
 
-    const [bgImage, scrim] = b.backdrop(c.image)
+    // 号码栏宽度跟着位数走：「02」和「12」一样宽，但「第二部分」那种就得让开
+    const numW = Math.max(180, Math.min(300, number.length * TYPE_SCALE.stat * 0.62 + 40))
+    const numH = b.measure(number, TYPE_SCALE.stat, numW, LINE_HEIGHT.tight, true)
 
-    const num = b.text({ left: SAFE.left, top: 150, width: 260, height: 180 }, number, {
-      size: TYPE_SCALE.stat, color: p.accent, bold: true, lineHeight: LINE_HEIGHT.tight,
-      textType: 'partNumber', name: '章节号',
-    })
+    const textLeft = SAFE.left + numW + SPACING.gutter + 24
+    // 有图时右边留出 22% 给照片，理由同 quote / stat
+    const textRight = c.image?.src ? SAFE.left + Math.round(SAFE.width * 0.78) : SAFE.right
+    const textW = Math.max(160, textRight - textLeft)
+    const [bgImage, scrim] = b.backdrop(c.image, 'left', (textRight + 40) / CANVAS_WIDTH)
+    const titleSize = fitFontSize(c.title ?? '', textW, 180, [TYPE_SCALE.title, TYPE_SCALE.subtitle, TYPE_SCALE.itemTitle], LINE_HEIGHT.heading, { bold: true })
+    const titleH = b.measure(c.title ?? '', titleSize, textW, LINE_HEIGHT.heading, true)
+    // 副标题从 body(15) 提到 subtitle(22)：章节页上 15px 小得像脚注，
+    // 和 38px 的标题之间层次直接断掉。转场页信息少，正该把这一行放大
+    const subH = b.measure(c.subtitle ?? '', TYPE_SCALE.subtitle, textW)
 
-    const rule = b.line([0, 0], [0, 180], SAFE.left + 280, 150, p.border, 2)
+    // 文字块（标题 + 副标题）和号码各自成组，整体垂直居中
+    const textBlock = titleH + (c.subtitle ? subH + SPACING.paragraphGap : 0)
+    const groupH = Math.max(numH, textBlock)
+    const top = snapY(SAFE.top + (SAFE.height - groupH) / 2)
 
-    const titleSize = fitFontSize(c.title ?? '', SAFE.width - 340, 180, [TYPE_SCALE.title, TYPE_SCALE.subtitle, TYPE_SCALE.itemTitle])
-    const titleH = estimateTextHeight(c.title ?? '', titleSize, SAFE.width - 340, LINE_HEIGHT.heading)
+    // 号码和文字块各自在组内居中 —— 改之前号码顶对齐、标题往下 10px、
+    // 竖线又比两者都长，三样东西三个基准，看着就是没对齐
+    const num = b.text(
+      { left: SAFE.left, top: snapY(top + (groupH - numH) / 2), width: numW, height: numH },
+      number,
+      {
+        size: TYPE_SCALE.stat, color: b.onPhoto(p.accent), bold: true, lineHeight: LINE_HEIGHT.tight,
+        textType: 'partNumber', name: '章节号',
+      },
+    )
+
+    // 竖线高度 = 内容组高度，不再是写死的 180
+    const rule = b.line([0, 0], [0, groupH], SAFE.left + numW + SPACING.gutter, top, p.border, 2)
+
+    const textTop = snapY(top + (groupH - textBlock) / 2)
     const title = b.text(
-      { left: SAFE.left + 316, top: 160, width: SAFE.width - 316, height: titleH },
+      { left: textLeft, top: textTop, width: textW, height: titleH },
       c.title ?? '',
       { size: titleSize, color: p.text, bold: true, lineHeight: LINE_HEIGHT.heading, textType: 'title' },
     )
 
-    let subtitle: PPTElement | null = null
-    if (c.subtitle) {
-      subtitle = b.text(
-        { left: SAFE.left + 316, top: 160 + titleH + SPACING.paragraphGap, width: SAFE.width - 316, height: estimateTextHeight(c.subtitle, TYPE_SCALE.body, SAFE.width - 316) },
+    const subtitle = c.subtitle
+      ? b.text(
+        { left: textLeft, top: snapY(textTop + titleH + SPACING.paragraphGap), width: textW, height: subH },
         c.subtitle,
-        { size: TYPE_SCALE.body, color: p.textMuted, textType: 'content' },
+        { size: TYPE_SCALE.subtitle, color: b.onPhoto(p.textMuted), textType: 'content' },
       )
-    }
+      : null
 
     // 章节号是这一页的主角（partNumber 属于标题块），它领跑；
     // 竖线只是号与题之间的分隔，跟着章节号一起画出来，不单独占一步
@@ -574,28 +755,78 @@ const LAYOUTS: Record<LayoutPattern, LayoutFn> = {
       )
       : null
 
-    const accentBar = b.shape('bar', { left: SAFE.left, top: SAFE.top + 6, width: 8, height: 40 }, {
-      fill: p.accent, rotate: 90, name: '标题强调条',
+    // 标题左边那条竖强调条。**改之前写的是 `rotate: 90`** ——
+    // 一个 8×40 的框转 90° 之后是**横**的 40×8，注释说「竖强调条」，
+    // 画出来是标题左边一个孤零零的小横杠。去掉 rotate 就是它本来该有的样子
+    const titleH = b.measure(c.title ?? '', TYPE_SCALE.title, colW - 28, LINE_HEIGHT.heading, true)
+    const accentBar = b.shape('bar', { left: SAFE.left, top: SAFE.top + 8, width: 8, height: Math.min(44, titleH - 16) }, {
+      fill: p.accent, name: '标题强调条',
     })
     const title = b.text(
-      { left: SAFE.left + 28, top: SAFE.top, width: colW - 28, height: 52 },
+      { left: SAFE.left + 28, top: SAFE.top, width: colW - 28, height: titleH },
       c.title ?? '', { size: TYPE_SCALE.title, color: p.text, bold: true, lineHeight: LINE_HEIGHT.heading, textType: 'title' },
     )
 
-    let y = SAFE.top + 52 + SPACING.headingGap
+    let y = snapY(SAFE.top + titleH + SPACING.headingGap)
     let subtitle: PPTElement | null = null
     if (c.subtitle) {
-      const h = estimateTextHeight(c.subtitle, TYPE_SCALE.body, colW - 28)
+      const h = b.measure(c.subtitle, TYPE_SCALE.body, colW - 28)
       subtitle = b.text({ left: SAFE.left + 28, top: y, width: colW - 28, height: h }, c.subtitle, {
-        size: TYPE_SCALE.body, color: p.textMuted, textType: 'content',
+        size: TYPE_SCALE.body, color: b.onPhoto(p.textMuted), textType: 'content',
       })
-      y += h + SPACING.paragraphGap
+      y = snapY(y + h + SPACING.paragraphGap)
     }
 
-    const available = SAFE.bottom - y
-    const rowGap = SPACING.paragraphGap
-    const rowH = Math.max(48, (available - rowGap * (items.length - 1)) / items.length)
-    const markerSize = Math.min(30, rowH * 0.5)
+    const markerSize = 30
+    const textLeft = SAFE.left + markerSize + SPACING.paragraphGap
+    const textWidth = colW - markerSize - SPACING.paragraphGap
+
+    /**
+     * 先把每条要点实际需要多高量出来，再交给 `stack` 撑开 ——
+     * 改之前是 `(可用高 - 间距) / 条数` 平均分，三条短要点就隔着 120px 空气。
+     *
+     * 但按内容排就必须自己处理「放不下」：六条带正文的要点按 19/15 量出来 608px，
+     * 而版心只有 442px。所以字号成组降级，**降到放得下为止**。
+     */
+    /**
+     * 降级的杠杆是**行距**，不只是字号。
+     *
+     * 因为行盒高度是 `max(字号, 16) × 行距`（见 `design.ts` 的 `ROOT_FONT_SIZE`）——
+     * **字号降到 16 以下一点高度都省不出来**，只能减少折行数。
+     * 正文本来就是 15px，再往下降对「排不排得下」几乎没有帮助。
+     * 真正能压缩纵向的是行距：正文 1.6 → 1.35 → 1.15，每行省 4~7px，
+     * 六条要点就是 25~45px，而这正好是差的那一截。
+     *
+     * 行距不再往 1.15 以下压：中文在那个密度会糊成一片，
+     * 那时候「排下了」和「读不了」是一回事。
+     */
+    const budget = SAFE.bottom - y
+    const step = fitSteps(
+      [
+        { head: TYPE_SCALE.itemTitle, body: TYPE_SCALE.body, gap: SPACING.paragraphGap, lh: LINE_HEIGHT.body },
+        { head: TYPE_SCALE.itemTitle, body: TYPE_SCALE.body, gap: SPACING.paragraphGap, lh: LINE_HEIGHT.body },
+        { head: TYPE_SCALE.itemTitle, body: TYPE_SCALE.body, gap: 12, lh: 1.45 },
+        { head: 17, body: 14, gap: UNIT, lh: 1.35 },
+        { head: 16, body: TYPE_SCALE.caption, gap: UNIT, lh: LINE_HEIGHT.tight },
+      ],
+      s => items.reduce((sum, it, i) => {
+        const h = b.measure(it.title ?? '', s.head, textWidth, LINE_HEIGHT.heading, true)
+        const bh = it.body ? b.measure(it.body, s.body, textWidth, s.lh) : 0
+        return sum + Math.max(markerSize + 8, h + bh) + (i === 0 ? 0 : s.gap)
+      }, 0),
+      budget,
+    )
+
+    const headHs = items.map(it => b.measure(it.title ?? '', step.head, textWidth, LINE_HEIGHT.heading, true))
+    const bodyHs = items.map(it => (it.body ? b.measure(it.body, step.body, textWidth, step.lh) : 0))
+    const rowHs = items.map((_, i) => Math.max(markerSize + 8, headHs[i] + bodyHs[i]))
+
+    const rows = stack(
+      rowHs.map((h, i) => ({ height: h, gap: i === 0 ? 0 : step.gap })),
+      { top: y, bottom: SAFE.bottom },
+      'spread',
+      { maxGapFactor: 2.2 },
+    )
 
     b.animate(title, 'fade-left', 'click', 500)
     b.animate(accentBar, 'wipe-down', 'meantime', 400)
@@ -605,30 +836,30 @@ const LAYOUTS: Record<LayoutPattern, LayoutFn> = {
     b.animate(subtitle, 'fade-up', 'auto', 400)
 
     items.forEach((item, i) => {
-      const top = y + i * (rowH + rowGap)
-      const marker = b.shape('ellipse', { left: SAFE.left, top: top + 4, width: markerSize, height: markerSize }, {
+      const top = rows.tops[i]
+      // 圆点对齐条目标题的**第一行中线**，不是对齐整块的顶 ——
+      // 标题换成两行时，对齐块顶的圆点会浮在半空
+      const markerTop = snapY(top + Math.max(0, (Math.min(headHs[i], step.head * 2) - markerSize) / 2))
+      const marker = b.shape('ellipse', { left: SAFE.left, top: markerTop, width: markerSize, height: markerSize }, {
         fill: i === 0 ? p.accent : p.primary, name: `序号 ${i + 1}`,
       })
       // 数字压在圆点上，两者必须同一步出场 —— 圆点飞入而数字早就在那儿，
       // 看着就是「数字浮在半空等圆点来接」
-      const markerNum = b.text({ left: SAFE.left, top: top + 4, width: markerSize, height: markerSize }, String(i + 1), {
+      const markerNum = b.text({ left: SAFE.left, top: markerTop, width: markerSize, height: markerSize }, String(i + 1), {
         size: TYPE_SCALE.caption, color: p.onPrimary, bold: true, align: 'center',
         lineHeight: LINE_HEIGHT.tight, vAlign: 'middle', textType: 'itemNumber',
       })
 
-      const textLeft = SAFE.left + markerSize + SPACING.paragraphGap
-      const textWidth = colW - markerSize - SPACING.paragraphGap
-      const head = b.text({ left: textLeft, top, width: textWidth, height: 26 }, item.title ?? '', {
-        size: TYPE_SCALE.itemTitle, color: p.text, bold: true, lineHeight: LINE_HEIGHT.heading, textType: 'itemTitle',
+      const head = b.text({ left: textLeft, top, width: textWidth, height: headHs[i] }, item.title ?? '', {
+        size: step.head, color: p.text, bold: true, lineHeight: LINE_HEIGHT.heading, textType: 'itemTitle',
       })
-      let body: PPTElement | null = null
-      if (item.body) {
-        body = b.text(
-          { left: textLeft, top: top + 28, width: textWidth, height: Math.max(22, rowH - 28) },
+      const body = item.body
+        ? b.text(
+          { left: textLeft, top: snapY(top + headHs[i]), width: textWidth, height: bodyHs[i] },
           item.body,
-          { size: TYPE_SCALE.body, color: p.textMuted, textType: 'item' },
+          { size: step.body, color: b.onPhoto(p.textMuted), lineHeight: step.lh, textType: 'item' },
         )
-      }
+        : null
 
       b.animate(marker, 'zoom-in', i === 0 ? 'click' : 'auto', 400)
       b.animate(markerNum, 'zoom-in', 'meantime', 400)
@@ -645,27 +876,48 @@ const LAYOUTS: Record<LayoutPattern, LayoutFn> = {
     const items = clampItems(c.items, 2, 4)
     const n = items.length
 
-    const title = b.text({ left: SAFE.left, top: SAFE.top, width: SAFE.width, height: 52 }, c.title ?? '', {
+    const titleH = b.measure(c.title ?? '', TYPE_SCALE.title, SAFE.width, LINE_HEIGHT.heading, true)
+    const title = b.text({ left: SAFE.left, top: SAFE.top, width: SAFE.width, height: titleH }, c.title ?? '', {
       size: TYPE_SCALE.title, color: p.text, bold: true, lineHeight: LINE_HEIGHT.heading, textType: 'title',
     })
-    const bar = b.shape('bar', { left: SAFE.left, top: SAFE.top + 56, width: 64, height: 10 }, {
+    const bar = b.shape('bar', { left: SAFE.left, top: snapY(SAFE.top + titleH + 4), width: 64, height: 10 }, {
       fill: p.accent, name: '强调条',
     })
 
-    let y = SAFE.top + 56 + 10 + SPACING.headingGap
+    let y = snapY(SAFE.top + titleH + 14 + SPACING.headingGap)
     let subtitle: PPTElement | null = null
     if (c.subtitle) {
-      const h = estimateTextHeight(c.subtitle, TYPE_SCALE.body, SAFE.width)
+      const h = b.measure(c.subtitle, TYPE_SCALE.body, SAFE.width)
       subtitle = b.text({ left: SAFE.left, top: y, width: SAFE.width, height: h }, c.subtitle, {
-        size: TYPE_SCALE.body, color: p.textMuted, textType: 'content',
+        size: TYPE_SCALE.body, color: b.onPhoto(p.textMuted), textType: 'content',
       })
-      y += h + SPACING.paragraphGap
+      y = snapY(y + h + SPACING.paragraphGap)
     }
 
     const gap = SPACING.gutter
     const cardW = (SAFE.width - gap * (n - 1)) / n
-    const cardH = SAFE.bottom - y
     const pad = SPACING.cardPadding
+    const innerW = cardW - pad * 2
+    const available = SAFE.bottom - y
+
+    /**
+     * 四栏时正文降到 caption(12)。
+     *
+     * 1000px 画布上四栏的栏内宽只有 142px，15px 正文一行放不下 9 个字，
+     * 读起来是一条竖着的字带。字号降一级换来每行多两个字 ——
+     * 这不是「变小更好看」，是**四栏本来就不该塞长正文**，降级是止损。
+     */
+    const bodySize = n >= 4 ? TYPE_SCALE.caption : TYPE_SCALE.body
+    const headHs = items.map(it => b.measure(it.title ?? '', TYPE_SCALE.itemTitle, innerW, LINE_HEIGHT.heading, true))
+    const bodyHs = items.map(it => (it.body ? b.measure(it.body, bodySize, innerW) : 0))
+
+    // 卡片高度按**内容最多的那一张**定，所有卡片同高（并列块不等高就散了），
+    // 但不再无条件撑到页底 —— 改之前卡片永远是「从这里到 SAFE.bottom」，
+    // 于是三张短卡片下面各挂着 2/3 张空白板，那是版面空洞最扎眼的一处
+    const cardBody = Math.max(...items.map((_, i) => headHs[i] + bodyHs[i]))
+    const cardH = Math.min(available, pad * 2 + 24 + SPACING.paragraphGap + cardBody)
+    // 卡片组在剩余空间里垂直居中
+    const cardTop = snapY(y + Math.max(0, (available - cardH) / 2))
 
     b.animate(title, 'fade-down', 'click', 500)
     b.animate(bar, 'wipe', 'meantime', 400)
@@ -673,34 +925,30 @@ const LAYOUTS: Record<LayoutPattern, LayoutFn> = {
 
     items.forEach((item, i) => {
       const left = SAFE.left + i * (cardW + gap)
-      const card = b.shape('roundRect', { left, top: y, width: cardW, height: cardH }, {
+      const card = b.shape('roundRect', { left, top: cardTop, width: cardW, height: cardH }, {
         fill: p.surface, ...cardDecor(p), name: `卡片 ${i + 1}`,
       })
 
-      const tag = b.shape('pill', { left: left + pad, top: y + pad, width: 44, height: 24 }, {
+      const tag = b.shape('pill', { left: left + pad, top: cardTop + pad, width: 44, height: 24 }, {
         fill: i === 0 ? p.accent : p.primary, name: `编号 ${i + 1}`,
       })
-      const tagNum = b.text({ left: left + pad, top: y + pad, width: 44, height: 24 }, String(i + 1).padStart(2, '0'), {
+      const tagNum = b.text({ left: left + pad, top: cardTop + pad, width: 44, height: 24 }, String(i + 1).padStart(2, '0'), {
         size: TYPE_SCALE.caption, color: p.onPrimary, bold: true, align: 'center',
         lineHeight: LINE_HEIGHT.tight, vAlign: 'middle', textType: 'itemNumber',
       })
 
-      const innerW = cardW - pad * 2
-      const headTop = y + pad + 24 + SPACING.paragraphGap
-      const headH = estimateTextHeight(item.title ?? '', TYPE_SCALE.itemTitle, innerW, LINE_HEIGHT.heading)
-      const head = b.text({ left: left + pad, top: headTop, width: innerW, height: headH }, item.title ?? '', {
+      const headTop = snapY(cardTop + pad + 24 + SPACING.paragraphGap)
+      const head = b.text({ left: left + pad, top: headTop, width: innerW, height: headHs[i] }, item.title ?? '', {
         size: TYPE_SCALE.itemTitle, color: p.text, bold: true, lineHeight: LINE_HEIGHT.heading, textType: 'itemTitle',
       })
 
-      let body: PPTElement | null = null
-      if (item.body) {
-        const bodyTop = headTop + headH + SPACING.paragraphGap / 2
-        body = b.text(
-          { left: left + pad, top: bodyTop, width: innerW, height: Math.max(24, y + cardH - pad - bodyTop) },
+      const body = item.body
+        ? b.text(
+          { left: left + pad, top: snapY(headTop + headHs[i]), width: innerW, height: bodyHs[i] },
           item.body,
-          { size: TYPE_SCALE.body, color: p.textMuted, textType: 'item' },
+          { size: bodySize, color: b.onPhoto(p.textMuted), textType: 'item' },
         )
-      }
+        : null
 
       // 一张卡片是一个整体：底板、编号、标题、正文同一步出场。
       // 原来只动底板和编号，卡片里的文字从头到尾都在 —— 底板淡入等于
@@ -720,45 +968,57 @@ const LAYOUTS: Record<LayoutPattern, LayoutFn> = {
     const p = b.palette
     const items = clampItems(c.items, 2, 2)
 
-    const title = b.text({ left: SAFE.left, top: SAFE.top, width: SAFE.width, height: 52 }, c.title ?? '', {
+    const titleH = b.measure(c.title ?? '', TYPE_SCALE.title, SAFE.width, LINE_HEIGHT.heading, true)
+    const title = b.text({ left: SAFE.left, top: SAFE.top, width: SAFE.width, height: titleH }, c.title ?? '', {
       size: TYPE_SCALE.title, color: p.text, bold: true, align: 'center', lineHeight: LINE_HEIGHT.heading, textType: 'title',
     })
 
-    const y = SAFE.top + 52 + SPACING.headingGap
-    const colH = SAFE.bottom - y
+    const y = snapY(SAFE.top + titleH + SPACING.headingGap)
     const gap = SPACING.gutter * 2
     const colW = (SAFE.width - gap) / 2
     const pad = SPACING.cardPadding
+    const innerW = colW - pad * 2
     const fills = [mixHex(p.background, p.primary, 0.14), mixHex(p.background, p.accent, 0.14)]
     const heads = [p.primary, p.accent]
 
-    const divider = b.line([0, 0], [0, colH], CANVAS_WIDTH / 2, y, p.border, 2)
+    // 两栏等高（并列块不等高就散了），高度按**内容多的那一栏**定，
+    // 但不再无条件撑到页底 —— 短内容时下面留一截，整组在剩余空间里居中
+    const headHs = items.map(it => b.measure(it.title ?? '', TYPE_SCALE.subtitle, innerW, LINE_HEIGHT.heading, true))
+    const bodyHs = items.map(it => (it.body ? b.measure(it.body, TYPE_SCALE.body, innerW) : 0))
+    const maxRoom = SAFE.bottom - y
+    const needed = Math.max(...items.map((_, i) => pad * 2 + headHs[i] + 8 + SPACING.headingGap + bodyHs[i]))
+    const colH = Math.min(maxRoom, needed)
+    const colTop = snapY(y + Math.max(0, (maxRoom - colH) / 2))
+
+    const divider = b.line([0, 0], [0, colH], CANVAS_WIDTH / 2, colTop, p.border, 2)
 
     // 元素先全部建出来再统一编排 —— 这一页的节奏是「两栏一起动」，
     // 在 forEach 里边建边挂会把左右两栏的动画交叉排进序列，编排读不出来
     const cols = items.map((item, i) => {
       const left = SAFE.left + i * (colW + gap)
-      const panel = b.shape('roundRect', { left, top: y, width: colW, height: colH }, {
+      const panel = b.shape('roundRect', { left, top: colTop, width: colW, height: colH }, {
         fill: fills[i], outline: { style: 'solid', width: 1, color: p.border }, name: `对比栏 ${i + 1}`,
       })
 
-      const headH = 34
-      const underline = b.shape('bar', { left: left + pad, top: y + pad + headH + 4, width: 40, height: 8 }, {
+      const underline = b.shape('bar', { left: left + pad, top: snapY(colTop + pad + headHs[i] + 4), width: 40, height: 8 }, {
         fill: heads[i], name: `栏 ${i + 1} 下划条`,
       })
-      const head = b.text({ left: left + pad, top: y + pad, width: colW - pad * 2, height: headH }, item.title ?? '', {
+      const head = b.text({ left: left + pad, top: colTop + pad, width: innerW, height: headHs[i] }, item.title ?? '', {
         size: TYPE_SCALE.subtitle, color: heads[i], bold: true, lineHeight: LINE_HEIGHT.heading, textType: 'itemTitle',
       })
 
-      let body: PPTElement | null = null
-      if (item.body) {
-        const bodyTop = y + pad + headH + 8 + SPACING.headingGap
-        body = b.text(
-          { left: left + pad, top: bodyTop, width: colW - pad * 2, height: Math.max(24, y + colH - pad - bodyTop) },
+      const body = item.body
+        ? b.text(
+          {
+            left: left + pad,
+            top: snapY(colTop + pad + headHs[i] + 8 + SPACING.headingGap),
+            width: innerW,
+            height: bodyHs[i],
+          },
           item.body,
           { size: TYPE_SCALE.body, color: p.text, textType: 'item' },
         )
-      }
+        : null
 
       return { panel, underline, head, body }
     })
@@ -786,16 +1046,36 @@ const LAYOUTS: Record<LayoutPattern, LayoutFn> = {
     const items = clampItems(c.items, 3, 5)
     const n = items.length
 
-    const title = b.text({ left: SAFE.left, top: SAFE.top, width: SAFE.width, height: 52 }, c.title ?? '', {
+    const titleH = b.measure(c.title ?? '', TYPE_SCALE.title, SAFE.width, LINE_HEIGHT.heading, true)
+    const title = b.text({ left: SAFE.left, top: SAFE.top, width: SAFE.width, height: titleH }, c.title ?? '', {
       size: TYPE_SCALE.title, color: p.text, bold: true, lineHeight: LINE_HEIGHT.heading, textType: 'title',
     })
-    const bar = b.shape('bar', { left: SAFE.left, top: SAFE.top + 56, width: 64, height: 10 }, {
+    const bar = b.shape('bar', { left: SAFE.left, top: snapY(SAFE.top + titleH + 4), width: 64, height: 10 }, {
       fill: p.accent, name: '强调条',
     })
 
-    const axisY = 300
     const nodeSize = 24
     const colW = SAFE.width / n
+    const itemW = colW - 16
+
+    /**
+     * 轴线位置由**上下两侧实际需要多高**推出来，不再是写死的 `axisY = 300`。
+     *
+     * 标签在轴上、正文在轴下，两侧高度都跟着内容走。写死 300 的后果是
+     * 标签长了就往上顶穿标题、正文长了就往下捅出页底，而两者都不报错。
+     */
+    const labelHs = items.map(it => b.measure(it.label ?? it.title ?? '', TYPE_SCALE.subtitle, itemW, LINE_HEIGHT.tight, true))
+    const bodyTexts = items.map(it => (it.label ? [it.title, it.body].filter(Boolean).join('\n') : (it.body ?? '')))
+    const bodyHs = bodyTexts.map(t => (t ? b.measure(t, TYPE_SCALE.body, itemW) : 0))
+
+    const labelBand = Math.max(...labelHs)
+    const bodyBand = Math.max(...bodyHs)
+    const trackTop = snapY(SAFE.top + titleH + 14 + SPACING.headingGap)
+    const trackH = SAFE.bottom - trackTop
+    // 轴线放在「标签带 + 间距」之后，整条轨道再在剩余空间里居中
+    const needed = labelBand + SPACING.paragraphGap + nodeSize + SPACING.paragraphGap + bodyBand
+    const axisY = snapY(trackTop + Math.max(0, (trackH - needed) / 2) + labelBand + SPACING.paragraphGap + nodeSize / 2)
+
     const axis = b.shape('bar', { left: SAFE.left, top: axisY - 6, width: SAFE.width, height: 12 }, {
       fill: p.border, name: '时间轴',
     })
@@ -811,19 +1091,29 @@ const LAYOUTS: Record<LayoutPattern, LayoutFn> = {
         fill: i === 0 ? p.accent : p.primary, name: `节点 ${i + 1}`,
       })
 
-      // 标签在轴上方，正文在轴下方 —— 上下分置比全塞一边更好读
+      // 标签在轴上方，正文在轴下方 —— 上下分置比全塞一边更好读。
+      // 标签底部对齐（贴着轴），所以 top 要减掉自己的高度
       const label = b.text(
-        { left: centerX - colW / 2 + 8, top: axisY - 76, width: colW - 16, height: 40 },
+        {
+          left: centerX - colW / 2 + 8,
+          top: snapY(axisY - nodeSize / 2 - SPACING.paragraphGap - labelHs[i]),
+          width: itemW,
+          height: labelHs[i],
+        },
         item.label ?? item.title ?? '',
         { size: TYPE_SCALE.subtitle, color: p.text, bold: true, align: 'center', lineHeight: LINE_HEIGHT.tight, textType: 'itemTitle' },
       )
 
-      const bodyText = item.label ? [item.title, item.body].filter(Boolean).join('\n') : (item.body ?? '')
-      const body = bodyText
+      const body = bodyTexts[i]
         ? b.text(
-          { left: centerX - colW / 2 + 8, top: axisY + 32, width: colW - 16, height: SAFE.bottom - axisY - 32 },
-          bodyText,
-          { size: TYPE_SCALE.body, color: p.textMuted, align: 'center', textType: 'item' },
+          {
+            left: centerX - colW / 2 + 8,
+            top: snapY(axisY + nodeSize / 2 + SPACING.paragraphGap),
+            width: itemW,
+            height: bodyHs[i],
+          },
+          bodyTexts[i],
+          { size: TYPE_SCALE.body, color: b.onPhoto(p.textMuted), align: 'center', textType: 'item' },
         )
         : null
 
@@ -841,50 +1131,70 @@ const LAYOUTS: Record<LayoutPattern, LayoutFn> = {
     const p = b.palette
     const stat = c.stat ?? { value: '' }
 
-    const [bgImage, scrim] = b.backdrop(c.image)
+    const hasImage = !!c.image?.src
 
-    // 装饰元素也要留在画布内 —— 出血一点点在网页上看不出来，
-    // 但 lintSlide 会对每一页报「超出画布」，把真正的越界警告淹掉
-    const halo = b.shape('ellipse', { left: 600, top: 60, width: 400, height: 400 }, {
+    /**
+     * 文字栏宽。
+     *
+     * 改之前是雷打不动的 `SAFE.width - 300` —— 右边 300px 是**永久死区**，
+     * 里面只有一个装饰光晕，内容再少也占不到那块地方。
+     *
+     * 现在两种情况都收窄，但理由不同：没图时留 240 给光晕；
+     * **有图时留 38% 给照片** —— 一开始我给的是「有图就用全宽」，
+     * 看截图才发现那样文字会压到照片最亮的部分，而且照片等于没露脸。
+     * 配了图的版面就该把地方让给图，这是配图的意义所在。
+     */
+    const halo = hasImage ? null : b.shape('ellipse', { left: 620, top: 96, width: 340, height: 340 }, {
       fill: p.primary, opacity: 0.12, name: '装饰光晕',
     })
+    const colW = hasImage ? Math.round(SAFE.width * 0.58) : SAFE.width - 240
+    const [bgImage, scrim] = b.backdrop(c.image, 'left', (SAFE.left + colW + 40) / CANVAS_WIDTH)
 
-    let y = 150
-    let eyebrow: PPTElement | null = null
-    if (c.eyebrow || c.title) {
-      eyebrow = b.text({ left: SAFE.left, top: y, width: SAFE.width - 300, height: 24 }, c.eyebrow || c.title || '', {
-        size: TYPE_SCALE.eyebrow, color: p.accent, bold: true, letterSpacing: 2,
+    const eyebrowText = c.eyebrow || c.title || ''
+    const noteText = stat.note || c.subtitle || ''
+    // 数字本身也要能降级：「87%」和「87.4%」放得下，「1,284,309」按 88px 就出界了
+    const valueSize = fitFontSize(stat.value, colW, 150, [TYPE_SCALE.stat, 72, TYPE_SCALE.display, 52], LINE_HEIGHT.tight, { bold: true })
+    const valueH = b.measure(stat.value, valueSize, colW, LINE_HEIGHT.tight, true)
+    const eyebrowH = b.measure(eyebrowText, TYPE_SCALE.eyebrow, colW, LINE_HEIGHT.tight, true)
+    const labelH = b.measure(stat.label ?? '', TYPE_SCALE.subtitle, colW, LINE_HEIGHT.heading, true)
+    const noteH = b.measure(noteText, TYPE_SCALE.body, colW)
+
+    const rows = stack([
+      ...(eyebrowText ? [{ height: eyebrowH }] : []),
+      { height: valueH, gap: eyebrowText ? SPACING.paragraphGap / 2 : 0 },
+      ...(stat.label ? [{ height: labelH, gap: SPACING.paragraphGap / 2 }] : []),
+      { height: 10, gap: SPACING.paragraphGap },
+      ...(noteText ? [{ height: noteH, gap: SPACING.paragraphGap }] : []),
+    ], SAFE, 'middle')
+
+    let i = 0
+    const eyebrow = eyebrowText
+      ? b.text({ left: SAFE.left, top: rows.tops[i++], width: colW, height: eyebrowH }, eyebrowText, {
+        size: TYPE_SCALE.eyebrow, color: b.onPhoto(p.accent), bold: true, letterSpacing: 2,
         lineHeight: LINE_HEIGHT.tight, textType: 'header',
       })
-      y += 36
-    }
+      : null
 
-    const value = b.text({ left: SAFE.left, top: y, width: SAFE.width - 300, height: 120 }, stat.value, {
-      size: TYPE_SCALE.stat, color: p.primary, bold: true, lineHeight: LINE_HEIGHT.tight, textType: 'title',
+    const value = b.text({ left: SAFE.left, top: rows.tops[i++], width: colW, height: valueH }, stat.value, {
+      size: valueSize, color: b.onPhoto(p.primary), bold: true, lineHeight: LINE_HEIGHT.tight, textType: 'title',
       name: '关键数字',
     })
-    y += 120 + SPACING.paragraphGap / 2
 
-    let label: PPTElement | null = null
-    if (stat.label) {
-      label = b.text({ left: SAFE.left, top: y, width: SAFE.width - 300, height: 34 }, stat.label, {
+    const label = stat.label
+      ? b.text({ left: SAFE.left, top: rows.tops[i++], width: colW, height: labelH }, stat.label, {
         size: TYPE_SCALE.subtitle, color: p.text, bold: true, lineHeight: LINE_HEIGHT.heading, textType: 'subtitle',
       })
-      y += 34 + SPACING.paragraphGap
-    }
+      : null
 
-    const barEl = b.shape('bar', { left: SAFE.left, top: y, width: 72, height: 10 }, { fill: p.accent, name: '强调条' })
-    y += 10 + SPACING.paragraphGap
+    const barEl = b.shape('bar', { left: SAFE.left, top: rows.tops[i++], width: 72, height: 10 }, { fill: p.accent, name: '强调条' })
 
-    let note: PPTElement | null = null
-    if (stat.note || c.subtitle) {
-      const noteText = stat.note || c.subtitle || ''
-      note = b.text(
-        { left: SAFE.left, top: y, width: SAFE.width - 300, height: estimateTextHeight(noteText, TYPE_SCALE.body, SAFE.width - 300) },
+    const note = noteText
+      ? b.text(
+        { left: SAFE.left, top: rows.tops[i++], width: colW, height: noteH },
         noteText,
-        { size: TYPE_SCALE.body, color: p.textMuted, textType: 'content' },
+        { size: TYPE_SCALE.body, color: b.onPhoto(p.textMuted), textType: 'content' },
       )
-    }
+      : null
 
     // 这一页的主角就是那个数字，它必须是第一眼。
     // 光晕是它的背景，同步张开；eyebrow 是它的小标签，一起来
@@ -904,29 +1214,69 @@ const LAYOUTS: Record<LayoutPattern, LayoutFn> = {
   'quote': (b, c) => {
     const p = b.palette
 
-    const [bgImage, scrim] = b.backdrop(c.image)
-
-    const mark = b.text({ left: SAFE.left - 8, top: 110, width: 120, height: 120 }, '“', {
-      size: 140, color: p.accent, bold: true, lineHeight: LINE_HEIGHT.tight, name: '引号',
-    })
-
     const quoteText = c.quote ?? ''
-    const quoteW = SAFE.width - 120
-    // 引述长度完全不可控，字号跟着内容走：短句撑满，长段自动降级
-    const quoteSize = fitFontSize(quoteText, quoteW, 260, [
-      TYPE_SCALE.title, TYPE_SCALE.subtitle, TYPE_SCALE.itemTitle, TYPE_SCALE.body,
-    ])
-    const quoteH = Math.min(260, estimateTextHeight(quoteText, quoteSize, quoteW, LINE_HEIGHT.heading))
-    const quote = b.text({ left: SAFE.left + 96, top: 160, width: quoteW, height: quoteH }, quoteText, {
+    const sourceText = c.source || c.subtitle || ''
+    const quoteLeft = SAFE.left + 96
+    /**
+     * 有背景图时文字栏收窄到 62%，把右边让给照片。
+     *
+     * 这是**看截图改的**：第一版文字照旧横跨到 93% 宽，而渐变遮罩在那之前
+     * 就淡完了，于是「没有界面」四个字正好压在亮蓝色机柜上，糊得看不清。
+     * 当时的第一反应是「把渐变拉长」，但拉到 93% 就等于全屏均匀压，
+     * 渐变白做了 —— **真正的问题不是遮罩太短，是文字太宽**：
+     * 一个配了照片的版面本来就该给照片留出地方，那才是配图的意义。
+     */
+    const hasImage = !!c.image?.src
+    const quoteRight = hasImage ? SAFE.left + Math.round(SAFE.width * 0.62) : SAFE.right
+    const quoteW = quoteRight - quoteLeft
+
+    // 遮罩一路罩到文字右边缘之后再淡出
+    const [bgImage, scrim] = b.backdrop(c.image, 'left', (quoteRight + 40) / CANVAS_WIDTH)
+
+    /**
+     * 引述字号的候选从 display(64) 起跳，不再是 title(38) 封顶。
+     *
+     * 引用页是「呼吸页」，它的全部作用就是让一句话占住整个视觉中心。
+     * 改之前一句十个字的引言按 38px 排在页面上方，下面空 253px ——
+     * 实测 66 张样张里这一档的内容占比只有 18%，全场最低。
+     * **不是留白，是没排完。** 短句就该放大到撑住版面。
+     */
+    const quoteSize = fitFontSize(quoteText, quoteW, 300, [
+      TYPE_SCALE.display, 52, 44, TYPE_SCALE.title, TYPE_SCALE.subtitle, TYPE_SCALE.itemTitle,
+    ], LINE_HEIGHT.heading)
+    const quoteH = b.measure(quoteText, quoteSize, quoteW, LINE_HEIGHT.heading)
+    // 引号跟着引述字号走，不再是写死的 140px 挤在 120px 的框里
+    // （那个框实测渲染出来 161px，八个变体全部溢出，八次全都没人发现）
+    const markSize = Math.round(quoteSize * 1.9)
+    const markH = b.measure('“', markSize, 140, LINE_HEIGHT.tight, true)
+    const sourceH = b.measure(sourceText, TYPE_SCALE.subtitle, quoteW - 64)
+
+    const rows = stack([
+      { height: quoteH },
+      ...(sourceText ? [{ height: Math.max(sourceH, 28), gap: SPACING.headingGap }] : []),
+    ], SAFE, 'middle')
+
+    // 引号压在引述**第一行的左上角**，是排版记号不是独立元素
+    const mark = b.text(
+      { left: SAFE.left - 8, top: snapY(rows.tops[0] - markH * 0.42), width: 140, height: markH },
+      '“',
+      { size: markSize, color: b.onPhoto(p.accent), bold: true, lineHeight: LINE_HEIGHT.tight, name: '引号' },
+    )
+
+    const quote = b.text({ left: quoteLeft, top: rows.tops[0], width: quoteW, height: quoteH }, quoteText, {
       size: quoteSize, color: p.text, lineHeight: LINE_HEIGHT.heading, textType: 'content',
     })
 
-    const y = 160 + quoteH + SPACING.headingGap
-    const rule = b.shape('bar', { left: SAFE.left + 96, top: y, width: 48, height: 8 }, { fill: p.border, name: '分隔条' })
+    // 分隔条和出处在同一条基线上：条子高 8，出处框高 28，
+    // 条子往下挪 10 才和文字的视觉中线对齐（改之前是出处往上挪 6，两者差着一截）
+    const sourceTop = sourceText ? rows.tops[1] : 0
+    const rule = sourceText
+      ? b.shape('bar', { left: quoteLeft, top: snapY(sourceTop + 10), width: 48, height: 8 }, { fill: p.border, name: '分隔条' })
+      : b.shape('bar', { left: quoteLeft, top: snapY(rows.tops[0] + quoteH + SPACING.headingGap), width: 48, height: 8 }, { fill: p.border, name: '分隔条' })
 
-    const source = c.source || c.subtitle
-      ? b.text({ left: SAFE.left + 160, top: y - 6, width: SAFE.width - 220, height: 28 }, c.source || c.subtitle || '', {
-        size: TYPE_SCALE.body, color: p.textMuted, textType: 'footer',
+    const source = sourceText
+      ? b.text({ left: quoteLeft + 64, top: sourceTop, width: quoteW - 64, height: Math.max(sourceH, 28) }, sourceText, {
+        size: TYPE_SCALE.subtitle, color: b.onPhoto(p.textMuted), textType: 'footer',
       })
       : null
 
@@ -944,28 +1294,51 @@ const LAYOUTS: Record<LayoutPattern, LayoutFn> = {
   'end': (b, c) => {
     const p = b.palette
 
-    const [bgImage, scrim] = b.backdrop(c.image)
+    // 居中构图，理由同 title-center
+    const [bgImage, scrim] = b.backdrop(c.image, 'none')
+    const hasImage = !!c.image?.src
 
-    const ring = b.shape('donut', { left: (CANVAS_WIDTH - 260) / 2, top: 120, width: 260, height: 260 }, {
-      fill: p.primary, opacity: 0.12, name: '装饰环',
-    })
+    const titleSize = fitFontSize(c.title ?? '', SAFE.width, 160, DISPLAY_STEPS, LINE_HEIGHT.heading, { bold: true })
+    const titleH = b.measure(c.title ?? '', titleSize, SAFE.width, LINE_HEIGHT.heading, true)
+    const subH = b.measure(c.subtitle ?? '', TYPE_SCALE.subtitle, SAFE.width)
 
-    const titleSize = fitFontSize(c.title ?? '', SAFE.width, 140, DISPLAY_STEPS)
-    const titleH = estimateTextHeight(c.title ?? '', titleSize, SAFE.width, LINE_HEIGHT.heading)
-    const title = b.text({ left: SAFE.left, top: 210, width: SAFE.width, height: titleH }, c.title ?? '', {
+    const rows = stack([
+      { height: titleH },
+      { height: 12, gap: SPACING.headingGap },
+      ...(c.subtitle ? [{ height: subH, gap: SPACING.headingGap }] : []),
+    ], SAFE, 'middle')
+
+    /**
+     * 装饰环绕着标题，而且有图时不画。
+     *
+     * 有图不画：和 title-split 的装饰环、stat 的光晕同一条 —— 半透明圆环叠在
+     * 照片上像块污渍。R-48 只修了 title-split 那一处，另外两处漏了整整一轮。
+     *
+     * 位置：改之前是写死的 `top: 120`，标题在 210，于是环的中心（250）
+     * 和标题中心差着几十像素 —— 注释写着「绕着标题转」，画出来是绕着标题上方转
+     */
+    const ringSize = 260
+    const ring = hasImage ? null : b.shape('donut', {
+      left: (CANVAS_WIDTH - ringSize) / 2,
+      top: snapY(rows.tops[0] + titleH / 2 - ringSize / 2),
+      width: ringSize,
+      height: ringSize,
+    }, { fill: p.primary, opacity: 0.12, name: '装饰环' })
+
+    const title = b.text({ left: SAFE.left, top: rows.tops[0], width: SAFE.width, height: titleH }, c.title ?? '', {
       size: titleSize, color: p.text, bold: true, align: 'center',
       lineHeight: LINE_HEIGHT.heading, textType: 'title',
     })
 
-    const bar = b.shape('bar', { left: (CANVAS_WIDTH - 72) / 2, top: 210 + titleH + SPACING.headingGap, width: 72, height: 12 }, {
+    const bar = b.shape('bar', { left: (CANVAS_WIDTH - 72) / 2, top: rows.tops[1], width: 72, height: 12 }, {
       fill: p.accent, name: '强调条',
     })
 
     const subtitle = c.subtitle
       ? b.text(
-        { left: SAFE.left, top: 210 + titleH + SPACING.headingGap + 12 + SPACING.headingGap, width: SAFE.width, height: estimateTextHeight(c.subtitle, TYPE_SCALE.subtitle, SAFE.width) },
+        { left: SAFE.left, top: rows.tops[2], width: SAFE.width, height: subH },
         c.subtitle,
-        { size: TYPE_SCALE.subtitle, color: p.textMuted, align: 'center', textType: 'subtitle' },
+        { size: TYPE_SCALE.subtitle, color: b.onPhoto(p.textMuted), align: 'center', textType: 'subtitle' },
       )
       : null
 
@@ -978,6 +1351,252 @@ const LAYOUTS: Record<LayoutPattern, LayoutFn> = {
     b.animate(scrim, 'fade', 'meantime', 800)
 
     return { background: { type: 'solid', color: p.background }, slideType: 'end' }
+  },
+
+  /**
+   * 图文网格：2~3 个「图 + 标题 + 说明」块并排。
+   *
+   * 第十九轮判过 cards / compare / timeline「版面已被并列块占满，塞不下图」——
+   * 那个结论是对的，但它缺了下半句：**并列块本来就该有一种自带图位的形态**。
+   * 硬把图塞进 cards 会挤成邮票，而图文网格是从一开始就按「图占上半、字占下半」
+   * 分配版面的，两者不是同一个版式。
+   */
+  'image-grid': (b, c) => {
+    const p = b.palette
+    const items = clampItems(c.items, 2, 3)
+    const n = items.length
+
+    const titleH = b.measure(c.title ?? '', TYPE_SCALE.title, SAFE.width, LINE_HEIGHT.heading, true)
+    const title = b.text({ left: SAFE.left, top: SAFE.top, width: SAFE.width, height: titleH }, c.title ?? '', {
+      size: TYPE_SCALE.title, color: p.text, bold: true, lineHeight: LINE_HEIGHT.heading, textType: 'title',
+    })
+    const bar = b.shape('bar', { left: SAFE.left, top: snapY(SAFE.top + titleH + 4), width: 64, height: 10 }, {
+      fill: p.accent, name: '强调条',
+    })
+
+    let y = snapY(SAFE.top + titleH + 14 + SPACING.headingGap)
+    let subtitle: PPTElement | null = null
+    if (c.subtitle) {
+      const h = b.measure(c.subtitle, TYPE_SCALE.body, SAFE.width)
+      subtitle = b.text({ left: SAFE.left, top: y, width: SAFE.width, height: h }, c.subtitle, {
+        size: TYPE_SCALE.body, color: p.textMuted, textType: 'content',
+      })
+      y = snapY(y + h + SPACING.paragraphGap)
+    }
+
+    const gap = SPACING.gutter
+    const colW = (SAFE.width - gap * (n - 1)) / n
+    const available = SAFE.bottom - y
+
+    const headHs = items.map(it => b.measure(it.title ?? '', TYPE_SCALE.itemTitle, colW, LINE_HEIGHT.heading, true))
+    const bodyHs = items.map(it => (it.body ? b.measure(it.body, TYPE_SCALE.body, colW) : 0))
+    const textBand = Math.max(...items.map((_, i) => headHs[i] + bodyHs[i]))
+
+    /**
+     * 图片带的高度 = 剩下的全部，但**不低于 120**。
+     *
+     * 低于这个高度的「配图」在投影上就是一条彩色横带，看不出画的是什么 ——
+     * 那种图不如不配。放不下就让文字挤一点，图必须像张图。
+     */
+    const figureH = Math.max(120, available - textBand - SPACING.paragraphGap)
+    const textTop = snapY(y + figureH + SPACING.paragraphGap)
+
+    b.animate(title, 'fade-down', 'click', 500)
+    b.animate(bar, 'wipe', 'meantime', 400)
+    b.animate(subtitle, 'fade-up', 'auto', 400)
+
+    items.forEach((item, i) => {
+      const left = SAFE.left + i * (colW + gap)
+      const box = { left, top: y, width: colW, height: figureH }
+
+      // 有图放图，没图放一块主色板 —— 三个格子里两个有图一个没有时，
+      // 空着那个会让整排看起来像加载失败
+      const figure = item.image?.src
+        ? b.image(box, item.image, { imageType: 'itemFigure', name: `配图 ${i + 1}` })
+        : b.shape('roundRect', box, {
+          fill: mixHex(p.background, i === 0 ? p.accent : p.primary, 0.16), name: `图位 ${i + 1}`,
+        })
+
+      const head = b.text({ left, top: textTop, width: colW, height: headHs[i] }, item.title ?? '', {
+        size: TYPE_SCALE.itemTitle, color: p.text, bold: true, lineHeight: LINE_HEIGHT.heading, textType: 'itemTitle',
+      })
+      const body = item.body
+        ? b.text({ left, top: snapY(textTop + headHs[i]), width: colW, height: bodyHs[i] }, item.body, {
+          size: TYPE_SCALE.body, color: p.textMuted, textType: 'item',
+        })
+        : null
+
+      // 一格是一个整体：图和它下面的字同一步出场
+      b.animate(figure, 'fade-up', i === 0 ? 'click' : 'auto', 500)
+      b.animate(head, 'fade-up', 'meantime', 400)
+      b.animate(body, 'fade-up', 'meantime', 400)
+    })
+
+    return { background: { type: 'solid', color: p.background }, slideType: 'content' }
+  },
+
+  /**
+   * 左图右列：左边一张出血大图，右边标题 + 2~4 条要点。
+   *
+   * 这是 `bullets` / `cards` 想配图时的正解 —— 图不去挤条目的地方，
+   * 而是各占半壁。第十九轮「cards / compare / timeline 不吃图」留下的缺口，
+   * 内容上大半由它接住。
+   */
+  'split-figure': (b, c) => {
+    const p = b.palette
+    const items = clampItems(c.items, 2, 4)
+    const figureW = Math.round(CANVAS_WIDTH * 0.42)
+    const colLeft = figureW + SPACING.gutter
+    const colW = SAFE.right - colLeft
+
+    // 图先放：PPTist 的层级就是数组顺序。左侧四周出血，不留白边 ——
+    // 四周留白的照片在版面里像贴纸，出血才是版面感的来源
+    const figure = c.image?.src
+      ? b.image({ left: 0, top: 0, width: figureW, height: CANVAS_HEIGHT }, c.image, {
+        imageType: 'pageFigure', name: '配图',
+      })
+      : b.shape('rect', { left: 0, top: 0, width: figureW, height: CANVAS_HEIGHT }, {
+        fill: p.primary, name: '主色块',
+      })
+
+    const titleH = b.measure(c.title ?? '', TYPE_SCALE.title, colW, LINE_HEIGHT.heading, true)
+    const subH = c.subtitle ? b.measure(c.subtitle, TYPE_SCALE.body, colW) : 0
+    const headHs = items.map(it => b.measure(it.title ?? '', TYPE_SCALE.itemTitle, colW - 24, LINE_HEIGHT.heading, true))
+    const bodyHs = items.map(it => (it.body ? b.measure(it.body, TYPE_SCALE.body, colW - 24) : 0))
+
+    const rows = stack([
+      { height: titleH },
+      { height: 10, gap: 12 },
+      ...(c.subtitle ? [{ height: subH, gap: SPACING.paragraphGap }] : []),
+      ...items.map((_, i) => ({
+        height: Math.max(28, headHs[i] + bodyHs[i]),
+        gap: SPACING.paragraphGap,
+      })),
+    ], SAFE, 'middle')
+
+    let i = 0
+    const title = b.text({ left: colLeft, top: rows.tops[i++], width: colW, height: titleH }, c.title ?? '', {
+      size: TYPE_SCALE.title, color: p.text, bold: true, lineHeight: LINE_HEIGHT.heading, textType: 'title',
+    })
+    const bar = b.shape('bar', { left: colLeft, top: rows.tops[i++], width: 56, height: 10 }, {
+      fill: p.accent, name: '强调条',
+    })
+    const subtitle = c.subtitle
+      ? b.text({ left: colLeft, top: rows.tops[i++], width: colW, height: subH }, c.subtitle, {
+        size: TYPE_SCALE.body, color: p.textMuted, textType: 'content',
+      })
+      : null
+
+    b.animate(title, 'fade-left', 'click', 500)
+    b.animate(bar, 'wipe', 'meantime', 400)
+    // 图和标题同步擦入 —— 它是版面的一半，不该等条目讲完才出现
+    b.animate(figure, 'wipe', 'meantime', 700)
+    b.animate(subtitle, 'fade-up', 'auto', 400)
+
+    const rowStart = i
+    items.forEach((item, k) => {
+      const top = rows.tops[rowStart + k]
+      const dot = b.shape('ellipse', { left: colLeft, top: snapY(top + 6), width: 10, height: 10 }, {
+        fill: k === 0 ? p.accent : p.primary, name: `圆点 ${k + 1}`,
+      })
+      const head = b.text({ left: colLeft + 24, top, width: colW - 24, height: headHs[k] }, item.title ?? '', {
+        size: TYPE_SCALE.itemTitle, color: p.text, bold: true, lineHeight: LINE_HEIGHT.heading, textType: 'itemTitle',
+      })
+      const body = item.body
+        ? b.text({ left: colLeft + 24, top: snapY(top + headHs[k]), width: colW - 24, height: bodyHs[k] }, item.body, {
+          size: TYPE_SCALE.body, color: p.textMuted, textType: 'item',
+        })
+        : null
+
+      b.animate(dot, 'zoom-in', k === 0 ? 'auto' : 'auto', 300)
+      b.animate(head, 'fade-left', 'meantime', 400)
+      b.animate(body, 'fade-left', 'meantime', 400)
+    })
+
+    return { background: { type: 'solid', color: p.background }, slideType: 'content' }
+  },
+
+  /**
+   * 满屏图 + 浮层卡片：整幅照片当背景，文字装在一块**实心**卡片里。
+   *
+   * 和 backdrop 那几个版式的区别是关键：backdrop 靠半透明遮罩压住照片，
+   * 文字直接压在图上；这一页把文字关进一块不透明的卡片 ——
+   * **对比度由卡片保证，和照片有多亮完全无关**。
+   *
+   * 所以它是「照片很花、很亮、或者亮度信息缺失」时的稳妥选择，
+   * 视觉冲击又比纯色页强得多。遮罩仍然上一层薄的，让卡片浮起来而不是贴上去。
+   */
+  'full-figure': (b, c) => {
+    const p = b.palette
+
+    // 薄遮罩：这里不承担可读性（卡片承担），只负责把照片压暗一点让卡片浮起来。
+    // 所以固定 0.3 而不是按亮度算 —— 它不是对比度手段
+    const bgImage = c.image?.src
+      ? b.image({ left: 0, top: 0, width: CANVAS_WIDTH, height: CANVAS_HEIGHT }, c.image, {
+        imageType: 'background', name: '背景图',
+      })
+      : null
+    const scrim = bgImage
+      ? b.shape('rect', { left: 0, top: 0, width: CANVAS_WIDTH, height: CANVAS_HEIGHT }, {
+        fill: p.background, opacity: 0.3, name: '背景遮罩',
+      })
+      : null
+
+    const cardW = Math.round(CANVAS_WIDTH * 0.52)
+    const pad = SPACING.cardPadding + 8
+    const innerW = cardW - pad * 2
+
+    const eyebrowH = c.eyebrow ? b.measure(c.eyebrow, TYPE_SCALE.eyebrow, innerW, LINE_HEIGHT.tight, true) : 0
+    const titleSize = fitFontSize(c.title ?? '', innerW, 200, [TYPE_SCALE.display, 52, 44, TYPE_SCALE.title], LINE_HEIGHT.heading, { bold: true })
+    const titleH = b.measure(c.title ?? '', titleSize, innerW, LINE_HEIGHT.heading, true)
+    const subH = c.subtitle ? b.measure(c.subtitle, TYPE_SCALE.subtitle, innerW) : 0
+
+    const inner = (c.eyebrow ? eyebrowH + SPACING.paragraphGap : 0)
+      + titleH
+      + (c.subtitle ? subH + SPACING.headingGap : 0)
+    const cardH = Math.min(SAFE.height + 32, inner + pad * 2)
+    const cardTop = snapY((CANVAS_HEIGHT - cardH) / 2)
+
+    // 卡片是实心的：文字的对比度全靠它，所以**不能半透明**
+    const card = b.shape('rect', { left: SAFE.left, top: cardTop, width: cardW, height: cardH }, {
+      fill: p.background,
+      shadow: { h: 0, v: 8, blur: 28, color: p.dark ? '#00000088' : '#00000029' },
+      name: '浮层卡片',
+    })
+    const edge = b.shape('rect', { left: SAFE.left, top: cardTop, width: 8, height: cardH }, {
+      fill: p.accent, name: '卡片边条',
+    })
+
+    let y = snapY(cardTop + pad)
+    const eyebrow = c.eyebrow
+      ? b.text({ left: SAFE.left + pad, top: y, width: innerW, height: eyebrowH }, c.eyebrow, {
+        size: TYPE_SCALE.eyebrow, color: p.accent, bold: true, letterSpacing: 2,
+        lineHeight: LINE_HEIGHT.tight, textType: 'header',
+      })
+      : null
+    if (c.eyebrow) y = snapY(y + eyebrowH + SPACING.paragraphGap)
+
+    const title = b.text({ left: SAFE.left + pad, top: y, width: innerW, height: titleH }, c.title ?? '', {
+      size: titleSize, color: p.text, bold: true, lineHeight: LINE_HEIGHT.heading, textType: 'title',
+    })
+    y = snapY(y + titleH + SPACING.headingGap)
+
+    const subtitle = c.subtitle
+      ? b.text({ left: SAFE.left + pad, top: y, width: innerW, height: subH }, c.subtitle, {
+        size: TYPE_SCALE.subtitle, color: p.textMuted, textType: 'subtitle',
+      })
+      : null
+
+    // 卡片和标题同一步：卡片先飞进来再等文字出现，就是「一块板子从文字底下升上来」
+    b.animate(title, 'fade-left', 'click', 600)
+    b.animate(card, 'wipe', 'meantime', 600)
+    b.animate(edge, 'wipe-down', 'meantime', 500)
+    b.animate(eyebrow, 'fade-left', 'meantime', 400)
+    b.animate(bgImage, 'fade', 'meantime', 800)
+    b.animate(scrim, 'fade', 'meantime', 800)
+    b.animate(subtitle, 'fade-up', 'auto', 400)
+
+    return { background: { type: 'solid', color: p.background }, slideType: 'content' }
   },
 }
 
@@ -1011,6 +1630,17 @@ export const validateLayoutContent = (pattern: LayoutPattern, content: LayoutCon
     }
     const empty = (content.items ?? []).findIndex(it => !it.title?.trim() && !it.body?.trim() && !it.label?.trim())
     if (empty !== -1) return `items[${empty}] 是空的，每一项至少要有 title 或 body`
+  }
+
+  for (const [i, it] of (content.items ?? []).entries()) {
+    if (!it.image?.src) continue
+    if (!meta.itemImage) {
+      const usable = LAYOUT_PATTERNS.filter(x => LAYOUT_META[x].itemImage).join(' / ')
+      return `版式 "${pattern}" 的条目不吃图（items[].image）。要每条配图请改用：${usable}`
+    }
+    if (!ASSET_SRC.test(it.image.src)) {
+      return `items[${i}].image.src 必须是 searchImage / generateImage 返回的 asset:// 地址，收到 "${it.image.src.slice(0, 60)}"`
+    }
   }
 
   if (content.image?.src) {
@@ -1052,6 +1682,7 @@ export const buildLayout = (
     animations: options.animate === false ? [] : builder.animations,
     background,
     slideType,
+    clampedIds: builder.clampedIds,
   }
 }
 
@@ -1068,8 +1699,12 @@ export const describeLayouts = (): string =>
     const items = m.items ? `，items ${m.items[0]}~${m.items[1]} 项` : ''
     const image = m.image === 'backdrop'
       ? '，**可配图**（满屏背景图，自动压遮罩保证文字可读）'
-      : m.image === 'panel'
-        ? '，**可配图**（占右侧的整幅配图，文字自动缩到左栏）'
-        : ''
+      : m.image === 'overlay'
+        ? '，**可配图**（满屏背景图 + 实心浮层卡片装文字，照片再花也读得清）'
+        : m.image === 'panel'
+          ? '，**可配图**（占一侧的整幅配图，文字自动缩到另一栏）'
+          : m.itemImage
+            ? '，**每条各配一张图**（填 items[].image，不是 content.image）'
+            : ''
     return `- ${p}（${m.name}）：${m.usage}${items}${image}`
   }).join('\n')

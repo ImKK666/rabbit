@@ -12,7 +12,7 @@ import type {
 import { ANIMATION_DEFS, TURNING_MODES } from '@/configs/animation'
 import { buildShapeGeometry, getCatalogShape, SHAPE_CATALOG_KEYS } from '@/configs/shapeCatalog'
 import { lintSlideAnimationOrder } from './animationOrder'
-import { buildPalette, CANVAS_WIDTH as DESIGN_W, CANVAS_HEIGHT as DESIGN_H } from './design'
+import { buildPalette, CANVAS_WIDTH as DESIGN_W, CANVAS_HEIGHT as DESIGN_H, type PaletteStyle } from './design'
 import {
   buildLayout, validateLayoutContent, isLayoutPattern,
   type LayoutPattern, type LayoutContent,
@@ -1407,7 +1407,12 @@ export const applyLayoutToSlide = (
   theme: SlideTheme,
   pattern: string,
   content: LayoutContent,
-  opts: { animate?: boolean, paletteOverride?: { primary?: string, accent?: string, background?: string } } = {},
+  opts: {
+    animate?: boolean
+    paletteOverride?: { primary?: string, accent?: string, background?: string }
+    /** 配色风格。选哪个是内容决策（模型定），风格里的色值是排版决策（代码定） */
+    style?: PaletteStyle
+  } = {},
 ): KernelOutcome => {
   const slideIndex = slides.findIndex(s => s.id === slideId)
   if (slideIndex === -1) return { ok: false, error: `幻灯片 "${slideId}" 不存在` }
@@ -1417,7 +1422,7 @@ export const applyLayoutToSlide = (
   const contentError = validateLayoutContent(pattern, content)
   if (contentError) return { ok: false, error: contentError }
 
-  const palette = buildPalette(theme, opts.paletteOverride)
+  const palette = buildPalette(theme, opts.paletteOverride, opts.style)
 
   // id 前缀带上页序号和当前元素数，重复套版式不会撞 id
   const prefix = `ly${slideIndex + 1}x${slides[slideIndex].elements.length}`

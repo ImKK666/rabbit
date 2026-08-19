@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<!--
+  版式样张联系表（开发工具）—— 见 scripts/layout-sheet.ts 头注释。
+
+  放在仓库根目录是因为 vite dev server 按根目录解析 HTML 入口。
+  **不会进生产构建**：`vite build` 未配 rollupOptions.input，只用 index.html 一个入口。
+-->
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Rabbit · 版式样张联系表</title>
+    <style>
+      body {
+        margin: 0;
+        padding: 32px 40px 80px;
+        background: #eceef2;
+        font: 14px/1.6 -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+        color: #1a1d24;
+      }
+      .sheet-head h1 { margin: 0 0 4px; font-size: 22px; }
+      .sheet-head p { margin: 0 0 28px; color: #5b6472; }
+      .row { margin-bottom: 40px; }
+      .row h2 {
+        margin: 0 0 12px;
+        font-size: 15px;
+        display: flex;
+        align-items: baseline;
+        gap: 10px;
+        border-bottom: 1px solid #d4d8e0;
+        padding-bottom: 8px;
+      }
+      .row h2 .pat { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: #2f6feb; }
+      .row h2 .nm { color: #1a1d24; }
+      .row h2 .img { margin-left: auto; font-weight: 400; font-size: 12px; color: #7a8494; }
+      .grid { display: flex; flex-wrap: wrap; gap: 20px; }
+      .cell { margin: 0; }
+      /* 边框是必要的：白底版式和页面底色一样，没有边框根本看不出画布边界在哪 */
+      .cell .thumbnail-slide { border: 1px solid #c3c9d4; box-shadow: 0 2px 10px #0000000f; }
+      .cell figcaption {
+        margin-top: 6px;
+        display: flex;
+        flex-direction: column;
+        gap: 1px;
+        font-size: 12px;
+        max-width: 480px;
+      }
+      .cell figcaption b { font-weight: 600; }
+      .cell figcaption .watch { color: #7a8494; }
+      .cell figcaption .bad { color: #c0392b; font-weight: 600; }
+    </style>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="/scripts/layout-sheet.ts"></script>
+  </body>
+</html>

@@ -38,7 +38,7 @@ import {
   type KernelOutcome,
 } from './kernel'
 import { LAYOUT_PATTERNS, describeLayouts } from './layouts'
-import { buildPalette, TYPE_SCALE, SPACING, SAFE } from './design'
+import { buildPalette, describePaletteStyles, TYPE_SCALE, SPACING, SAFE } from './design'
 
 // ---------------------------------------------------------------------------
 // Deck 状态持有者
@@ -175,18 +175,24 @@ export const createAgentTools = (accessor: DeckStateAccessor) => ({
   }),
 
   getDesignTokens: tool({
-    description: '获取当前主题推导出的设计规范：颜色角色（主色/强调色/正文/次要文字/卡片底/描边）、字号阶梯、间距栅格、安全区。自己配色前先调这个，别凭空编颜色',
-    parameters: z.object({}),
-    execute: async () => {
+    description: '获取当前主题推导出的设计规范：颜色角色（主色/强调色/正文/次要文字/卡片底/描边）、字号阶梯、间距栅格、安全区、可选的配色风格。自己配色前先调这个，别凭空编颜色',
+    parameters: z.object({
+      style: z.enum(['business', 'tech', 'academic', 'vivid']).optional()
+        .describe('按哪个风格推导。不传按 business'),
+    }),
+    execute: async ({ style }) => {
       const { theme } = accessor.get()
-      const palette = buildPalette(theme)
+      const palette = buildPalette(theme, undefined, style)
       return JSON.stringify({
         palette,
+        style: style ?? 'business',
+        styles: describePaletteStyles(),
         typeScale: TYPE_SCALE,
         spacing: SPACING,
         safeArea: { left: SAFE.left, top: SAFE.top, right: SAFE.right, bottom: SAFE.bottom },
         canvas: { width: 1000, height: 562.5 },
-        hint: '同一个角色在整份文稿里只用一个取值。字号只在阶梯里挑，不要用阶梯之外的数值',
+        hint: '同一个角色在整份文稿里只用一个取值。字号只在阶梯里挑，不要用阶梯之外的数值。'
+          + '**风格整份文稿只选一个**，每页 applyLayout 都传同一个值 —— 换来换去等于没有风格',
       })
     },
   }),
@@ -359,14 +365,18 @@ ${describeLayouts()}
           src: z.string().describe('必须是 searchImage / generateImage 返回的 asset:// 地址，不能填图库网址'),
           width: z.number().optional().describe('图片真实宽度，把工具返回值原样抄进来'),
           height: z.number().optional().describe('图片真实高度，把工具返回值原样抄进来'),
+          luminance: z.tuple([z.number(), z.number()]).optional()
+            .describe('图片亮度，把工具返回的 luminance 原样抄进来。少了它背景遮罩只能按中位数压，深色照片会被压灰'),
         }).optional().describe('本页配图。只有标了「可配图」的版式吃它，摆放位置/裁剪/遮罩全部自动算'),
       }).describe('版式内容'),
       animate: z.boolean().optional().describe('是否生成出场动画，默认 true。每个版式的编排各不相同'),
+      style: z.enum(['business', 'tech', 'academic', 'vivid']).optional()
+        .describe('配色风格。**整份文稿只选一个，每页都传同一个** —— 选哪个是内容决策（学术汇报和产品发布会本来就该长得不一样），具体色值由代码定'),
       primaryColor: z.string().optional().describe('覆盖本页主色，如 #2f6feb'),
       accentColor: z.string().optional().describe('覆盖本页强调色'),
       backgroundColor: z.string().optional().describe('覆盖本页背景色'),
     }),
-    execute: async ({ slideId, pattern, content, animate, primaryColor, accentColor, backgroundColor }) => {
+    execute: async ({ slideId, pattern, content, animate, style, primaryColor, accentColor, backgroundColor }) => {
       const state = accessor.get()
       const paletteOverride = {
         ...(primaryColor ? { primary: primaryColor } : {}),
@@ -375,7 +385,7 @@ ${describeLayouts()}
       }
       return applyMutation(accessor, applyLayoutToSlide(
         state.slides, slideId, state.theme, pattern, content,
-        { animate, paletteOverride: Object.keys(paletteOverride).length ? paletteOverride : undefined },
+        { animate, style, paletteOverride: Object.keys(paletteOverride).length ? paletteOverride : undefined },
       ))
     },
   }),
