@@ -2,7 +2,12 @@
 
 // 非专业设计人士可以用该应用绘制基本形状：https://github.com/pipipi-pikachu/svgPathCreator
 
-import { ShapePathFormulasKeys } from '@/types/slides'
+// 相对路径不是笔误：后端（bun）经 shapeCatalog 直接 import 这个文件，
+// 而 `@/` 的 paths 映射只在 server/tsconfig.json 的作用域内生效，
+// 管不到 src/ 下的文件。本行是整个 src/ 里唯一一个**值**形式的 `@/` import
+// （其余都是 `import type`，编译时就被抹掉，不需要运行时解析），
+// ShapePathFormulasKeys 是 const enum，是值。写成 `@/` 后端会启动失败。
+import { ShapePathFormulasKeys } from '../types/slides'
 
 export interface ShapePoolItem {
   viewBox: [number, number]
