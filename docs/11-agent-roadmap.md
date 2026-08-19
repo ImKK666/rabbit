@@ -144,6 +144,11 @@ server/src/
     registry.ts               工具注册表（按域分组）
     events.ts                 事件 + 优先级 + 世代
     budget.ts                 ← 现有，加收益递减
+    rateLimiter.ts     ✅     滑动窗口限流（注入时钟；超限不消耗名额）
+    imageCodec.ts      ✅     压缩转码（PNG→JPEG；透明图保留 PNG）
+    imageGenerate.ts   ✅     生图（与 imageSearch 对称，不抛异常）
+    searchCache.ts     ✅     搜图 24h 缓存的键与过期判定（纯函数）
+    assetConfig.ts     ✅     两张配置表 → 运行时对象（碰库，同 llm.ts）
 
   domains/
     deck/                     ← 现有能力原样搬进来，成为第一个域
@@ -151,6 +156,8 @@ server/src/
       tools.ts    → 注册为 deck 工具组
       events.ts   ✅ 域的取消策略：哪些下行事件在取消后仍必须送达
       channel.ts  ✅ 闸门 + 提交器的接线（域把两个 IO 端点交进去）
+      assetTools.ts   ✅ D1 工具层：searchImage / generateImage（碰库）
+      assetResults.ts ✅ 它俩的返回形状与合规判据（不碰库，所以测得到）
       agents.ts   ← roles.ts 改名：4 个角色变成 deck 域的 agent 定义
     research/                 ← 第二个域（阶段 D）
       tools.ts                搜索 / 抓取 / 摄入
@@ -190,7 +197,7 @@ server/src/
 | **A · 拆层** ✅ | ✅A1 建 `runtime/` + `domains/deck/` · ✅A2 边界机器判据 · ✅A3 工具注册表 · ✅A4 任务注册表 + 剧本归域 | 无 | — |
 | **B · runtime 必备件** | ✅中途落库 · ✅取消回收 · ✅单一权威写者 · checkpoint · 权限闸门 · 上下文压缩 · 子任务派生 · 收益递减 | 无（但止血） | A |
 | **C · 交互** | `FINISHING` 态 · 派生状态 · 五模式按钮 · 排队输入 · `agent.confirm` 落地 | ★★ | B |
-| **D · 能力** | D1 图片/图标 · D2 调研/摄入 · D3 渲染后反思 | ★★★ | D1 无前置 |
+| **D · 能力** | ✅D1 图片（配置层 R-46 + 工具层 R-47） · D2 调研/摄入 · D3 渲染后反思 | ★★★ | D1 无前置 |
 
 **D1（图片）不依赖任何一期，建议与 A 并行** —— 它是 08 号诊断里「最大的一条」，
 且纯文字 → 有图是肉眼可见的最大跃迁。拆层是一整段零产出的工期，

@@ -150,12 +150,13 @@ PPTist 自带的文档已并入 [`docs/upstream/`](./upstream/)（`AI_PPT_SCHEMA
 → 每步实时同步画布 → 完成后保存 DB
 ```
 
-**978 个单测**（vitest，截至 2026-08-19 第十七轮）：
+**1087 个单测**（vitest，截至 2026-08-19 第十八轮）：
 layouts 224 + buildTimingXml 114 + kernel-elements 106 + shapeCatalog 92 + animation 71 +
-kernel 53 + design 30 + history 26 + buildTransitionXml 21 + assetUrl 19 + taskRegistry 18 +
-reasoning 18 + objectStore 20 + commit 15 + budget 15 + baseUrl 15 + deckWriter 15 +
-boundary 14 + imageSearch 13 + toolRegistry 11 + toolGroups 11 + animation-reach 11 + channel 10 + spidMap 8 +
-cancellation 8 + animationSteps 8 + toolCommit 7 + events 5。
+kernel 53 + assetResults 30 + design 30 + rateLimiter 27 + history 26 + imageCodec 25 +
+buildTransitionXml 21 + objectStore 20 + searchCache 20 + assetUrl 19 + reasoning 18 +
+taskRegistry 18 + toolGroups 18 + deckWriter 15 + baseUrl 15 + budget 15 + commit 15 +
+boundary 14 + imageSearch 13 + toolRegistry 11 + animation-reach 11 + channel 10 +
+animationSteps 8 + spidMap 8 + cancellation 8 + toolCommit 7 + events 5。
 
 `npm run build` exit 0（前端），`bunx tsc --noEmit` exit 0（后端），`npx vitest run` 全绿。
 
@@ -1567,6 +1568,266 @@ COS 连接测试实测：`ok:true`、`publicReadable:true`、`corsAllowOrigin:*`
 - 图片压缩（`maxEdgePx`）只有配置，没有实现
 - `assets` 任务表 / 票据状态机没建
 
+### 2026-08-19 第十八轮：D1 的工具层 —— agent 真的能拿到图了（R-47）
+
+上一轮做完配置层，这一轮把 `searchImage` / `generateImage` 接成 agent 真能调的工具。
+**08 号诊断里「最大的一条」到这一轮为止闭环了**：从纯文字到有图。
+
+#### 动手前先量，四个数字改掉了两个原定方案
+
+「先量再定」这条第十五轮用在落库 cadence 上，这轮用在压缩上。真打 API 量出来：
+
+| | 实测 | 对 `max_edge_px = 1600` |
+|---|---|---|
+| 生图 `gemini-3.1-flash-image` | **1408×768 PNG，1.5~2.0 MB**，14~15 秒 | 长边 1408，**不触发缩放** |
+| `aspectRatio: '16:9'` | 1376×768，922 KB，14.0 秒 | 同样不触发 |
+| `aspectRatio: '1:1'` | 1024×1024，370 KB，13.8 秒 | 同样不触发 |
+| 搜图 Pixabay `largeImageURL` | 1280 长边 JPEG，165~279 KB，540~800 ms | 同样不触发 |
+
+两个结论都和动手前的设想相反：
+
+**① 那个「长边上限」配置在默认值下一次都不会生效。** 省下来的字节
+**全部来自 PNG → JPEG 重编码**。缩放仍然实现了（配置能调到 1280 以下），
+但它不是主角 —— 差点把「缩放做完了」当成「压缩做完了」。
+
+**② `imageConfig.aspectRatio` 是生效的，但给的不是精确比例**
+（16:9 要 1.778，实得 1376/768 = 1.792）。所以下游一律用**解码出来的真实像素**，
+不拿请求时的比例去推 —— 上一轮 Pixabay 那个「报原图尺寸、给缩略图」的真 bug 就是这么来的。
+
+#### 四个拍板的决策
+
+| 决策 | 选了什么 |
+|---|---|
+| deck 里 `src` 存什么 | `asset://<hash>`，并把断掉的三处补上（兑现决策 E） |
+| 票据语义 | **工具内同步等图**，票据表只做持久化 / 审计 / 署名反查 |
+| 压缩 | 先实测再定，最后选纯 JS 编解码 |
+| 署名 | 权威副本落 `assets` 表 + 工具返回值带上，界面显示留到下一轮 |
+
+#### 为什么不做异步票据 —— 它和 B 期刚立的两条契约正面撞
+
+`assets.ts`（R-32）当初设计的形状是「工具立刻返回 `asset://pending/<id>`，
+后台完成后改元素的 src」，协议里的 `agent.asset.pending` / `.ready` 就是为那条路留的。
+**这一轮没有走。** 摆开看：
+
+| 契约 | 冲突点 |
+|---|---|
+| R-44 中途落库 | 所有 deck 变更必须走 `channel.commit`，而 channel 的生命周期**绑在任务上**（signal / drain / stats）。任务结束后没有 channel 可用 |
+| R-45 单一权威写者 | 任务结束时前端把所有权还给 `user`、画布解锁。此后再推 `agent.deck` 会被对称守卫**丢弃且不报错** —— 图永远补不上 |
+
+`events.ts:54` 的旧注释其实预见到一半：「真接上之后 `asset.ready` 会改元素的 src ——
+那时它就是权威状态了，**要连同一次 commit 一起走**」。走同步这条路之后，
+那个担心根本没有发生：图由 agent 自己调 `addElement` 写进 deck，
+**deck 写入仍然只有 `applyMutation → commit` 一条路**，两条契约一个字都没改。
+
+代价说清楚：生图那 14~15 秒 agent 是阻塞的，一份配 6 张图的 deck 多等 1.5 分钟。
+步数预算不受影响（一次调用一步，上限 512）。真要异步，得先解决
+「任务结束后谁是权威写者」—— 建议放到 C 期和 `FINISHING` 态一起做。
+
+于是那三条 `agent.asset.*` 降级成**纯进度叙事**（填上那 14 秒的沉默 ——
+`onStepFinish` 在工具**返回之后**才触发，那段时间面板上一条 `agent.tool` 都没有，
+看起来就是卡死）。它们不改 deck，所以 `events.ts` 里「可回收」的分类继续正确。
+新增的 `agent.asset.failed` 是因为少了它，面板那个「生成中」会一直转下去。
+
+#### 限流：三样缺一不可，外加一样是实测撞出来的
+
+`runtime/rateLimiter.ts`，滑动窗口 + 注入时钟。超限时**返回而不是抛**
+（抛出去模型的默认反应是重试，而它一定会再被拒，白烧两步）。返回的形状：
+
+```json
+{ "ok": false, "reason": "rate_limited", "retryAfterSec": 37,
+  "hint": "…约 37 秒后恢复。现在请改用 searchImage…**不要重试 generateImage**…" }
+```
+
+- `reason` 是**稳定机器码**，单测按它断言，不按提示语断言
+- `retryAfterSec` 可以独立算一遍验证
+- hint **点名替代工具** —— 不点名时模型只会重试。上一轮「搜图生图分成两个工具」
+  就是为这一刻，分开了却不告诉模型等于没分
+
+**最容易写错的是「超限不消耗名额」**：反过来写（先记时间戳再判断）会让被拒的调用
+也把窗口填满，agent 每被拒一次就把恢复时间往后推一次 ——
+表现是**限流一触发就永不恢复**，而日志里一切正常。
+
+**外加一条是端到端跑出来才发现的**：库里配 3 次/分钟，而这个中转实际只放 2 次，
+第 3 次直接 429。原来把它当普通 `provider_error`，提示语是「可以再试一次」——
+**那正好是此刻最不该做的事**。改成：上游 429 也走 `rate_limited`，
+并且 `limiter.block(key, 60)` 真的把这个键按死 ——
+对方已经给了答案，没必要每次都再打一次才知道不行。
+
+#### 压缩：三个候选都在 bun 里跑过，选了最不聪明的那个
+
+| | q=82 输出 | 编码耗时 | 依赖性质 |
+|---|---|---|---|
+| `upng-js` + `jpeg-js`（**选它**） | 2000 KB → **333 KB**（6.0×） | 78 ms | 纯 JS，零 wasm |
+| `@jsquash`（mozjpeg wasm） | 2000 KB → 254 KB（7.9×） | 366 ms | 多一条 wasm 加载路径 |
+| `sharp` | 未测 | — | 原生编译，跨平台部署代价明显 |
+
+mozjpeg 小 24%，但 **6 倍已经解决了问题**，再省 78 KB 不值得为它多一个
+会在别人机器上炸的环节。速度不是理由 —— 相对 14 秒生图两者都是噪声。
+
+确定**不用 WebP**：PPTX 对它支持很差，而这个项目的产物终点就是 PPTX。
+
+**两个坑**：
+
+- **JPEG 没有 alpha。** 透明 PNG 直接转过去，透明区域变黑且不报任何错。
+  所以解码后逐像素查 alpha，有透明就保留 PNG —— 宁可大也不能把图毁了。
+- **`upng-js` 解不了调色板 PNG（ctype=3）。** 它自己 encode 出来的都 decode 不回来，
+  抛的是 `undefined is not an object (evaluating 'data[i]')` —— 排查的人根本看不出
+  发生了什么。加了显式检测换一条说得清的错误。两条主路径都不碰它
+  （生图实测 ctype=2、搜图是 JPEG），代价只是偶尔跳过一张索引色候选。
+
+实测真图上的压缩：生图 656 KB → 48 KB、1312 KB → 112 KB（**11~13 倍**，
+比合成素材上估的 6 倍还好，因为渐变图更适合 JPEG）；
+搜图的 JPEG 走 `kept-as-is` 不做二次有损编码。
+
+#### `asset://` 原来在导出路径上是断的，`setAssetBaseUrl` 从来没被调用过
+
+这三条是读代码时查出来的，文档里一条都没记：
+
+| | 状态 |
+|---|---|
+| `setAssetBaseUrl()` | **全项目零调用**，`assetUrl.ts:59` 的 `TODO(R-01)` 从 R-10 起一直没兑现。于是 `asset://<hash>` 一直解析成默认的 `/assets/<hash>`，一个必然 404 的地址 |
+| PPTX 导出 | `useExport.ts:625` / `:549` 把 `el.src` **原样**交给 pptxgenjs。表现和上一轮那条 CORS 坑一模一样：画布上一切正常，只有导出时图静默消失 |
+| 内容寻址 key | `contentKey()` 产出 `rabbit/<sha>.jpg`（带前缀带扩展名），而 `asset://<hash>` 的文法**两样都不带** |
+
+三条都补了：上传时 key 不带扩展名（MIME 由 `Content-Type` 给，`contentKey` 本来就支持空扩展名）·
+新增 `GET /api/assets/base-url` 让前端启动时问一次 · 导出两处过 `resolveAssetUrl`。
+
+**为什么值得多一次往返，而不是把 COS 的 URL 直接写进 deck**：
+换桶、挂 CDN、迁到别家对象存储时，改这一处配置**所有旧 deck 跟着走**。
+把 `https://…/rabbit/<hash>` 写进 deck 的话，那天所有历史文稿里的图会一起失效。
+
+#### 测试 978 → 1087
+
+| 文件 | 条数 | 守什么 |
+|---|---:|---|
+| `runtime/__tests__/rateLimiter.test.ts` | 27 | 窗口边界 / **超限不消耗名额** / block 盖过配额 / retryAfterSec / 键隔离 / 时钟回拨 |
+| `domains/deck/__tests__/assetResults.test.ts` | 30 | **限流返回形状（Q1 的判据）** / 合规① src 必是 `asset://<64hex>` / 合规② 署名透传 / 各失败机器码 |
+| `runtime/__tests__/imageCodec.test.ts` | 25 | 格式判定 / 透明保护 / 面积平均算术 / 四条分支选择 / 索引色拦截 |
+| `runtime/__tests__/searchCache.test.ts` | 20 | 键的四个维度 / 归一化 / 24 小时边界 / 空结果也算有效缓存 |
+| `toolGroups.test.ts` | 11 → 18 | 加了「图片能力关着时整组不注册」一组 |
+| `events.test.ts` | 5 | 样本 11 → 12（协议加了 `agent.asset.failed`） |
+
+`toolGroups.test.ts` 那份「23 个键」的硬编码清单**按设计变红了** ——
+它的注释写着「工具增删时这里先红，提醒去更新清单」。更新时把 deck 的 23 个
+和图片的 2 个**分开列**，这样「原有配额有没有被动过」仍然一眼看得出来（判据 8）。
+
+图片工具本体在 `assetTools.ts`（碰库，vitest 加载不了），
+所以工具名单独放进不碰库的 `assetResults.ts`，再用一行编译期断言
+把「字面量 ≡ 名字清单 ≡ 真实工具键」三方钉死 —— 否则「加了工具忘了归组」
+这条判据对图片工具是**测不到**的。
+
+#### 十五条负对照全部挂到真源码上跑过
+
+| 改坏什么 | 变红 |
+|---|---|
+| ① 限流超限也记账 | rateLimiter |
+| ② 窗口边界 `>` → `>=` | rateLimiter |
+| ③ block 不再盖过配额 | rateLimiter |
+| ④ `toolAsset` 不校验 hash 形状 | assetResults |
+| ⑤ 限流提示语不点名 searchImage | assetResults |
+| ⑥ 透明 PNG 也转 JPEG | imageCodec |
+| ⑦ 面积平均改成只取一行 | imageCodec |
+| ⑧ 不拦索引色 PNG | imageCodec |
+| ⑨ 查询不归一化 | searchCache |
+| ⑩ 24 小时边界 `<` → `<=` | searchCache |
+| ⑪ limit 不进缓存键 | searchCache |
+| ⑫ `readCache` 不看过期 | searchCache |
+| ⑬ attribution 不透传 | assetResults |
+| ⑭ 关着图片能力也发 asset 组 | toolGroups |
+| ⑮ `agent.asset.ready` 改成取消后放行 | events |
+
+跑批脚本里写死了两道自检：**模式匹配不上就 ABORT**、**改完回读文件确认落盘**。
+两条都真的触发过（⑦⑪ 第一次缩进对不上），
+而正是那个 ABORT 把下面「判断错过的地方 ③」翻了出来。
+
+#### 验证
+
+四道闸门全过（1087 / build / type-check / server tsc）+ **从 `server/` 实起后端**。
+
+**端到端真跑**（不是重写一遍流程，是直接调 `createAssetTools`）：
+搜图 → 24h 缓存 → 下载 → 压缩 → 传 COS → 匿名读回 `HTTP 200 image/jpeg` →
+CORS `*` → 生图 13.4 秒 → 限流拒绝 → 票据落库 → 清扫残留。
+缓存命中用 **`fetched_at` 变没变**判定（第一版拿耗时判，测的其实是下载时间，是错的）。
+
+**浏览器里真看了**：建一份带 `asset://<hash>` 图片元素的 deck，
+用 playwright 打开编辑器 —— 画布和左侧缩略图都出图，`naturalWidth = 1280`，无控制台错误。
+**这一步抓到了本轮最隐蔽的一个 bug**，见下。
+
+eslint：9 个新源文件 + 4 个新测试文件**全部 0 问题**；
+`pipeline.ts` 3e 7w → 3e 8w、`index.ts` 0e 3w → 0e 5w、`App.vue` 0e 0w → 0e 1w，
+多出来的三条全是新加的 `console`。
+
+#### 判断错过的地方
+
+**① 类型说一套、运行时做另一套 —— 只有真浏览器能发现。**
+
+`syncAssetBaseUrl` 第一版写的是 `res.data?.baseUrl`。TypeScript 通过了（`assetApi.baseUrl()`
+的类型是 `AxiosResponse`，它确实有 `.data`），四道闸门全绿，接口返回 200 且内容正确，
+**控制台一条错误都没有** —— 而 `res.data` 运行时是 `undefined`。
+
+因为 `services/index.ts` 引的是 `./axios` 那个**会拆包**的实例
+（拦截器 `return response.data`），拿到的就是响应体本身。仓库里其它调用点全都写
+`await deckApi.list() as any` 然后 `res.decks` —— **类型从来没跟着改过**，
+而那个 `as any` 恰好把每个人的错误都掩盖成了「能跑」。
+
+这条单测和端到端脚本都验不到：它们不经过前端那条 axios 链路。
+**是浏览器里那次实测把它翻出来的。**
+
+**② 我加了一个没必要的响应式改造，是负对照证明它没用的。**
+
+看到「图没加载出来」时，我的第一反应是「`assetBaseUrl` 是模块级普通变量，
+而消费点是 `computed`，Vue 追踪不到」—— 推理本身没错，于是改成了 `shallowRef`。
+改完图还是没出来（真因是 ①）。修好 ① 之后，我**把 ref 改回普通变量再跑一次浏览器**：
+**图照样正常加载**。
+
+它不成立是因为时序本来就是对的：登录后立刻同步根地址，
+而画布只可能在登录之后才打开，图片组件被创建时 computed 第一次求值读到的已经是新值。
+按仓库自己那条「别为想象中的需求建抽象」，加上它会让 `assetUrl.ts`
+从文件头明写的「不依赖 Vue」变成依赖 Vue —— 去掉了，风险写进注释。
+
+**这是第十五轮那句话的又一次兑现：负对照不只在验代码，它同时在验判据本身。**
+差一点就把一个不解决任何问题的改动当成「修好了 bug」记进这份文档。
+
+**③ 我往源码里写进了三个不可见的 NUL 字节。**
+
+`searchCache.ts` 的缓存键原本写的是模板字符串加空格分隔，
+而落到磁盘上的分隔符是 `\0`。功能上碰巧比空格更安全（空格可能出现在查询词里），
+但源码里藏控制字符是另一回事：看不见、grep 不到、有的工具会把整个文件当二进制。
+**四道闸门全绿，没有任何东西报警。**
+
+是负对照那条「模式没匹配上 → ABORT」把它翻出来的 —— 我去看为什么匹配不上，
+才逐字符打印发现的。改成了 `JSON.stringify([...])`：分隔无歧义，而且看得见。
+
+**④ 上游 429 被报成「可以重试」。**
+端到端跑限流那一组时才发现，见上文。单测覆盖不到这条，因为它是真实上游的行为。
+
+**⑤ `page.evaluate` 里 `import('/src/utils/…')` 拿到的是另一个模块实例。**
+我用它当探针查「setter 到底跑没跑」，它一直报默认值 —— 即使修好之后、
+DOM 上的图已经正常加载，那个探针**仍然报 `/assets`**。
+差点被它引到错误的方向。**DOM 才是真相，模块探针不是。**
+
+**⑥ `cd` 又泄漏了一次。**
+上一轮「判断错过的地方 ③」原样记着这条，这一轮起 vite 时照犯 ——
+`cd server && ... & npx vite &` 让 vite 在 `server/` 里启动，报找不到入口。
+**写进文档不等于不会再犯**，分开两条命令起才是解法。
+
+#### 没做的（说清楚边界）
+
+- **署名只到「数据在」，没到「界面显示」。** 权威副本落在 `assets` 表（按 hash 可反查，
+  不依赖模型），工具返回值也带着 —— 但**没有任何界面显示它**，
+  也没有写进 `PPTImageElement`。合规②「必须署名」严格说还没兑现完。
+  下一轮做：画布选中图片时显示来源、导出时附一页来源清单。
+  （查过了：`validateElement` 用 `safeParse` 只校验、丢弃解析产物，
+  所以往元素上加字段**不需要动 kernel.ts** —— 路线图里它是「一行不动」的硬约束。）
+- **异步票据没做**，理由见上。`asset://pending/` 那一档前端骨架屏仍然闲置着。
+- **生图 prompt 没有任何模板化**。agent 写什么就发什么，
+  产出风格的一致性完全靠模型自觉 —— 而「决策不该由模型做」这条红线在这里还没落实。
+- **没验过一次真实的 agent 端到端生成**（跑一句「做一份带图的 PPT」看它自己怎么用这两个工具）。
+  工具本身逐项验过了，但**模型会不会用、用得对不对是另一回事** ——
+  这正是 R-32 那条「注册了不等于用得上」要防的，下一轮该补一次 07 号文档那样的功能测试。
+- 上游实际配额比库里配的紧（实测中转只放 2 次/分钟，库里是 3）。
+  代码已经能优雅处理，但**那个数字该由管理员调**，不是代码问题。
+
 ## 待完成
 
 > 下面这张表是**当前**的权威清单。其中 agent 相关的多项已被
@@ -1580,7 +1841,10 @@ COS 连接测试实测：`ok:true`、`publicReadable:true`、`corsAllowOrigin:*`
 | 思考过程落库 | 现在只在实时流里，重开会话看不到。要不要存、存多少（很占地方）没定 | 低 |
 | **E3 地面真相** | 导出的动画在真实 PowerPoint 里逐个验，样本已生成（`samples/animations/`），清单见 [09-powerpoint-verify.md](./09-powerpoint-verify.md)。**网页侧已在无头浏览器里逐帧验完**（R-36），剩下的确实只有 PowerPoint 那一半 | **高** |
 | **`in` / `out` 光圈方向** | `box-in` / `circle-in` / `diamond-in` / `plus-in` 网页侧一律「自中心向外张开」。若 PowerPoint 的 `filter=circle(in)` 实际是「自外向内收拢」，这四个方向就是反的 —— 只能开 PowerPoint 看，判法见 [09](./09-powerpoint-verify.md) 第三节 | **高** |
-| **图片 / 图标能力** | 08 号诊断 ① 里最大的一条。**第十七轮已完成配置层**（COS 桶 + 生图模型 + 两个设置页，全部实测通过）；**仍缺工具层**：`searchImage` / `generateImage` 未注册、限流未执行、压缩未实现、`assets` 任务表未建 | **高** |
+| ~~**图片 / 图标能力**~~ | 08 号诊断 ① 里最大的一条。**第十七轮配置层 + 第十八轮工具层已完成**：两个工具已注册、限流已执行（含上游 429）、压缩已实现（PNG→JPEG 6~13 倍）、`assets` 票据表 + 24h 搜图缓存已建，全链路实测通过并在浏览器里看过 | ✅ |
+| **图片署名要显示出来** | 合规②「必须署名」目前只做到「数据落在 `assets` 表 + 工具返回值带着」，**界面上没有任何地方显示**。要做：画布选中图片时显示来源与作者、导出时附一页来源清单。往元素加字段不需要动 kernel（`validateElement` 用 safeParse 丢弃产物） | **高** |
+| **agent 用图的功能测试** | 工具逐项验过了，但**没跑过一次真实的「做一份带图的 PPT」** —— 模型会不会用、用得对不对是另一回事。照 07 号文档补一轮 | **高** |
+| **生图 prompt 模板化** | 现在 agent 写什么就发什么，产出风格一致性全靠模型自觉。「决策不该由模型做」这条红线在这里还没落实 | 中 |
 | R-09 / R-18 | 旧 AI 路径包装成 agent 工具 `fillFromTemplate` | 中 |
 | **事务 / 回滚** | 逐工具提交，中途失败留半成品。Oh My PPT 的 job/rollback 还没抄。**第十五轮之后这条变重了**：中途落库把原来那个「失败时库是干净的」的意外回滚拿掉了，现在半成品会永久留在库里 —— checkpoint 是把它还回来的那一步 | **高** |
 | ~~并发控制~~ | ~~agent 跑时用户手改画布会被整份 `agent.deck` 覆盖~~ —— **第十六轮已修**（单一权威写者，画布锁 + 接管） | ✅ |

@@ -30,6 +30,28 @@ export type AgentLogEntry =
    * 只存在于实时流里，**不落库**（重开会话看不到），所以没有 messageId。
    */
   | { type: 'reasoning', role: string, content: string, done: boolean }
+  /**
+   * 图片资产的进度。
+   *
+   * 生图要 14~15 秒，而那段时间里工具还没返回 —— 后端的 `onStepFinish`
+   * 是在工具**返回之后**才触发的，所以连一条 `agent.tool` 都不会有。
+   * 没有这条日志，面板上就是十几秒的纯空白，看起来和卡死一模一样。
+   *
+   * 同一张图的三个阶段共用**一条**日志（按 ticket 原地改 state），
+   * 不是三条独立记录 —— 否则一次配六张图的任务会刷出十八条流水。
+   * 也**不落库**（它是叙事不是结果），所以没有 messageId。
+   */
+  | {
+    type: 'asset'
+    ticket: string
+    kind: 'search' | 'generate'
+    prompt: string
+    state: 'pending' | 'ready' | 'failed'
+    /** ready 时的 `asset://<hash>` */
+    src?: string
+    /** ready 时是尺寸，failed 时是原因 */
+    detail?: string
+  }
 
 export interface ConversationMeta {
   id: number
@@ -196,6 +218,35 @@ export const useAgentStore = defineStore('agent', {
           break
         }
 
+        case 'agent.asset.pending':
+          this.log.push({
+            type: 'asset',
+            ticket: msg.ticket,
+            kind: msg.kind,
+            prompt: msg.prompt,
+            state: 'pending',
+          })
+          break
+
+        case 'agent.asset.ready': {
+          const entry = this.findAssetEntry(msg.ticket)
+          if (entry) {
+            entry.state = 'ready'
+            entry.src = msg.src
+            entry.detail = `${msg.width}×${msg.height}`
+          }
+          break
+        }
+
+        case 'agent.asset.failed': {
+          const entry = this.findAssetEntry(msg.ticket)
+          if (entry) {
+            entry.state = 'failed'
+            entry.detail = msg.reason
+          }
+          break
+        }
+
         case 'agent.ask':
           this.statusMessage = msg.question
           break
@@ -209,6 +260,22 @@ export const useAgentStore = defineStore('agent', {
         default:
           break
       }
+    },
+
+    /**
+     * 按票据找回那条资产日志。
+     *
+     * **从后往前找**：票据是唯一的，但日志可以有几百条，而刚发出 pending
+     * 的那条几乎总在末尾。找不到就返回 undefined，什么都不做 ——
+     * 取消之后 `pending` 被闸门回收、`ready` 却已经在路上时就是这个情形，
+     * 那时凭空补一条「已完成」只会让面板显示一件用户已经叫停的事。
+     */
+    findAssetEntry(ticket: string) {
+      for (let i = this.log.length - 1; i >= 0; i--) {
+        const entry = this.log[i]
+        if (entry.type === 'asset' && entry.ticket === ticket) return entry
+      }
+      return undefined
     },
 
     /** 切换演示文稿时把面板清空 —— log 是全局单例，不清会串台 */

@@ -29,8 +29,17 @@ export type ServerMessage =
   | { type: 'agent.conversation', id: number, title: string }
   | { type: 'agent.ask', question: string }
   | { type: 'agent.deck', slidesJson: string, version: number }
-  | { type: 'agent.asset.pending', elementId: string, taskId: string }
-  | { type: 'agent.asset.ready', elementId: string, assetUrl: string }
+  /**
+   * 图片资产的进度叙事。**这三条不改画布** —— 后端的图片工具是同步等图的，
+   * 图拿到之后由 agent 自己调 addElement 写进 deck，
+   * 所以画布仍然只被 `agent.deck` 一条路改（单一权威写者不受影响）。
+   *
+   * 它们存在只为填上生图那 14~15 秒的沉默：那段时间 `agent.tool` 还没发
+   * （后端 onStepFinish 在工具**返回之后**才触发），面板上什么都没有，像卡死了。
+   */
+  | { type: 'agent.asset.pending', ticket: string, kind: 'search' | 'generate', prompt: string }
+  | { type: 'agent.asset.ready', ticket: string, src: string, width: number, height: number }
+  | { type: 'agent.asset.failed', ticket: string, reason: string }
   | { type: 'error', message: string }
 
 type MessageHandler = (msg: ServerMessage) => void

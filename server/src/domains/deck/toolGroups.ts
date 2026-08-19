@@ -12,9 +12,16 @@
 import type { ToolGroupMap } from '@server/runtime/toolRegistry'
 import type { AgentRole } from '@server/db/schema'
 import type { AgentTools } from './tools'
+// **必须是 `import type`。** `assetTools.ts` 经 `db/index.ts` 拉 `bun:sqlite`，
+// 写成值导入会让这个文件（以及 import 它的每一个测试）在 vitest 里加载失败。
+// 类型导入编译期就抹掉了，运行时不产生任何依赖
+import type { AssetTools } from './assetTools'
+
+/** deck 域现在能提供的全部工具。装配时由 `pipeline.ts` 把两组合到一起 */
+export type DeckTools = AgentTools & AssetTools
 
 /**
- * 23 个工具分成 6 组。
+ * 25 个工具分成 7 组。
  *
  * `satisfies` 而不是类型标注：这样组里写错工具名是**编译错误**，
  * 同时 `DECK_TOOL_GROUPS` 的键仍是字面量联合，
@@ -38,13 +45,23 @@ export const DECK_TOOL_GROUPS = {
 
   /** 动画与转场 */
   animation: ['setAnimationPreset', 'addAnimation', 'removeAnimation', 'setSlideTransition'],
-} as const satisfies ToolGroupMap<AgentTools>
+
+  /**
+   * 取图。单独一组是因为它**可以整组不给** ——
+   * 没配对象存储 / 两个开关都关着时，这一组不进任何角色的工具表。
+   *
+   * 照 R-32 的教训：「一个永远返回『未接入』的工具只会白白消耗步数预算」。
+   * 所以「有没有这个能力」由装配时决定（见 `deckRoleGroups`），
+   * 而不是让工具自己在运行时回一句「未配置」。
+   */
+  asset: ['searchImage', 'generateImage'],
+} as const satisfies ToolGroupMap<DeckTools>
 
 export type DeckToolGroup = keyof typeof DECK_TOOL_GROUPS
 
 /** 全部写能力 —— generator / editor 两个写角色共用，避免两处各抄一份组名 */
 const ALL_DECK_GROUPS = [
-  'read', 'slide', 'element', 'layout', 'theme', 'animation',
+  'read', 'slide', 'element', 'layout', 'theme', 'animation', 'asset',
 ] as const satisfies readonly DeckToolGroup[]
 
 /**
@@ -63,4 +80,23 @@ export const DECK_ROLE_TOOL_GROUPS: Record<AgentRole, readonly DeckToolGroup[]> 
   reviewer: ['read'],
   generator: ALL_DECK_GROUPS,
   editor: ALL_DECK_GROUPS,
+}
+
+/**
+ * 这次装配实际给某个角色哪些组。
+ *
+ * 图片能力关着时把 `asset` 整组摘掉，而不是留一个会回「未配置」的工具。
+ * 差别是实打实的：留着的话模型每轮都会试着调它、拿到失败、再想别的办法，
+ * **一次往返就没了** —— R-32 当初决定「没实现的工具不注册」正是这个理由。
+ *
+ * 写成函数而不是在 `DECK_ROLE_TOOL_GROUPS` 上做手脚：
+ * 那张表是**静态配额**（谁有资格用什么），这里是**本次可用性**（这次装了什么），
+ * 两件事混在一起会让「为什么 generator 没有 searchImage」变得无从查起。
+ */
+export const deckRoleGroups = (
+  role: AgentRole,
+  { assets }: { assets: boolean },
+): readonly DeckToolGroup[] => {
+  const groups = DECK_ROLE_TOOL_GROUPS[role]
+  return assets ? groups : groups.filter(g => g !== 'asset')
 }

@@ -30,7 +30,8 @@ import { useScreenStore, useMainStore, useSnapshotStore, useSlidesStore, useAuth
 import { LOCALSTORAGE_KEY_DISCARDED_DB } from '@/configs/storage'
 import { deleteDiscardedDB } from '@/utils/database'
 import { isPC } from '@/utils/common'
-import { deckApi } from '@/services'
+import { deckApi, assetApi } from '@/services'
+import { setAssetBaseUrl } from '@/utils/assetUrl'
 
 import Auth from './views/Auth/index.vue'
 import DeckList from './views/DeckList/index.vue'
@@ -121,12 +122,44 @@ const closeDeck = async () => {
  * —— deckId 没变，AgentPanel 的 watch 也不会触发重载。
  */
 watch(() => authStore.isLoggedIn, (loggedIn) => {
-  if (loggedIn) return
+  if (loggedIn) {
+    syncAssetBaseUrl()
+    return
+  }
   currentDeckId.value = null
   showSettings.value = false
   slidesStore.setSlides([])
   agentStore.reset()
 })
+
+/**
+ * 把图片资产的根地址同步到 `utils/assetUrl.ts`。
+ *
+ * 这就是 `assetUrl.ts:59` 那条 `TODO(R-01)` —— setter 从 R-10 建好之后
+ * **全项目零调用**，于是 `asset://<hash>` 一直解析成默认的 `/assets/<hash>`，
+ * 一个必然 404 的地址。D1 的图片真正开始进 deck，这条就必须兑现。
+ *
+ * 失败时**不动默认值**，也不打扰用户：拿不到地址只影响图片显示，
+ * 而这条请求失败通常意味着后端刚重启或还没配对象存储 ——
+ * 为它弹一个错误提示，只会在每次开发时都跳一次。
+ *
+ * 登录后调一次、启动时（已有缓存登录态）调一次：两处都要，
+ * 因为乐观恢复的登录态不会触发 isLoggedIn 的 watch。
+ */
+const syncAssetBaseUrl = async () => {
+  try {
+    // `as any` + 直接读字段是本仓库的既定写法（见 `deckApi.list()` / `authApi.me()` 的调用点）：
+    // `services/index.ts` 引的是 `./axios` 那个**会拆包**的实例（拦截器 return response.data），
+    // 所以拿到的就是响应体本身。**但类型没跟着改**，仍然写着 AxiosResponse ——
+    // 于是 `res.data.baseUrl` 编译得过、运行时永远 undefined。
+    // 第一版就是这么写的，浏览器里跑出来才发现，见 docs/04 第十八轮。
+    const res = await assetApi.baseUrl() as any
+    if (res?.baseUrl) setAssetBaseUrl(res.baseUrl)
+  }
+  catch {
+    console.warn('[assets] 取资产根地址失败，图片将无法显示（对象存储可能尚未配置）')
+  }
+}
 
 onMounted(async () => {
   if (isAudienceMode) {
@@ -137,6 +170,7 @@ onMounted(async () => {
   // 任何请求撞上 401 都统一登出，不用各处自己判断
   authStore.installUnauthorizedHandler()
   await authStore.fetchMe()
+  if (authStore.isLoggedIn) syncAssetBaseUrl()
 })
 
 window.addEventListener('beforeunload', () => {

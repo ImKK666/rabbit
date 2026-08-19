@@ -37,6 +37,7 @@
  * 将来 Deck Kernel 的资产引用校验（对 manifest 查 hash 是否声明）直接复用这份文法。
  */
 
+
 export const ASSET_PROTOCOL = 'asset://'
 export const ASSET_PENDING_SEGMENT = 'pending/'
 
@@ -48,17 +49,36 @@ const TASK_ID_REGEXP = /^[A-Za-z0-9_-]{1,64}$/
 
 const DEFAULT_ASSET_BASE_URL = '/assets'
 
+/**
+ * 资产库根地址。
+ *
+ * **普通变量，不是 ref —— 这是量过的，不是省事。**
+ *
+ * 消费点全都写成 `computed(() => parseAssetUrl(props.elementInfo.src))`
+ * （`ImageElement/index.vue`、`BaseImageElement.vue`、`useSlideBackgroundStyle.ts`），
+ * 而 computed 追踪不到普通变量 —— 看起来这里非 ref 不可。
+ * 第十八轮真改成 `shallowRef` 试过，**负对照证明它没有作用**：改回普通变量，
+ * 浏览器里图照样正常加载。
+ *
+ * 因为**时序本来就是对的**：`App.vue` 在登录后立刻同步根地址，
+ * 而画布只可能在登录之后才打开 —— 图片组件被创建时，computed 第一次求值
+ * 读到的已经是新值，不存在「需要重算」的旧缓存。
+ *
+ * **它成立的前提是那个时序。** 哪天出现「根地址还没到位，画布就已经渲染了图片」
+ * 的路径（比如把同步挪到更晚、或加一条不经登录的预览入口），
+ * 表现会是**一张图都加载不出来而控制台毫无报错** —— 那时才该换成 ref，
+ * 而不是现在为一个不存在的场景把本文件从「零依赖」变成依赖 Vue。
+ */
 let assetBaseUrl = DEFAULT_ASSET_BASE_URL
 
 /**
- * 设置资产库根地址（末尾斜杠会被去掉）
+ * 设置资产库根地址（末尾斜杠会被去掉）。
  *
- * 后端还没接管，默认值 `/assets` 必然 404 —— 属预期，
- * 这一批只做文法与消费点收口，真正的字节由第三批的资产库提供。
+ * 由 `App.vue` 在登录后调用，值来自 `GET /api/assets/base-url`
+ * （形如 `https://<bucket>.cos.<region>.myqcloud.com/rabbit`，含 key 前缀）。
  *
- * TODO(R-01): 后端接管时在应用启动处调一次 `setAssetBaseUrl(`${SERVER_URL}/assets`)`。
- *   这里留 setter 而不是直接 import services，是为了不让 utils 反向依赖 services，
- *   本文件才能保持无依赖、可脱离浏览器单测。
+ * 这里留 setter 而不是直接 import services，是为了不让 utils 反向依赖 services。
+ * 拿不到时**不要调用**：默认值 `/assets` 必然 404，但那比设一个坏地址好排查。
  */
 export const setAssetBaseUrl = (baseUrl: string) => {
   assetBaseUrl = baseUrl.replace(/\/+$/, '')

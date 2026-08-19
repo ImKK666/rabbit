@@ -107,6 +107,14 @@
               </div>
             </div>
 
+            <!-- 图片资产：生图要 15 秒，这条是那段时间里唯一的动静 -->
+            <div class="log-entry asset-entry" :class="entry.state" v-else-if="entry.type === 'asset'">
+              <span class="asset-icon">{{ entry.state === 'pending' ? '◌' : entry.state === 'ready' ? '▣' : '⊘' }}</span>
+              <span class="asset-label">{{ entry.kind === 'generate' ? '生成图片' : '搜索图片' }}</span>
+              <span class="asset-prompt" v-tooltip="entry.prompt">{{ entry.prompt }}</span>
+              <span class="asset-detail" v-if="entry.detail">{{ entry.detail }}</span>
+            </div>
+
             <!-- 状态变化 -->
             <div class="log-entry status-entry" v-else-if="entry.type === 'status' && entry.message">
               <span class="status-icon" :class="entry.status">●</span>
@@ -695,6 +703,43 @@ watch(log, () => {
 }
 
 // 状态
+// 图片资产。刻意长得像工具条目而不是状态条目 ——
+// 它代表的是一次实实在在的取图动作，不是一句提示
+.asset-entry {
+  padding: 6px 8px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  background: #f0f0f0;
+  border: 1px solid #e0e0e0;
+
+  &.pending .asset-icon { color: #f39c12; }
+  &.ready .asset-icon { color: #27ae60; }
+  &.failed {
+    color: #999;
+    .asset-icon { color: #e74c3c; }
+  }
+}
+.asset-icon { font-size: 12px; }
+.asset-label {
+  font-weight: 600;
+  color: #555;
+  flex-shrink: 0;
+}
+.asset-prompt {
+  color: #888;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.asset-detail {
+  color: #aaa;
+  flex-shrink: 0;
+}
+
 .status-entry {
   padding: 4px 8px;
   display: flex;

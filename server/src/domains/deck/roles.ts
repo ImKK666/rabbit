@@ -25,7 +25,9 @@
 import type { AgentRole } from '@server/db/schema'
 import { selectToolGroups } from '@server/runtime/toolRegistry'
 import type { AgentTools } from './tools'
-import { DECK_TOOL_GROUPS, DECK_ROLE_TOOL_GROUPS } from './toolGroups'
+// `AssetTools` 只作类型用 —— 值导入会把 `bun:sqlite` 拖进来，见 toolGroups.ts 的说明
+import type { AssetTools } from './assetTools'
+import { DECK_TOOL_GROUPS, deckRoleGroups, type DeckTools } from './toolGroups'
 import { describeShapeCatalog } from '@/configs/shapeCatalog'
 import { describeLayouts } from './layouts'
 
@@ -297,7 +299,7 @@ ${ANIMATION_GUIDE}
 - 如果用户的要求会导致问题（元素越界、对比度不足），先提醒再执行`,
 }
 
-export type RoleToolset = Partial<AgentTools>
+export type RoleToolset = Partial<DeckTools>
 
 export const getSystemPrompt = (role: AgentRole): string => SYSTEM_PROMPTS[role]
 
@@ -308,8 +310,16 @@ export const getSystemPrompt = (role: AgentRole): string => SYSTEM_PROMPTS[role]
  * 拆层前是一个 switch，改成数据的理由见 `runtime/toolRegistry.ts` 头注释 ——
  * 一句话是：switch 表达不了「第二个域进来之后怎么办」。
  *
- * 返回类型仍是 `Partial<AgentTools>`：orchestrator 依赖这个形状，
+ * 返回类型仍是 `Partial<…>`：orchestrator 依赖这个形状，
  * 见那边 toolCalls 强制转换处的注释。
+ *
+ * `allTools` 收 `AgentTools & Partial<AssetTools>` 而不是 `DeckTools`：
+ * 图片能力关着时装配层根本不会建那两个工具，收得比这更严会逼着调用方
+ * 造两个假的塞进来 —— 而假工具是会被模型真的调到的。
  */
-export const getToolSubset = (role: AgentRole, allTools: AgentTools): RoleToolset =>
-  selectToolGroups(allTools, DECK_TOOL_GROUPS, DECK_ROLE_TOOL_GROUPS[role])
+export const getToolSubset = (
+  role: AgentRole,
+  allTools: AgentTools & Partial<AssetTools>,
+  { assets = false }: { assets?: boolean } = {},
+): RoleToolset =>
+  selectToolGroups(allTools, DECK_TOOL_GROUPS, deckRoleGroups(role, { assets }))

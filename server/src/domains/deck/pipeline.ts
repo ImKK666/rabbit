@@ -37,7 +37,9 @@ import {
   type HistoryTurn,
 } from '@server/runtime/history'
 import { resolveModelForRole, type ResolvedModel } from '@server/runtime/llm'
+import { imageCapabilityAvailable } from '@server/runtime/assetConfig'
 import { createAgentTools, type DeckState } from './tools'
+import { createAssetTools, type AssetTools } from './assetTools'
 import { getSystemPrompt, getToolSubset } from './roles'
 import { createDeckChannel, type DeckChannel } from './channel'
 
@@ -229,6 +231,12 @@ const runRole = async (
   signal: AbortSignal,
   history: HistoryTurn[] = [],
   conversationId?: number,
+  /**
+   * 图片工具。整份任务只建一次（在 `runDeckTask` 里），因为它要拿 deckId 和通道。
+   * **`null` 表示这次不给** —— 没配对象存储 / 两个取图开关都关着时，
+   * 整组工具不进模型的工具表，而不是留一个会回「未配置」的工具浪费步数。
+   */
+  assetTools: AssetTools | null = null,
 ): Promise<{ text: string, state: DeckState, truncated: boolean }> => {
   const label = ROLE_LABELS[role]
   channel.emit({ type: 'agent.status', status: 'thinking', message: `${label} 正在思考...` })
@@ -254,8 +262,12 @@ const runRole = async (
     // 「画布有、库里没有」，刷新即丢。现在两件事合成一次，不可能再错开
     onChange: () => channel.commit(state),
   }
-  const allTools = createAgentTools(accessor)
-  const tools = getToolSubset(role, allTools)
+  // deck 工具和图片工具分开建、在这里合并 —— **`tools.ts` 绝不能 import
+  // `assetTools.ts`**：后者经 `db/index.ts` 拉 `bun:sqlite`，
+  // 一旦让 tools.ts 依赖它，kernel / toolCommit / toolGroups 那几个测试
+  // 会全部在 vitest 里加载失败。合并放在这里，因为 pipeline 本来就碰库
+  const allTools = { ...createAgentTools(accessor), ...(assetTools ?? {}) }
+  const tools = getToolSubset(role, allTools, { assets: !!assetTools })
   const system = getSystemPrompt(role)
 
   const maxSteps = resolveMaxSteps(role)
@@ -393,11 +405,12 @@ const runRoleToCompletion = async (
    * `[Planner]` / `[Reviewer]` 前缀过滤的，标签一改，过滤就漏。
    */
   tag?: string,
+  assetTools: AssetTools | null = null,
 ): Promise<{ text: string, state: DeckState }> => {
   const save = (text: string, suffix = '') =>
     saveMessage(conversationId, 'assistant', tag ? `[${tag}${suffix}] ${text}` : text)
 
-  let result = await runRole(role, userId, prompt, state, channel, signal, history, conversationId)
+  let result = await runRole(role, userId, prompt, state, channel, signal, history, conversationId, assetTools)
   await save(result.text)
 
   for (let round = 1; result.truncated && round <= MAX_CONTINUATIONS; round++) {
@@ -420,7 +433,7 @@ const runRoleToCompletion = async (
       `用户的原始需求：${originalRequest}`,
     ].join('\n')
 
-    result = await runRole(role, userId, contPrompt, result.state, channel, signal, [], conversationId)
+    result = await runRole(role, userId, contPrompt, result.state, channel, signal, [], conversationId, assetTools)
     await save(result.text, ` 续作 ${round}`)
   }
 
@@ -479,6 +492,15 @@ export const runDeckTask = async ({
     return
   }
 
+  // 图片工具整份任务只建一次：它要 deckId（票据落库）和通道（发进度叙事）。
+  // 每个角色各建一次也能跑，但那样票据的来源上下文会散在四处
+  const assetTools = await imageCapabilityAvailable()
+    ? createAssetTools({ userId, deckId, emit: msg => channel.emit(msg) })
+    : null
+  if (!assetTools) {
+    console.log(`[agent] deck:${deckId} 图片能力未装配（对象存储或取图开关未就绪），本次不给图片工具`)
+  }
+
   const conv = await resolveConversation(userId, deckId, conversationId, prompt)
   // 前端据此把新建的会话挂进列表，也用来纠正对不上的 conversationId
   channel.emit({ type: 'agent.conversation', id: conv.id, title: conv.title })
@@ -494,6 +516,7 @@ export const runDeckTask = async ({
       const editorPrompt = `${describeSelection(state, selectedElementIds)}\n\n用户的要求：${prompt}`
       const result = await runRoleToCompletion(
         'editor', userId, editorPrompt, state, channel, signal, history, conv.id, prompt,
+        undefined, assetTools,
       ) // 无 tag：Editor 的产物原样落库，和改动前一致
       state = result.state
     }
@@ -506,6 +529,7 @@ export const runDeckTask = async ({
       // 既浪费一轮 Reviewer，又会把 Generator 的修正轮引去补它本来就要补的东西
       const genResult = await runRoleToCompletion(
         'generator', userId, genPrompt, state, channel, signal, history, conv.id, prompt, 'Generator',
+        assetTools,
       )
       state = genResult.state
 
@@ -533,6 +557,7 @@ export const runDeckTask = async ({
           // 修正轮同样要跑到自己停 —— 修到一半就交付，和没修一样
           const fixResult = await runRoleToCompletion(
             'generator', userId, fixPrompt, state, channel, signal, [], conv.id, prompt, 'Generator 修正',
+            assetTools,
           )
           state = fixResult.state
         }

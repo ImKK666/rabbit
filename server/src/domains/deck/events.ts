@@ -51,11 +51,19 @@ const CANCEL_POLICY: Record<ServerMessage['type'], 'survives' | 'reclaimable'> =
   'agent.ask': 'reclaimable',
   'error': 'reclaimable',
 
-  // 图片能力（domains/deck/assets.ts）目前只有接口没有实现，一条都不会发。
-  // 真接上之后 `asset.ready` 会改元素的 src —— 那时它就是权威状态了，
-  // **要连同一次 commit 一起走**，而不是在这里简单改成 survives
+  // 图片能力（D1 工具层，第十八轮接上）。
+  //
+  // 上一版这里写着「真接上之后 asset.ready 会改元素的 src —— 那时它就是权威状态了，
+  // 要连同一次 commit 一起走」。**实装时走了另一条路，所以这个担心没有发生**：
+  // 工具是同步等图的，图拿到后由 agent 自己调 addElement 写进 deck，
+  // 走的仍是 applyMutation → channel.commit 那一条路。
+  //
+  // 于是这三条消息**一个字节的 deck 都不改**，纯粹是进度叙事
+  // （填上生图那 14~15 秒的沉默）。取消之后没必要再吐，分类保持「可回收」是对的。
+  // 详见 domains/deck/assetTools.ts 头注释里那张冲突表。
   'agent.asset.pending': 'reclaimable',
   'agent.asset.ready': 'reclaimable',
+  'agent.asset.failed': 'reclaimable',
 }
 
 /** 这条事件在取消之后是否仍必须送达 */

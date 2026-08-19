@@ -42,6 +42,7 @@ import { getElementRange, getLineElementPath, getTableSubThemeColor } from '@/ut
 import { type AST, toAST } from '@/utils/htmlParser'
 import { type SvgPoints, toPoints } from '@/utils/svgPathParser'
 import { encrypt } from '@/utils/crypto'
+import { resolveAssetUrl } from '@/utils/assetUrl'
 import { svg2Base64 } from '@/utils/svg2Base64'
 import { SPECIFIC_FILE_EXT } from '@/configs/specificFile'
 import message from '@/utils/message'
@@ -546,7 +547,11 @@ export default () => {
             pptxSlide.background = { data: background.image.src }
           }
           else {
-            pptxSlide.background = { path: background.image.src }
+            // **必须过 asset:// 解析器。** deck 里存的是 `asset://<sha256>`，
+            // 原样丢给 pptxgenjs 只会得到一个取不到的路径 —— 而且它失败得很安静：
+            // 画布上图好好的，只有导出的 PPTX 里那张图没了。
+            // 解析不出（pending / 引用坏了）时给空串，pptxgenjs 会跳过这张图
+            pptxSlide.background = { path: resolveAssetUrl(background.image.src) }
           }
         }
         else if (background.type === 'solid' && background.color) {
@@ -621,8 +626,9 @@ export default () => {
             w: el.width / ratioPx2Inch.value,
             h: el.height / ratioPx2Inch.value,
           }
+          // 同上：deck 里是 `asset://<sha256>`，不解析就等于导出时静默丢图
           if (isBase64Image(el.src)) options.data = el.src
-          else options.path = el.src
+          else options.path = resolveAssetUrl(el.src)
 
           if (el.flipH) options.flipH = el.flipH
           if (el.flipV) options.flipV = el.flipV

@@ -9,6 +9,8 @@ import adminRoutes from '@server/routes/admin'
 import deckRoutes from '@server/routes/deck'
 import userRoutes from '@server/routes/user'
 import conversationRoutes from '@server/routes/conversation'
+import assetRoutes from '@server/routes/assets'
+import { sweepStalePendingAssets } from '@server/domains/deck/assetTools'
 import { authenticateWs, handleWsMessage, type WsUserData } from '@server/ws/handler'
 
 const app = new Hono()
@@ -26,9 +28,21 @@ authed.route('/admin', adminRoutes)
 authed.route('/decks', deckRoutes)
 authed.route('/user', userRoutes)
 authed.route('/conversations', conversationRoutes)
+authed.route('/assets', assetRoutes)
 app.route('/api', authed)
 
 app.get('/health', (c) => c.json({ ok: true }))
+
+/**
+ * 上一次进程死掉时留在库里的 `pending` 票据扫成 failed。
+ *
+ * 图片工具是同步等图的，所以进程一死任务也死了，没有「在飞的图」需要恢复 ——
+ * 但那些 pending 行会永远挂着，让审计和状态查询读到一个假状态。
+ * 不 await：清扫失败不该挡住服务起来。
+ */
+sweepStalePendingAssets()
+  .then(n => n > 0 && console.log(`[assets] 清扫了 ${n} 条上次残留的 pending 票据`))
+  .catch(err => console.warn('[assets] 清扫残留票据失败:', err))
 
 const PORT = parseInt(process.env.PORT || '3000')
 

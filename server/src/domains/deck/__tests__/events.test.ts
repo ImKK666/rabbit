@@ -28,8 +28,9 @@ const SAMPLES: ServerMessage[] = [
   { type: 'agent.conversation', id: 1, title: '新会话' },
   { type: 'agent.ask', question: '要横版还是竖版' },
   { type: 'agent.deck', slidesJson: '[]', version: 3 },
-  { type: 'agent.asset.pending', elementId: 'el-1', taskId: 't-1' },
-  { type: 'agent.asset.ready', elementId: 'el-1', assetUrl: 'https://x/y.png' },
+  { type: 'agent.asset.pending', ticket: 'a1b2', kind: 'generate', prompt: 'a data center' },
+  { type: 'agent.asset.ready', ticket: 'a1b2', src: `asset://${'0'.repeat(64)}`, width: 1376, height: 768 },
+  { type: 'agent.asset.failed', ticket: 'a1b2', reason: '生图超时（120s）' },
   { type: 'error', message: '演示文稿不存在' },
 ]
 
@@ -56,8 +57,11 @@ describe('取消策略', () => {
       'agent.reasoning.done',
       'agent.conversation',
       'agent.ask',
+      // 三条图片消息全部可回收：工具是同步等图的，图由 agent 自己写进 deck，
+      // 所以它们一个字节的权威状态都不带 —— 详见 events.ts 里的说明
       'agent.asset.pending',
       'agent.asset.ready',
+      'agent.asset.failed',
       'error',
     ])
   })
@@ -67,7 +71,9 @@ describe('取消策略', () => {
     // 和 boundary.test.ts 那条「扫到的文件数 ≥ 5」是同一类断言
     const types = new Set(SAMPLES.map(m => m.type))
     expect(types.size).toBe(SAMPLES.length)
-    expect(SAMPLES).toHaveLength(11)
+    // 11 → 12：第十八轮加了 agent.asset.failed。
+    // 这条断言按设计就该在协议增删时先红 —— 它是「样本别落后于协议」的锚
+    expect(SAMPLES).toHaveLength(12)
   })
 
   it('agent.deck 是唯一放行的那一条，且它确实被放行', () => {

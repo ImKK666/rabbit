@@ -19,6 +19,8 @@
     "ai": "^4.3.0",
     "drizzle-orm": "^0.44.0",
     "hono": "^4.7.0",
+    "jpeg-js": "^0.4.4",
+    "upng-js": "^2.1.0",
     "zod": "^3.24.0"
   },
   "devDependencies": {

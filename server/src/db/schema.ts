@@ -90,6 +90,82 @@ export const assetSources = sqliteTable('asset_sources', {
   updatedAt: integer('updated_at', { mode: 'timestamp' }).notNull().$defaultFn(() => new Date()),
 })
 
+/**
+ * 资产票据表 —— 一张图从「要一张」到「拿到了」的全过程。
+ *
+ * ## 它不是一个异步队列
+ *
+ * 工具是**同步等图**的（生图 14~15 秒实测），拿到结果才返回给 agent，
+ * 由 agent 自己调 `addElement` 写进 deck。所以这张表不承担「后台回填」的职责 ——
+ * 那条路会和 B 期刚立的两条契约正面冲突（见 `domains/deck/assetTools.ts` 头注释）。
+ *
+ * 它承担的是另外四件事：
+ *   1. **署名可反查**：合规要求「必须署名」，attribution 得能从 hash 查回来
+ *   2. **审计**：哪张图哪来的、什么 prompt、压缩前后多大、为什么是这个结果
+ *   3. **状态**：pending / ready / failed。进程中途死掉时留下的 pending 行
+ *      由启动时的清扫改成 failed，否则它会永远挂着
+ *   4. **票据 id**：`agent.asset.pending` / `.ready` 两条消息靠它配对
+ *
+ * ## 为什么 userId / deckId 都不加外键
+ *
+ * 加了之后「删用户」「删演示文稿」会被资产行挡住，报
+ * `FOREIGN KEY constraint failed` —— 正是第三轮那个「agent 用过的演示文稿删不掉」
+ * 的坑。资产的来源没了就当孤儿，不影响任何功能，
+ * 而一条删不掉的记录会直接变成 500。和 `conversations.forkedFromId` 同一个判断。
+ */
+export const assets = sqliteTable('assets', {
+  id: integer('id').primaryKey({ autoIncrement: true }),
+  /** 票据 id。进 `agent.asset.pending` / `.ready`，让面板把「开始」和「拿到」对上 */
+  ticket: text('ticket').notNull().unique(),
+  kind: text('kind', { enum: ['search', 'generate'] }).notNull(),
+  status: text('status', { enum: ['pending', 'ready', 'failed'] }).notNull().default('pending'),
+  /** 谁触发的。**不加外键**，理由见上 */
+  userId: integer('user_id').notNull(),
+  /** 哪份文稿触发的。**不加外键**，理由见上 */
+  deckId: integer('deck_id'),
+  /** 搜图是关键词，生图是 prompt */
+  prompt: text('prompt').notNull(),
+  /** 图库名（`pixabay`）或生图模型的显示名 */
+  source: text('source').notNull().default(''),
+  /** 内容寻址的 sha256。`ready` 才有 */
+  hash: text('hash'),
+  /** 对象存储里的 key，删图时用 */
+  storageKey: text('storage_key'),
+  width: integer('width'),
+  height: integer('height'),
+  /** 落库（上传）时的字节数 */
+  bytes: integer('bytes'),
+  /** 压缩前的字节数。和 bytes 一起就能看出压缩到底有没有起作用 */
+  originalBytes: integer('original_bytes'),
+  /** `recoded` / `resized-and-recoded` / `kept-transparent` / `kept-as-is` */
+  compressReason: text('compress_reason'),
+  /** 合规②：署名三件套。`attribution` 字段留了不等于兑现了，所以这里是真存 */
+  attributionAuthor: text('attribution_author'),
+  attributionSource: text('attribution_source'),
+  attributionUrl: text('attribution_url'),
+  /** `failed` 时的原因 */
+  error: text('error'),
+  createdAt: integer('created_at', { mode: 'timestamp' }).notNull().$defaultFn(() => new Date()),
+  updatedAt: integer('updated_at', { mode: 'timestamp' }).notNull().$defaultFn(() => new Date()),
+})
+
+/**
+ * 搜图请求缓存 —— 图库的硬性要求（24 小时）。
+ *
+ * 落库而不是放内存：进程重启一次就把缓存清空的话，等于没缓存过，
+ * 而这条是**合规要求**不是性能优化。键与过期判定见 `runtime/searchCache.ts`。
+ */
+export const assetSearchCache = sqliteTable('asset_search_cache', {
+  /** sha256(provider|归一化查询|lang|limit) */
+  key: text('key').primaryKey(),
+  provider: text('provider').$type<AssetSearchProvider>().notNull(),
+  /** 原始查询词。只为排查时看得懂，命中判定只认 key */
+  query: text('query').notNull(),
+  /** `ImageCandidate[]` 的 JSON */
+  candidatesJson: text('candidates_json').notNull(),
+  fetchedAt: integer('fetched_at', { mode: 'timestamp' }).notNull(),
+})
+
 export type AgentRole = 'planner' | 'generator' | 'reviewer' | 'editor'
 
 export const roleDefaults = sqliteTable('role_defaults', {

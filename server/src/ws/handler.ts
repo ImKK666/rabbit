@@ -39,8 +39,22 @@ export type ServerMessage =
   | { type: 'agent.conversation', id: number, title: string }
   | { type: 'agent.ask', question: string }
   | { type: 'agent.deck', slidesJson: string, version: number }
-  | { type: 'agent.asset.pending', elementId: string, taskId: string }
-  | { type: 'agent.asset.ready', elementId: string, assetUrl: string }
+  /**
+   * 图片资产的进度叙事。**这三条不改 deck** ——
+   * 工具是同步等图的，图拿到之后由 agent 自己调 `addElement` 写进去，
+   * 所以权威状态仍然只经 `agent.deck` 一条路（见 `domains/deck/assetTools.ts`）。
+   *
+   * 它们存在只为填上生图那 14~15 秒的沉默：那段时间里 `agent.tool` 还没发
+   * （`onStepFinish` 在工具**返回之后**才触发），面板上什么都没有，看起来像卡死了。
+   *
+   * 字段和 R-32 当初设计的不一样：原来是 `{elementId, taskId}`，
+   * 假设的是「先建元素占位、后台回填」。同步形状下发消息时元素**还不存在**，
+   * 所以改成按票据走。
+   */
+  | { type: 'agent.asset.pending', ticket: string, kind: 'search' | 'generate', prompt: string }
+  | { type: 'agent.asset.ready', ticket: string, src: string, width: number, height: number }
+  /** 没有这条的话，面板上那个「生成中」会一直转下去 —— 用户看到的是「卡死了」 */
+  | { type: 'agent.asset.failed', ticket: string, reason: string }
   | { type: 'error', message: string }
 
 export const authenticateWs = async (url: URL): Promise<JwtPayload | null> => {
