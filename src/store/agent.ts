@@ -24,6 +24,12 @@ export type AgentLogEntry =
   | { type: 'text', role: string, content: string, messageId?: number }
   | { type: 'tool', tool: string, args: Record<string, unknown>, result?: string, messageId?: number }
   | { type: 'status', status: string, message: string }
+  /**
+   * 模型思考过程。`done` 之前一直在追加，面板展开显示；
+   * `done` 之后收起来 —— 思考是过程，做完了就不该继续占屏。
+   * 只存在于实时流里，**不落库**（重开会话看不到），所以没有 messageId。
+   */
+  | { type: 'reasoning', role: string, content: string, done: boolean }
 
 export interface ConversationMeta {
   id: number
@@ -112,6 +118,25 @@ export const useAgentStore = defineStore('agent', {
         case 'agent.text':
           this.log.push({ type: 'text', role: msg.role, content: msg.content })
           break
+
+        case 'agent.reasoning': {
+          // 同一步的思考往同一个块里追加 —— 一个 delta 一条日志的话，
+          // 面板会被几百条一两个字的记录淹掉
+          const last = this.log[this.log.length - 1]
+          if (last?.type === 'reasoning' && !last.done && last.role === msg.role) {
+            last.content += msg.delta
+          }
+          else {
+            this.log.push({ type: 'reasoning', role: msg.role, content: msg.delta, done: false })
+          }
+          break
+        }
+
+        case 'agent.reasoning.done': {
+          const last = this.log[this.log.length - 1]
+          if (last?.type === 'reasoning') last.done = true
+          break
+        }
 
         case 'agent.conversation': {
           // 后端告诉我们本次任务落在哪条会话上。

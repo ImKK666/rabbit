@@ -8,7 +8,7 @@
  *   否则 → Planner → Generator → Reviewer（不过则 Generator 再修一轮）
  */
 
-import { generateText, type LanguageModel } from 'ai'
+import { streamText, type LanguageModel } from 'ai'
 import { eq, and, desc } from 'drizzle-orm'
 import type { ServerWebSocket } from 'bun'
 import type { Slide, SlideTheme } from '@/types/slides'
@@ -25,6 +25,7 @@ import {
 } from './history'
 import { resolveModelForRole } from './llm'
 import { getSystemPrompt, getToolSubset } from './roles'
+import { resolveMaxSteps } from './budget'
 
 const DEFAULT_THEME: SlideTheme = {
   themeColors: ['#5b9bd5', '#ed7d31', '#a5a5a5', '#ffc000', '#4472c4', '#70ad47'],
@@ -43,22 +44,16 @@ const ROLE_LABELS: Record<AgentRole, string> = {
 }
 
 /**
- * 每个角色的工具调用步数预算。
+ * 步数上限触顶后最多再续几轮。
  *
- * 原来全角色固定 15 —— Generator 做一份 5 页 deck，光 addSlide 就吃掉 5 步，
- * 再加元素和动画必然中途截断，且截断是静默的（没有任何提示）。
- * 按职责分开给：只读角色不需要多，写角色需要充足余量。
+ * 默认上限已经调到实际碰不到的量级（见 budget.ts），所以这个循环正常情况下
+ * 一轮都不会跑 —— 它是给「有人把 AGENT_MAX_STEPS 调回小数字」和
+ * 「真的遇到超长任务」兜底的。
  *
- * R-33 把 Generator 从 48 提到 60：applyLayout 让「一页 = 两步」（addSlide + applyLayout），
- * 本来是省步数的；但它同时也让「补一个图表 / 加两个形状 / 对齐一组元素」这类
- * 精修动作变得值得做了，实际调用数是升的。60 步 ≈ 10 页各排一次版式再各精修两下。
+ * 不设成无限：截断反复发生通常意味着 agent 陷在重试里，
+ * 让它无限续下去只是把钱烧得更久。
  */
-const ROLE_MAX_STEPS: Record<AgentRole, number> = {
-  planner: 12,
-  generator: 60,
-  reviewer: 12,
-  editor: 24,
-}
+const MAX_CONTINUATIONS = 3
 
 interface StepToolCall { toolCallId: string, toolName: string, args: Record<string, unknown> }
 interface StepToolResult { toolCallId: string, result: unknown }
@@ -241,70 +236,169 @@ const runRole = async (
   const tools = getToolSubset(role, allTools)
   const system = getSystemPrompt(role)
 
-  const maxSteps = ROLE_MAX_STEPS[role]
-  console.log(`[agent] ${role} → calling generateText (maxSteps=${maxSteps}, history=${history.length})...`)
-  const result = await withModelContext(role, model, () => generateText({
-    model,
-    system,
-    messages: [...history, { role: 'user', content: prompt }],
-    tools,
-    maxSteps,
-    abortSignal: signal,
-    onStepFinish: async ({ text, toolCalls, toolResults }) => {
-      if (text) {
-        send(ws, { type: 'agent.text', role, content: text })
-      }
+  const maxSteps = resolveMaxSteps(role)
+  console.log(`[agent] ${role} → calling streamText (maxSteps=${maxSteps}, history=${history.length})...`)
 
-      // tools 是 Partial<AgentTools>（角色只拿工具子集），
-      // SDK 因此把这两个数组的元素推断成 never —— 在这里收窄回可用形状
-      const calls = (toolCalls ?? []) as unknown as StepToolCall[]
-      const results = (toolResults ?? []) as unknown as StepToolResult[]
+  // 思考块是否处于「打开」状态 —— 只有真收到过 reasoning 才需要在步末发收拢信号。
+  // 不开 reasoning 的模型一条都不会发，前端也就不会画出一个空思考块
+  let reasoningOpen = false
 
-      for (const tc of calls) {
-        const toolResult = results.find(tr => tr.toolCallId === tc.toolCallId)
-        let resultStr: string | undefined
-        if (toolResult) {
-          try {
-            const parsed = typeof toolResult.result === 'string'
-              ? JSON.parse(toolResult.result)
-              : toolResult.result
-            resultStr = JSON.stringify(parsed, null, 2)
-          }
-          catch {
-            resultStr = String(toolResult.result)
-          }
+  const result = await withModelContext(role, model, async () => {
+    const stream = streamText({
+      model,
+      system,
+      messages: [...history, { role: 'user', content: prompt }],
+      tools,
+      maxSteps,
+      abortSignal: signal,
+      // 换 streamText 就是为了这个回调：generateText 要等一整步跑完才有东西可发，
+      // 而一步可能是几十秒 —— 用户那段时间只能看着转圈
+      onChunk: ({ chunk }) => {
+        if (chunk.type !== 'reasoning') return
+        reasoningOpen = true
+        send(ws, { type: 'agent.reasoning', role, delta: chunk.textDelta })
+      },
+      onStepFinish: async ({ text, toolCalls, toolResults }) => {
+        if (reasoningOpen) {
+          send(ws, { type: 'agent.reasoning.done', role })
+          reasoningOpen = false
         }
 
-        send(ws, {
-          type: 'agent.tool',
-          tool: tc.toolName,
-          args: tc.args,
-          result: resultStr,
-        })
+        if (text) {
+          send(ws, { type: 'agent.text', role, content: text })
+        }
 
-        // 落库，重开演示文稿时能还原完整的工具流。
-        // 不落的话历史里只剩对话文本，看不出 agent 到底动了什么。
-        if (conversationId !== undefined) {
-          await saveMessage(conversationId, 'tool', serializeToolCall({
+        // tools 是 Partial<AgentTools>（角色只拿工具子集），
+        // SDK 因此把这两个数组的元素推断成 never —— 在这里收窄回可用形状
+        const calls = (toolCalls ?? []) as unknown as StepToolCall[]
+        const results = (toolResults ?? []) as unknown as StepToolResult[]
+
+        for (const tc of calls) {
+          const toolResult = results.find(tr => tr.toolCallId === tc.toolCallId)
+          let resultStr: string | undefined
+          if (toolResult) {
+            try {
+              const parsed = typeof toolResult.result === 'string'
+                ? JSON.parse(toolResult.result)
+                : toolResult.result
+              resultStr = JSON.stringify(parsed, null, 2)
+            }
+            catch {
+              resultStr = String(toolResult.result)
+            }
+          }
+
+          send(ws, {
+            type: 'agent.tool',
             tool: tc.toolName,
             args: tc.args,
             result: resultStr,
-          }))
+          })
+
+          // 落库，重开演示文稿时能还原完整的工具流。
+          // 不落的话历史里只剩对话文本，看不出 agent 到底动了什么。
+          if (conversationId !== undefined) {
+            await saveMessage(conversationId, 'tool', serializeToolCall({
+              tool: tc.toolName,
+              args: tc.args,
+              result: resultStr,
+            }))
+          }
         }
-      }
-    },
-  }))
+      },
+    })
+
+    // 这三个 promise 任何一个都会驱动流跑完；一起 await 顺带把错误抛回
+    // withModelContext，好让它补上「哪个角色 / 哪个模型 / 哪个 baseUrl」
+    const [text, steps, finishReason] = await Promise.all([
+      stream.text, stream.steps, stream.finishReason,
+    ])
+    return { text, steps, finishReason }
+  })
 
   // 步数耗尽是静默的：SDK 直接返回，agent 以为自己做完了。
   // 不提示的话，用户看到的就是「莫名其妙做了一半」。
   const truncated = result.steps.length >= maxSteps && result.finishReason === 'tool-calls'
   if (truncated) {
-    const warn = `${label} 达到步数上限（${maxSteps} 步）后被截断，任务可能未完成`
     console.warn(`[agent] ${role} truncated at maxSteps=${maxSteps}`)
-    send(ws, { type: 'agent.text', role, content: `⚠ ${warn}` })
+    send(ws, {
+      type: 'agent.text',
+      role,
+      content: `⚠ ${label} 达到步数上限（${maxSteps} 步），未做完 —— 带着当前进度继续`,
+    })
   }
 
   return { text: result.text, state, truncated }
+}
+
+/**
+ * 跑一个写角色，**直到它自己停下来**。
+ *
+ * 原来编排器拿到 `truncated` 只发一条警告就往下走了 —— Generator 做到一半，
+ * Reviewer 就开始审一份没做完的稿子，然后理所当然地报一堆「缺这缺那」。
+ * 截断不是完成，是「还没做完」，该做的是接着做。
+ *
+ * 续作**不传 history**：要接着做的信息全在 deck 里，agent 自己 getDeck 就看得到。
+ * 把上一轮几十条工具调用再塞回去，只会让新一轮从一个已经很满的上下文起步 ——
+ * 而清零重来正是「任务长度不受单轮上下文限制」的原因。
+ */
+const runRoleToCompletion = async (
+  role: AgentRole,
+  userId: number,
+  prompt: string,
+  state: DeckState,
+  ws: ServerWebSocket<WsUserData>,
+  signal: AbortSignal,
+  history: HistoryTurn[],
+  conversationId: number,
+  originalRequest: string,
+  /**
+   * 落库时的标签，如 `Generator` / `Generator 修正`。传 undefined 则原样存文本。
+   * **必须和原来的字符串一致** —— history.ts 的 toHistoryTurns 是按
+   * `[Planner]` / `[Reviewer]` 前缀过滤的，标签一改，过滤就漏。
+   */
+  tag?: string,
+): Promise<{ text: string, state: DeckState }> => {
+  const save = (text: string, suffix = '') =>
+    saveMessage(conversationId, 'assistant', tag ? `[${tag}${suffix}] ${text}` : text)
+
+  let result = await runRole(role, userId, prompt, state, ws, signal, history, conversationId)
+  await save(result.text)
+
+  for (let round = 1; result.truncated && round <= MAX_CONTINUATIONS; round++) {
+    if (signal.aborted) break
+
+    send(ws, {
+      type: 'agent.status',
+      status: 'thinking',
+      message: `${ROLE_LABELS[role]} 还没做完，继续第 ${round} 轮…`,
+    })
+
+    const contPrompt = [
+      '你上一轮因为触到步数上限被中断，任务**还没做完**。改动已经保存下来了。',
+      '',
+      '先 getDeck 看清楚做到哪一步了，然后**接着往下做**：',
+      '- 不要从头重来，也不要重复已经建好的页',
+      '- 缺哪几页就补哪几页，该精修的再精修',
+      '- 全部做完再跑一次 lintDeck',
+      '',
+      `用户的原始需求：${originalRequest}`,
+    ].join('\n')
+
+    result = await runRole(role, userId, contPrompt, result.state, ws, signal, [], conversationId)
+    await save(result.text, ` 续作 ${round}`)
+  }
+
+  if (result.truncated) {
+    send(ws, {
+      type: 'agent.text',
+      role,
+      content: `⚠ 续作 ${MAX_CONTINUATIONS} 轮后仍未做完，先交付当前进度。`
+        + '再发一句「接着做完」可以继续，或把需求拆小一点。',
+    })
+  }
+
+  return { text: result.text, state: result.state }
 }
 
 export const runAgentTask = async (
@@ -343,18 +437,22 @@ export const runAgentTask = async (
   try {
     if (selectedElementIds?.length) {
       const editorPrompt = `${describeSelection(state, selectedElementIds)}\n\n用户的要求：${prompt}`
-      const result = await runRole('editor', userId, editorPrompt, state, ws, abort.signal, history, conv.id)
+      const result = await runRoleToCompletion(
+        'editor', userId, editorPrompt, state, ws, abort.signal, history, conv.id, prompt,
+      ) // 无 tag：Editor 的产物原样落库，和改动前一致
       state = result.state
-      await saveMessage(conv.id, 'assistant', result.text)
     }
     else {
       const planResult = await runRole('planner', userId, prompt, state, ws, abort.signal, history, conv.id)
       await saveMessage(conv.id, 'assistant', `[Planner] ${planResult.text}`)
 
       const genPrompt = `按照以下计划执行：\n${planResult.text}\n\n用户原始需求：${prompt}`
-      const genResult = await runRole('generator', userId, genPrompt, state, ws, abort.signal, history, conv.id)
+      // 做完才轮到 Reviewer —— 拿一份没做完的稿子去审，报出来的全是「缺这缺那」，
+      // 既浪费一轮 Reviewer，又会把 Generator 的修正轮引去补它本来就要补的东西
+      const genResult = await runRoleToCompletion(
+        'generator', userId, genPrompt, state, ws, abort.signal, history, conv.id, prompt, 'Generator',
+      )
       state = genResult.state
-      await saveMessage(conv.id, 'assistant', `[Generator] ${genResult.text}`)
 
       try {
         // Reviewer 不给历史：它的职责是拿当前 deck 对照本轮需求，
@@ -377,9 +475,11 @@ export const runAgentTask = async (
         if (!reviewPassed) {
           send(ws, { type: 'agent.status', status: 'thinking', message: 'Reviewer 发现问题，Generator 正在修正...' })
           const fixPrompt = `Reviewer 发现了以下问题，请修正：\n${reviewResult.text}`
-          const fixResult = await runRole('generator', userId, fixPrompt, state, ws, abort.signal, [], conv.id)
+          // 修正轮同样要跑到自己停 —— 修到一半就交付，和没修一样
+          const fixResult = await runRoleToCompletion(
+            'generator', userId, fixPrompt, state, ws, abort.signal, [], conv.id, prompt, 'Generator 修正',
+          )
           state = fixResult.state
-          await saveMessage(conv.id, 'assistant', `[Generator 修正] ${fixResult.text}`)
         }
       }
       catch (reviewErr) {

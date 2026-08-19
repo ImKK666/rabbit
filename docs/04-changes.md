@@ -502,10 +502,95 @@ PPTX 是 w/2）仍算 exact，机制多一路或少一路才算近似。按这�
 
 `samples/animations/` 20 份**已按新的强调时间线重新生成**。
 
+### 2026-08-19 第八轮：步数预算、截断续作、思考流（R-37）
+
+一次 12 页的实测暴露了三个独立问题，都不在动画那条线上。
+
+#### ① 步数上限低了一个数量级
+
+实测：Generator 60 步 → 96 次工具调用 → **只做出 10 页**，然后截断。
+`orchestrator.ts` 原来的注释写的是「60 步 ≈ 10 页」，所以行为完全符合预期 —— **预期本身定错了**。
+
+96 次调用约 13 万 token。现役模型是 1M 上下文，也就是说旧上限**只用掉 13%** 就把 agent 掐停了。
+掐它的从来不是模型的能力边界，是一个按当年模型定的保守估值。
+
+按 1M 倒推真正的容量在 400~500 步，所以默认改成：
+
+| 角色 | 原 | 现 |
+|---|---:|---:|
+| generator | 60 | **512** |
+| editor | 24 | 256 |
+| planner | 12 | 64 |
+| reviewer | 12 | 64 |
+
+搬进独立的 `server/src/agent/budget.ts`（纯函数、无依赖，orchestrator 导入 `bun:sqlite`，
+在 vitest 里根本 import 不进来，不拆出来就没法测）。支持环境变量回退：
+
+```
+AGENT_MAX_STEPS=60                 # 一次管住所有角色
+AGENT_MAX_STEPS_GENERATOR=200      # 单角色覆盖，优先级更高
+```
+
+非法值（`0` / 负数 / `abc` / `Infinity`）一律忽略退回默认，**不报错** ——
+打错的环境变量会表现成「agent 突然什么都不做」，比启动失败难查得多。
+
+#### ② 截断被当成了完成
+
+这条比 ① 严重。`runRole` 一直有 `truncated` 标志，但**编排器读都不读**：
+Generator 做到一半，Reviewer 就开始审一份没做完的稿子，然后理所当然地报一堆「缺这缺那」，
+Generator 的修正轮再去补它本来就要补的东西。用户看到的是「PPT 没做完就切角色去审查了」。
+
+改成 `runRoleToCompletion`：触顶就带着当前 deck 续作，最多 3 轮，做完才轮到下一个角色。
+
+**续作不传 history**，这是关键 —— 要接着做的信息全在 deck 里，agent 自己 `getDeck` 就看得到。
+等于每一轮都从**干净的上下文**起步，所以任务的真实上限是 512 × 4 轮而上下文不累积。
+Editor 路径和 Reviewer 的修正轮同样走它：修到一半就交付，和没修一样。
+
+#### ③ 思考过程没有出口
+
+`generateText` 要等**一整步**跑完才有东西可发，而一步可能几十秒 —— 那段时间界面上只有一个转圈。
+
+核心调用换成 `streamText`，加 `onChunk` 转发 `reasoning` 增量：
+
+```
+agent.reasoning       { role, delta }   逐段流式推送
+agent.reasoning.done  { role }          这一步想完了
+```
+
+面板里的思考块**默认开合与工具调用相反**：想的时候摊开、想完了收起来，点标题可回看
+（`isReasoningOpen`）。思考是过程信息，实时看着有用，执行阶段还占着半屏就只是噪声。
+
+不开 reasoning 的模型一条 `agent.reasoning` 都不会发，前端也就不画这个块 —— **没有空壳**。
+本轮**没有**去替各家 provider 打开 thinking 开关（Anthropic 的 `thinking`、OpenAI 的
+reasoning summary 各不相同，且会改变计费），只做「**有就显示**」。
+
+#### 顺带修的
+
+`bun run dev` 起不来（`Cannot find module '@/types/slides' from src/configs/shapes.ts`）。
+`@/` 的 paths 只写在 `server/tsconfig.json`，管不到 `src/` 下的文件；根 `tsconfig.json` 是
+solution-style（`files: []` + references），没有 paths。`src/` 里其余的 `@/` 全是
+`import type`，编译时就抹掉了，所以只有这一处会炸 —— `ShapePathFormulasKeys` 是 const enum，是值。
+改成相对路径。**自 f542c15 起后端就起不来了**，是上一轮 `shapeCatalog.ts` 把 `shapes.ts`
+拉进后端加载图带出来的。
+
+#### 还没做的
+
+实测里另外两个步数大头**没动**，它们是下一轮的活：
+
+- `getSlide` × 13 —— `applyLayout` 不返回它创建了什么，agent 只能紧跟一次回读。
+  这 10 次是串行依赖，每次占一整步
+- `updateElement` × 24（其中 17 次只改 `width`）—— agent 在手工返修 `applyLayout` 的几何。
+  「模型被要求做的决策本身就不该由它做」在这里又冒出来一次，只是换了个位置
+
+思考流的**端到端效果没验**：需要一个真开了 reasoning 的模型才看得到。
+类型、编译、启动都过了，但「思考块长什么样」得你跑一次才知道。
+
 ## 待完成
 
 | 项 | 说明 | 优先级 |
 |---|---|---|
+| **applyLayout 返回创建的元素** | 省掉每页一次 `getSlide` 回读（实测 13 次），是当前最大的一块步数浪费 | 中 |
+| **查清 updateElement 改宽度** | 实测 24 次里 17 次只改 `width`。是 `applyLayout` 估宽不够，还是模型多手？ | 中 |
 | **E3 地面真相** | 导出的动画在真实 PowerPoint 里逐个验，样本已生成（`samples/animations/`），清单见 [09-powerpoint-verify.md](./09-powerpoint-verify.md)。**网页侧已在无头浏览器里逐帧验完**（R-36），剩下的确实只有 PowerPoint 那一半 | **高** |
 | **`in` / `out` 光圈方向** | `box-in` / `circle-in` / `diamond-in` / `plus-in` 网页侧一律「自中心向外张开」。若 PowerPoint 的 `filter=circle(in)` 实际是「自外向内收拢」，这四个方向就是反的 —— 只能开 PowerPoint 看，判法见 [09](./09-powerpoint-verify.md) 第三节 | **高** |
 | **图片 / 图标能力** | 08 号文档诊断 ① 里最大的一条，本轮按决策 P1 只定了接口（`server/src/agent/assets.ts`），provider 未接 | **高** |

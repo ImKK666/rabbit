@@ -76,6 +76,17 @@
               <div class="entry-content" v-html="formatContent(entry.content)"></div>
             </div>
 
+            <!-- 思考过程：正在想的时候摊开、想完了收起来，点标题可以再翻开 -->
+            <div class="log-entry reasoning-entry" v-else-if="entry.type === 'reasoning'">
+              <div class="reasoning-header" @click="toggleExpand(idx)">
+                <span class="reasoning-icon" :class="{ live: !entry.done }">✦</span>
+                <span class="reasoning-title">{{ entry.done ? '思考完成' : '正在思考…' }}</span>
+                <span class="reasoning-chars">{{ entry.content.length }} 字</span>
+                <span class="expand-arrow" :class="{ open: isReasoningOpen(entry, idx) }">▸</span>
+              </div>
+              <div class="reasoning-body" v-if="isReasoningOpen(entry, idx)">{{ entry.content }}</div>
+            </div>
+
             <!-- 工具调用 -->
             <div class="log-entry tool-entry" v-else-if="entry.type === 'tool'">
               <div class="tool-header" @click="toggleExpand(idx)">
@@ -271,6 +282,14 @@ const toggleExpand = (idx: number) => {
   if (expandedEntries.has(idx)) expandedEntries.delete(idx)
   else expandedEntries.add(idx)
 }
+
+/**
+ * 思考块的默认开合与工具调用相反：**想的时候摊开，想完了收起来**。
+ * 思考是过程，实时看着有用；执行阶段还占着半屏就只是噪声了。
+ * expandedEntries 仍然当手动开关用 —— 收起后想回看点一下就行。
+ */
+const isReasoningOpen = (entry: { done: boolean }, idx: number) =>
+  entry.done ? expandedEntries.has(idx) : !expandedEntries.has(idx)
 
 const roleLabel = (role: string): string => {
   const labels: Record<string, string> = {
@@ -561,6 +580,55 @@ watch(log, () => {
     line-height: 1.5;
     word-break: break-word;
   }
+}
+
+// 思考过程。刻意做得比工具调用更淡 —— 它是过程信息，
+// 不该和「agent 到底改了什么」抢注意力
+.reasoning-entry {
+  background: #faf8ff;
+  border: 1px solid #e9e2f5;
+  overflow: hidden;
+}
+.reasoning-header {
+  padding: 6px 8px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  font-size: 11px;
+
+  &:hover { background: #f3eeff; }
+}
+.reasoning-icon {
+  font-size: 11px;
+  color: #8b6fd4;
+
+  // 只在真的还在想的时候闪，想完了停住 —— 一个不停跳的图标比转圈更烦
+  &.live { animation: rb-reasoning-pulse 1.2s ease-in-out infinite; }
+}
+@keyframes rb-reasoning-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: .35; }
+}
+.reasoning-title {
+  font-weight: 600;
+  color: #6b5b95;
+  flex-shrink: 0;
+}
+.reasoning-chars {
+  color: #a99cc4;
+  flex: 1;
+}
+.reasoning-body {
+  border-top: 1px solid #e9e2f5;
+  padding: 6px 8px;
+  max-height: 220px;
+  overflow-y: auto;
+  font-size: 11px;
+  line-height: 1.6;
+  color: #6d6a75;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 // 工具调用

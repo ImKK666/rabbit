@@ -24,6 +24,13 @@ export type ServerMessage =
   | { type: 'agent.status', status: 'thinking' | 'tool_call' | 'done' | 'error', message?: string }
   | { type: 'agent.tool', tool: string, args: Record<string, unknown>, result?: string }
   | { type: 'agent.text', role: string, content: string }
+  /**
+   * 模型的思考过程，**逐段流式推送**。
+   * 只有开了 reasoning 的模型会产出；没有就一条都不发，前端也就不显示思考块。
+   */
+  | { type: 'agent.reasoning', role: string, delta: string }
+  /** 这一步的思考结束了 —— 前端据此把思考块收起来，腾地方给接下来的工具调用 */
+  | { type: 'agent.reasoning.done', role: string }
   /** 告诉前端本次任务落在哪条会话上（新建时前端据此挂进列表） */
   | { type: 'agent.conversation', id: number, title: string }
   | { type: 'agent.ask', question: string }
