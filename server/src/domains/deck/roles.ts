@@ -23,7 +23,9 @@
  */
 
 import type { AgentRole } from '@server/db/schema'
+import { selectToolGroups } from '@server/runtime/toolRegistry'
 import type { AgentTools } from './tools'
+import { DECK_TOOL_GROUPS, DECK_ROLE_TOOL_GROUPS } from './toolGroups'
 import { describeShapeCatalog } from '@/configs/shapeCatalog'
 import { describeLayouts } from './layouts'
 
@@ -299,22 +301,15 @@ export type RoleToolset = Partial<AgentTools>
 
 export const getSystemPrompt = (role: AgentRole): string => SYSTEM_PROMPTS[role]
 
-export const getToolSubset = (role: AgentRole, allTools: AgentTools): RoleToolset => {
-  switch (role) {
-    case 'planner':
-    case 'reviewer':
-      return {
-        getDeck: allTools.getDeck,
-        getSlide: allTools.getSlide,
-        findElements: allTools.findElements,
-        getDesignTokens: allTools.getDesignTokens,
-        lintDeck: allTools.lintDeck,
-      }
-    case 'generator':
-    case 'editor':
-    default:
-      // 写角色拿全集。default 分支只为满足 eslint 的 default-case ——
-      // AgentRole 是闭合联合类型，上面四个 case 已经穷尽
-      return { ...allTools }
-  }
-}
+/**
+ * 角色的工具配额。
+ *
+ * 规则本身是数据，在 `toolGroups.ts`；这里只做查表 + 装配。
+ * 拆层前是一个 switch，改成数据的理由见 `runtime/toolRegistry.ts` 头注释 ——
+ * 一句话是：switch 表达不了「第二个域进来之后怎么办」。
+ *
+ * 返回类型仍是 `Partial<AgentTools>`：orchestrator 依赖这个形状，
+ * 见那边 toolCalls 强制转换处的注释。
+ */
+export const getToolSubset = (role: AgentRole, allTools: AgentTools): RoleToolset =>
+  selectToolGroups(allTools, DECK_TOOL_GROUPS, DECK_ROLE_TOOL_GROUPS[role])

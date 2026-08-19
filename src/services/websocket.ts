@@ -10,7 +10,11 @@ export type ClientMessage =
     /** 续哪条会话；不传则新开一条（记忆从零开始） */
     conversationId?: number
   }
-  | { type: 'agent.cancel' }
+  /**
+   * 取消任务。**必须带 deckId** —— 后端的活动任务按工作区（`deck:<id>`）登记，
+   * 不再是「一个用户一个任务」，所以取消要点名取消哪一份演示文稿的任务。
+   */
+  | { type: 'agent.cancel', deckId: number }
   | { type: 'agent.confirm', value: boolean }
 
 export type ServerMessage =

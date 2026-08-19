@@ -95,7 +95,10 @@ export const useAgentStore = defineStore('agent', {
     },
 
     cancelTask() {
-      send({ type: 'agent.cancel' })
+      // 没有 deckId 就没有任务在跑（runTask 一开始就会设它），直接返回。
+      // 后端按工作区键登记任务，取消必须点名是哪一份演示文稿
+      if (this.currentDeckId === null) return
+      send({ type: 'agent.cancel', deckId: this.currentDeckId })
     },
 
     confirmAsk(value: boolean) {

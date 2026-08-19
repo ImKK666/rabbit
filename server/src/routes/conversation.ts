@@ -14,7 +14,7 @@ import { eq, and, desc, inArray, lte, sql } from 'drizzle-orm'
 import { getJwtPayload } from '@server/auth/jwt'
 import { db } from '@server/db'
 import { conversations, messages, decks } from '@server/db/schema'
-import { makeConversationTitle } from '@server/agent/history'
+import { makeConversationTitle } from '@server/runtime/history'
 
 const conversation = new Hono()
 

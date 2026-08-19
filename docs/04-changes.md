@@ -881,7 +881,289 @@ shapeCatalog 里 `ellipse` / `donut` / `star5` 那一列标记等于白写，用
 
 51 个字形的 path 全部过了 `toPoints`（PPTX 导出用的转换器），无一失败 —— 命名之前先确认过它们导得出去。
 
+### 2026-08-19 第十三轮：外部 runtime 研究与方向决策（R-42）
+
+**这一轮没有代码改动**，产出是两份文档和一个方向决策。记在这里是因为它会决定后面十轮的形状。
+
+#### 读了什么
+
+`refs/` 下新增两个浅克隆（`.gitignore` 里，不入库）：
+
+| 仓库 | 是什么 | 授权 |
+|---|---|---|
+| `refs/BitFun` `405c1c7` | Rust agent runtime + React 桌面端，46 crate / 1714 `.rs` / 2270 `.ts(x)` | MIT |
+| `refs/ClaudeCodeRev` `ffe4eab` | `@anthropic-ai/claude-code@2.1.88` 从 sourcemap 还原 | **无授权声明** |
+
+研究结论落在 [10-agent-runtime-study.md](./10-agent-runtime-study.md)。
+最能直接用的六条：单一权威写者（TurnOwnership）· 取消时回收在途分片 ·
+提问注册表的生命周期绑定 · `FINISHING` 态与五模式按钮 · 收益递减检测 ·
+`State` 写全字段 + `transition.reason`。
+
+#### 方向决策
+
+**agent 从「生成 PPT 的硬编码剧本」强化成通用 agent 系统**，PPT 是第一个域。
+路线、目标架构、A~D 分期和验收判据见 [11-agent-roadmap.md](./11-agent-roadmap.md)。
+
+一条贯穿的红线：**通用化只往 runtime 层加自由度，不往排版层加自由度。**
+`kernel.ts` / `layouts.ts` / `design.ts` 一行不动 —— 08 号文档那句
+「模型被要求做的决策本身就不该由它做」是有十二轮实测背书的，不能因为要通用化就吐回去。
+
+规划时提过一条保留意见（通用化会稀释域内优势），**已被否决，原样记录在 11 号文档第二节 ④**。
+
+#### 顺带查清的四个事实
+
+1. **`orchestrator.ts` 的 `activeTasks` 按 `userId` 键** —— 一个用户全局只能跑一个任务，
+   跨 deck 也不行，和「一个 deck 多条会话线」的数据模型对不上
+2. **`saveDeckState` 只在最后调一次**（`:506`），而 `agent.deck` 每步实时推画布 ——
+   中途失败会造成**画布有改动、库里没有**，刷新即丢。比「留半成品」更隐蔽
+3. **`cancelAgentTask` 只是 `abort()`**，在途的 `agent.deck` / `agent.text` 照发
+4. **`FINISHING` 不该进后端协议** —— BitFun 的 Rust 侧 `SessionState` 只有
+   `Idle / Processing / Error` 三态，`FINISHING` 是纯前端概念，
+   存在只为给 UI 一个排干迟到事件的地方
+
+#### 判断错过的地方
+
+**① 差点把自动生成的 stub 当成真源码。**
+ClaudeCodeRev 里 146 个文件是 `gen-stubs.ts` 按 import 分析推断出来的，
+`query/transitions.ts` 就是其中之一，它把 `Continue` 推断成 `{ type: 'continue' }`。
+是后面读到真实 continue 点写着 `transition: { reason: … }` 才发现对不上。
+**对着「还原出来的」仓库，第一件事应该是分清哪些是观测、哪些是推断**，
+而不是读到矛盾了才回头查。这条和「不猜，跑出来看」是同一件事的另一面。
+
+**② 先用 grep 啃了半天才被提醒仓库里装了 LSP。**
+更糟的是实测两个 LSP 都不能直接用 —— 插件只是接线壳子，
+`rust-analyzer` 和 `typescript-language-server` 二进制都要另装（README 里写着，没读）。
+装完 rust-analyzer 实测：`documentSymbol` 可用，`workspaceSymbol` / `findReferences` 全空，
+因为这台机器没有 cargo，建不出 crate 图，它退到了 detached-file 模式。
+**「装了插件」和「LSP 能用」之间隔着两层，而我在第一层就下了结论。**
+
+**③ 读 BitFun 一开始用错了方式。**
+按「读代码」读，收益远低于读它的 `AGENTS.md`。
+`flow_chat/components/modern/AGENTS.md` 217 行的信息量超过任何 2000 行实现 ——
+它把每条规则背后那次翻车都写明了。
+**成熟仓库里最该先读的，是它写给「要改这块代码的人」的那份文件。**
+
+### 2026-08-19 第十四轮：拆层 A1~A4（R-43）
+
+[11-agent-roadmap.md](./11-agent-roadmap.md) **阶段 A 全部四步**。
+A1~A3 零行为改动，A4 顺带修掉两个真 bug（任务并发键错了 + 注销的 ABA 竞态）。
+每一步都用「拆层前的期望」当判据，而不是从新代码反推。
+
+#### 切成了三层
+
+```
+server/src/runtime/       域无关：baseUrl · budget · history · llm · reasoning
+server/src/domains/deck/  PPT 域：animationOrder · assets · design · kernel · layouts · roles · tools
+server/src/agent/         装配层：orchestrator（唯一同时 import 两边的文件）
+```
+
+**这个切分不是硬凑的 —— 排依赖图时发现现有代码天然就分好了**：
+
+```
+runtime:  llm → baseUrl, reasoning        其余四个零依赖
+deck:     kernel → animationOrder, design, layouts    tools → design, kernel, layouts
+          roles → layouts, tools          layouts → design
+装配:     orchestrator → budget, history, llm（runtime）+ roles, tools（deck）
+```
+
+**deck 域没有任何文件 import runtime，runtime 也没有 import deck。**
+唯一的跨层依赖只有 orchestrator 一处，而那正是装配层的定义。
+拆层之所以只花了 2 个文件的内容改动，是因为边界本来就在那儿，只是没画出来。
+
+`agent/` 刻意保留一个文件不改名叫 `assembly/`：A4 会把 orchestrator 拆成
+「域无关的 runTask 循环」+「deck 域的剧本」两半，那时名字要重取，现在改一次白折腾。
+
+#### 判据 3 意外地比原文写的更强
+
+11 号文档写的是「**现有 831 个测试不许改，且全绿**」。
+字面上这条站不住 —— 搬文件必然要改测试里的 import 路径。
+
+但排依赖图时发现一个更好的办法：**源文件和它的测试一起搬**。
+测试用的是 `from '../kernel'` 这种相对路径，
+`agent/__tests__/kernel.test.ts → ../kernel` 搬成
+`domains/deck/__tests__/kernel.test.ts → ../kernel` 之后**原样有效**。
+
+于是 **9 个测试文件一个字都没改**，831 条断言全部原样通过。
+这比「只改 import 不改断言」强一档：连改都没改，就没有「改的时候顺手动了断言」的空间。
+
+前提是先确认过**没有一个测试跨新边界**（逐个查过 import：
+runtime 的 4 个测试只 import 自己那一层，deck 的 5 个只 import deck）。
+
+#### A2：边界判据 + 真负对照
+
+`server/src/runtime/__tests__/boundary.test.ts`，10 条。守的是
+「`runtime/` 不得依赖 `domains/` 或装配层」，抄 BitFun 的 `check:core-boundaries`
+（把依赖方向做成 CI 检查，而不是写进文档靠人自觉）。
+
+三个设计决定：
+
+| | 为什么 |
+|---|---|
+| 判定写成纯函数 `collectBoundaryViolations(files, layerRoot)` | 不读磁盘才能喂合成的违规输入。**这是为了让负对照做得成** |
+| `import type` 一样算越界 | 类型依赖同样是依赖方向；编译期抹掉不代表设计上可以反向依赖 |
+| 除别名外还查相对路径爬出 | 只查 `@server/domains/` 会漏掉 `../domains/deck/tools`，而那正是「顺手改一下」最可能写出来的形状 |
+
+还有一条**防空跑**的断言：先验证扫到的文件数 ≥ 5 且包含 `runtime/llm.ts`。
+没有这条，目录一改名检查就会「零文件、零违规、全绿」地静默失效 ——
+和第十二轮图标身份钉法那个假钉法是同一类病。
+
+**真负对照做过**：合成输入过了不算数，往真实的 `runtime/llm.ts` 里插了一条
+`import type { DeckState } from '@server/domains/deck/tools'`，
+判据立刻变红并点名该 specifier；还原后复跑全绿、`git diff` 干净。
+
+#### A3：工具配额从控制流改成数据
+
+拆层前 `roles.ts` 里是一个 switch：「planner/reviewer 拿这 5 个，generator/editor 拿全集」。
+那个形状有两个问题，接第二个域之前必须先解决：
+
+1. 组合规则写在控制流里，看不出「谁能做什么」，也没法测
+2. **它假设只有一个域**。第二个域进来时 `allTools` 是哪个域的？
+   switch 里要不要再加一层判断？—— 每加一个域就要改一次角色定义
+
+改成：**域声明自己有哪些组，agent 声明自己要哪些组**，装配是一个域无关的纯函数。
+
+| 新增 | 位置 | 是什么 |
+|---|---|---|
+| `selectToolGroups` / `findUngroupedTools` | `runtime/toolRegistry.ts` | 域无关装配。**不知道 deck 是什么，也不该知道** |
+| `DECK_TOOL_GROUPS`（6 组 23 工具）· `DECK_ROLE_TOOL_GROUPS` | `domains/deck/toolGroups.ts` | deck 域的分组与角色配额 |
+
+分组按「一次能力」切而不是按「读/写」切（read · slide · element · layout · theme · animation）——
+读写只有两档，表达不了「能改内容但不许动主题」这种配额，
+而那正是接入更多 agent 之后马上会需要的。
+
+`as const satisfies ToolGroupMap<AgentTools>`：组里写错工具名是**编译错误**，
+同时组名保持字面量联合，`DeckToolGroup` 自动跟着长，不用手抄一份组名列表。
+
+**未知组名抛错，不静默跳过** —— 这条和 `budget.ts` 对非法环境变量
+「一律忽略退回默认，不报错」的处置**故意相反**，因为输入来源不同：
+`AGENT_MAX_STEPS=abc` 是用户在部署环境里打错的字，启动失败比用默认值更糟；
+而工具组名是代码里的常量，打错就是程序员的错，
+静默跳过的表现是「agent 突然什么都不会做了」，比启动时抛明确错误难查一个数量级。
+
+#### A3 的判据：期望独立抄一份，不从数据反推
+
+新增 22 条（`runtime/__tests__/toolRegistry.test.ts` 11 +
+`domains/deck/__tests__/toolGroups.test.ts` 11）。
+
+**关键设计：把拆层前的配额硬编码成期望**，而不是从 `DECK_ROLE_TOOL_GROUPS` 反推。
+从数据反推的测试是不设防的 —— 改了数据、期望跟着改，测试照样绿。
+这一组的价值全在「期望是独立写下来的那 23 个键 + 那 5 个只读键」。
+
+守住的三件事：
+
+- **配额等价**：planner/reviewer = 那 5 个；generator/editor = 全部 23 个
+- **零漏网工具**（`findUngroupedTools` 为空）—— 加了第 24 个工具却忘了归组时，
+  它会编译过、测试过、然后**永远不出现在任何 agent 手里，且没有任何东西报错**。
+  和第七轮动画「死词表是 0 个」是同一类判据
+- **挑出来的是同一个工具对象不是拷贝** —— 哪天变成结构化克隆，
+  `tool()` 闭包捕获的 accessor 会静默失效
+
+**两个真负对照都做过**：
+① 给 generator 少发一个 `theme` 组 → 等价性判据变红；
+② 把 `setSlideBackground` 从组里删掉 → **4 条同时红**（等价性 2 条 + 完整性 2 条）。
+两次都还原干净、`git diff` 为空。
+
+#### A4a：任务注册表 —— 顺带修掉两个真 bug
+
+`runtime/taskRegistry.ts`。原来是 `orchestrator.ts` 里一行
+`new Map<number, AbortController>()`，按 `userId` 键。两个问题：
+
+**① 键错了。** 按 userId 意味着一个用户全局只能跑一个任务，打开两份演示文稿也不能各跑各的。
+真正需要串行的是「同一份 deck」—— 画布是单一权威，两个任务同时改一份 deck 就是改动丢失。
+改成按工作区键（`deck:42`）：**跨 deck 并行、同 deck 串行**。
+
+**② 注销存在 ABA 竞态。** 原来取消和收尾都执行 `activeTasks.delete(userId)`：
+
+```
+任务 A 在跑         → { u1: ctrlA }
+用户取消            → ctrlA.abort() + delete   → {}
+用户立刻重发任务 B  → { u1: ctrlB }
+任务 A 的 finally   → delete                   → {}   ← 把 B 的注册删掉了
+```
+
+此后 B 在跑但没登记：取消找不到它，还能再并发起第三个任务。
+表现是「取消之后偶尔会有两个 agent 同时改同一份 deck」，
+**且只在用户取消后马上重发时出现，手测几乎撞不到**。
+
+修法抄 BitFun 的 `UserInputRegistration`（docs/10 第 1.2 节）：
+注册时发一张收据，**注销必须出示收据**，只有仍持有当前注册的那一方才删得掉。
+
+一个刻意的行为：**取消之后到任务真正收尾之间，该键仍然占用**。
+此刻重发会收到「已有任务在执行中」—— 这是对的，
+上一轮的收尾写入（保存 deck、推送状态）还没跑完，
+放新任务进来正是 BitFun 状态机 `FINISHING` 要防的「排队输入和收尾写入抢跑」。
+
+协议随之改动：`agent.cancel` 加 `deckId`（前端 store 本来就有 `currentDeckId`）。
+不带 deckId 就没法点名取消哪一份演示文稿的任务。
+
+判据 16 条（`runtime/__tests__/taskRegistry.test.ts`），其中「ABA 竞态」一组
+**就是那个 bug 的复现脚本**，外加一条负对照：用 `Map` 模拟「按键删除、不看收据」的旧实现，
+确认它在同一序列下确实会漏。
+
+#### A4b：把 deck 剧本搬回域里
+
+`agent/orchestrator.ts` **572 → 84 行**，其余搬进 `domains/deck/pipeline.ts`。
+
+搬的理由是分层：那 500 行全部是 deck 专属的（剧本、deck 持久化、会话与消息落库、角色循环），
+放在装配层里等于 `domains/deck/` 没有 deck 的编排。
+装配层现在只剩两件事：**持有跨域共享的任务注册表**、**占坑 / 注销并路由到域的剧本**。
+
+**没有顺手抽泛型的 `runTask` 骨架** —— 原计划要抽，做的时候改了主意：
+抽骨架得先知道「第二个域会共用什么」，而 research 域还不存在，
+现在抽等于照着想象划接缝。08 号文档第九节的教训是别为想象中的需求建抽象。
+等 research 落地、能看见真正共用的部分再抽。
+
+**会话也留在 deck 域**：`conversations.deckId` 是指向 `decks` 的硬外键，
+会话在**表结构层面**就绑死了 deck。真正解耦要一次数据迁移（加 `workspace_kind`，默认 `'deck'`），
+在第二个域真的需要会话之前那是纯粹的风险。
+迁移发生时改的是 schema 和域里的查询，`runtime/` 不受影响 —— **判据 2 仍然成立**。
+
+顺带消掉一处易漏点：拆层前「演示文稿不存在」那条提前 return 要**手动记得还坑位**，
+现在占坑在装配层、注销在 `finally`，每一条退出路径都会走到，漏不了。
+
+边界判据同时扩成守两个方向：新增 **`domains/` 不得依赖装配层**
+（域可以依赖 runtime，那是地基；反向依赖会让「换一种装配方式」变成要改域的代码）。
+
+**搬运忠实性是逐行验过的**：把 HEAD 的 `orchestrator.ts` 与新 `pipeline.ts` 去注释后 diff，
+54 处差异**全部可归因**到四类预期改动 —— import 路径、
+`runAgentTask` → `runDeckTask` 的签名（改收 `signal`）、`abort.signal` → `signal`、
+以及占用守卫和 `cancelAgentTask` 移出。没有一处是意外的逻辑改动。
+
+eslint 也是旁证：HEAD 的 orchestrator 是 `3e 6w`，
+现在 orchestrator `0e 0w` + pipeline `3e 6w` —— **违规原样跟着代码搬走了，一条没多一条没少。**
+
+#### 验证
+
+四道闸门全过。**外加实际启动后端** —— 雷区 #1 的教训是
+`tsc` 过了不代表 bun 能加载（34e45c7 当初 tsc 也是绿的）：
+`PORT=3099 bun run src/index.ts` 正常起，`/api/auth/me` 无 token 返回 401。
+
+测试 **831 → 885**（A2 边界判据 14 条 + A3 工具组判据 22 条 + A4 注册表判据 16 条；
+原有 831 条一字未改）。
+
+行为等价的旁证：`git status` 把 22 个文件全部识别为 **rename**，
+内容改动只有 2 个文件 —— `orchestrator.ts`（import 改别名 + 头部注释）和
+`routes/conversation.ts`（1 行）。
+
+#### 判断错过的地方
+
+**① 判据 3 我写对了结论，理由是错的。**
+写 11 号文档时我认为「不许改测试」需要靠自律，
+实际是「源文件和测试一起搬」这个结构性办法让它自动成立。
+**当时没想到这个办法就把判据写下去了** —— 判据比我理解的更强，属于蒙对。
+真正的教训是：判据该在排完依赖图之后写，不是在规划时凭感觉写。
+
+**② 又在 LSP 上折腾了一轮。**
+重启后 `.ts` 仍报无 server，查出 `typescript-language-server` 装在
+`~/.local/node/bin`，而 CC 进程的 PATH 里没有它（rust-analyzer 能用是因为在
+`/opt/homebrew/bin`）。软链过去了，但**还要再重启一次才生效** ——
+LSP 注册表是会话启动时快照的。这一轮全程还是 grep + Read 做的。
+
 ## 待完成
+
+> 下面这张表是**当前**的权威清单。其中 agent 相关的多项已被
+> [11-agent-roadmap.md](./11-agent-roadmap.md) 重新编排进 A~D 四期，
+> 两边冲突时以 11 号文档的期次为准。
 
 | 项 | 说明 | 优先级 |
 |---|---|---|

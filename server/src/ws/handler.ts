@@ -17,7 +17,11 @@ export type ClientMessage =
     /** 续哪条会话；不传则新开一条（记忆从零开始） */
     conversationId?: number
   }
-  | { type: 'agent.cancel' }
+  /**
+   * 取消任务。**必须带 deckId** —— 活动任务按工作区（`deck:<id>`）登记，
+   * 一个用户可以同时在多份演示文稿上跑任务，所以取消要点名取消哪一个。
+   */
+  | { type: 'agent.cancel', deckId: number }
   | { type: 'agent.confirm', value: boolean }
 
 export type ServerMessage =
@@ -63,7 +67,7 @@ export const handleWsMessage = async (
         break
 
       case 'agent.cancel': {
-        const cancelled = cancelAgentTask(ws.data.userId)
+        const cancelled = cancelAgentTask(msg.deckId)
         ws.send(JSON.stringify({
           type: 'agent.status',
           status: cancelled ? 'error' : 'done',
