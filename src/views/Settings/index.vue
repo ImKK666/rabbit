@@ -25,6 +25,16 @@
           >角色配置</div>
           <div
             class="nav-item"
+            :class="{ active: currentTab === 'storage' }"
+            @click="currentTab = 'storage'"
+          >对象存储</div>
+          <div
+            class="nav-item"
+            :class="{ active: currentTab === 'assets' }"
+            @click="currentTab = 'assets'"
+          >素材来源</div>
+          <div
+            class="nav-item"
             :class="{ active: currentTab === 'users' }"
             @click="currentTab = 'users'"
           >用户管理</div>
@@ -47,6 +57,8 @@
       <ProviderSettings v-if="currentTab === 'providers'" />
       <ModelSettings v-else-if="currentTab === 'models'" />
       <RoleSettings v-else-if="currentTab === 'roles'" />
+      <StorageSettings v-else-if="currentTab === 'storage'" />
+      <AssetSettings v-else-if="currentTab === 'assets'" />
       <UserManagement v-else-if="currentTab === 'users'" />
       <PersonalSettings v-else-if="currentTab === 'personal'" />
     </div>
@@ -60,6 +72,8 @@ import { useAuthStore } from '@/store'
 import ProviderSettings from './ProviderSettings.vue'
 import ModelSettings from './ModelSettings.vue'
 import RoleSettings from './RoleSettings.vue'
+import StorageSettings from './StorageSettings.vue'
+import AssetSettings from './AssetSettings.vue'
 import UserManagement from './UserManagement.vue'
 import PersonalSettings from './PersonalSettings.vue'
 

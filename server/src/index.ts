@@ -34,6 +34,21 @@ const PORT = parseInt(process.env.PORT || '3000')
 
 const server = Bun.serve<WsUserData>({
   port: PORT,
+  /**
+   * **`Bun.serve` 默认只给 10 秒**，超了它自己把请求掐掉，日志里只留一句
+   * `request timed out after 10 seconds`，客户端看到的是一个没有响应体的失败。
+   *
+   * 这个默认值对本项目是致命的：
+   *   - 图库搜索实测 5~9.5 秒（Wikimedia，跨境）
+   *   - **生图实测 15~50 秒** —— 每一次都会被掐死
+   *
+   * 而且它失败得毫无线索：前端只会显示「请求失败」，看不出是被自家服务器掐的。
+   * 实测就是这么发现的 —— 搜图测试在浏览器里失败、用 curl 却成功，
+   * 差别只是那一次快了几秒。
+   *
+   * 255 是 Bun 允许的上限。
+   */
+  idleTimeout: 255,
   async fetch(req, server) {
     const url = new URL(req.url)
 

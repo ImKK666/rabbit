@@ -179,6 +179,29 @@ export const adminApi = {
   resetPassword(userId: number, newPassword: string) {
     return api.post(`${SERVER_URL}/admin/users/${userId}/reset-password`, { newPassword })
   },
+
+  // 对象存储。**响应里永远没有 secretKey**，只有 hasSecretKey: boolean；
+  // 提交时 secretKey 留空表示「不改动已存的那把」
+  getStorage() {
+    return api.get(`${SERVER_URL}/admin/storage`)
+  },
+  saveStorage(data: Record<string, unknown>) {
+    return api.put(`${SERVER_URL}/admin/storage`, data)
+  },
+  testStorage() {
+    return api.post(`${SERVER_URL}/admin/storage/test`)
+  },
+
+  // 素材来源（搜图 / 生图）
+  getAssetSource() {
+    return api.get(`${SERVER_URL}/admin/asset-source`)
+  },
+  saveAssetSource(data: Record<string, unknown>) {
+    return api.put(`${SERVER_URL}/admin/asset-source`, data)
+  },
+  testAssetSource() {
+    return api.post(`${SERVER_URL}/admin/asset-source/test`)
+  },
 }
 
 // ---------------------------------------------------------------------------

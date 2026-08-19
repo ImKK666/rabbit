@@ -4,8 +4,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "bun run --watch src/index.ts",
-    "start": "bun run src/index.ts",
+    "dev": "BUN_CONFIG_DNS_RESULT_ORDER=ipv4first bun run --watch src/index.ts",
+    "start": "BUN_CONFIG_DNS_RESULT_ORDER=ipv4first bun run src/index.ts",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "bun run src/db/migrate.ts",
     "db:studio": "drizzle-kit studio"

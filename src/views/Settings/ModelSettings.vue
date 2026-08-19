@@ -22,6 +22,7 @@
         <span class="col-id">模型 ID</span>
         <span class="col-name">显示名</span>
         <span class="col-img">生图</span>
+        <span class="col-rate">每分钟上限</span>
       </div>
       <div class="table-row" v-for="m in filteredModels" :key="m.id">
         <span class="col-switch">
@@ -36,6 +37,19 @@
         </span>
         <span class="col-img">
           <Switch :value="m.supportsImages" @update:value="v => handleImages(m.id, v)" />
+        </span>
+        <span class="col-rate">
+          <!--
+            留空 = 不限。给生图模型用的：实测 gemini-3.1-flash-image 连发第 4 张
+            就被上游 429，限流放在我们这边是为了让「配额用完」变成可预期的结果
+            （工具回一句「改用搜图」），而不是等上游甩 429
+          -->
+          <Input
+            class="rate-input"
+            :value="m.rateLimitPerMin === null ? '' : String(m.rateLimitPerMin)"
+            placeholder="不限"
+            @blur="(e: Event) => handleRateLimit(m.id, (e.target as HTMLInputElement)?.value)"
+          />
         </span>
       </div>
     </div>
@@ -60,6 +74,7 @@ interface ModelConfig {
   displayName: string
   supportsImages: boolean
   enabled: boolean
+  rateLimitPerMin: number | null
 }
 
 interface Provider {
@@ -140,6 +155,17 @@ const handleRename = async (id: number, name: string) => {
   if (m) m.displayName = name
 }
 
+/** 空 / 0 / 非法输入一律当「不限」—— 打错字不该变成一个把 agent 卡死的限流值 */
+const handleRateLimit = async (id: number, raw: string) => {
+  const trimmed = (raw ?? '').trim()
+  const parsed = trimmed === '' ? null : Number(trimmed)
+  const value = parsed !== null && Number.isInteger(parsed) && parsed > 0 ? parsed : null
+
+  await adminApi.updateModel(id, { rateLimitPerMin: value })
+  const m = models.value.find(x => x.id === id)
+  if (m) m.rateLimitPerMin = value
+}
+
 const handleImages = async (id: number, val: boolean) => {
   await adminApi.updateModel(id, { supportsImages: val })
   const m = models.value.find(m => m.id === id)
@@ -192,6 +218,8 @@ onMounted(load)
 .col-id { width: 200px; flex-shrink: 0; color: #666; font-family: monospace; }
 .col-name { flex: 1; min-width: 0; padding: 0 8px; }
 .col-img { width: 60px; flex-shrink: 0; }
+.col-rate { width: 96px; flex-shrink: 0; }
+.rate-input { width: 88px; }
 .empty-tip {
   color: #999;
   text-align: center;

@@ -150,11 +150,11 @@ PPTist 自带的文档已并入 [`docs/upstream/`](./upstream/)（`AI_PPT_SCHEMA
 → 每步实时同步画布 → 完成后保存 DB
 ```
 
-**945 个单测**（vitest，截至 2026-08-19 第十六轮）：
+**978 个单测**（vitest，截至 2026-08-19 第十七轮）：
 layouts 224 + buildTimingXml 114 + kernel-elements 106 + shapeCatalog 92 + animation 71 +
 kernel 53 + design 30 + history 26 + buildTransitionXml 21 + assetUrl 19 + taskRegistry 18 +
-reasoning 18 + commit 15 + budget 15 + baseUrl 15 + deckWriter 15 + boundary 14 +
-toolRegistry 11 + toolGroups 11 + animation-reach 11 + channel 10 + spidMap 8 +
+reasoning 18 + objectStore 20 + commit 15 + budget 15 + baseUrl 15 + deckWriter 15 +
+boundary 14 + imageSearch 13 + toolRegistry 11 + toolGroups 11 + animation-reach 11 + channel 10 + spidMap 8 +
 cancellation 8 + animationSteps 8 + toolCommit 7 + events 5。
 
 `npm run build` exit 0（前端），`bunx tsc --noEmit` exit 0（后端），`npx vitest run` 全绿。
@@ -1424,6 +1424,149 @@ BitFun 那句点破要害的话：「问『这个 Turn 在屏幕上看起来完�
   后端实现了（`routes/deck.ts:60`），**前端的 `saveDeck` 从来不传 `version`**，
   于是那道检查一次都没生效过。已记进待完成。
 
+### 2026-08-19 第十七轮：D1 的设置面 —— 对象存储 / 素材来源 / 模型限流（R-46）
+
+D1（图片能力）的**配置层**。按「先把设置搞定，再实装功能」做，
+所以这一轮**没有** `searchImage` / `generateImage` 工具，agent 还拿不到图。
+
+#### 先把两条路探通了（探针不入库）
+
+| | 结论 |
+|---|---|
+| 腾讯云 COS | ✅ 可用。新建 `rabbit-1307074209`（ap-guangzhou，公有读），配好 CORS `*` |
+| 生图 | ✅ 可用，**零新凭证** —— 用库里已有的 Gemini provider |
+
+生图的正确形状（**用户给的 Python 片段跑不通**，`:predict` 在那个中转上三个模型名全 404）：
+
+```
+POST {origin}/v/v1beta/models/gemini-3.1-flash-image:generateContent?key=…
+{ "contents": [{ "role": "user", "parts": [{ "text": … }] }],
+  "generationConfig": { "responseModalities": ["IMAGE"] } }
+→ candidates[0].content.parts[].inlineData.data   (base64 PNG)
+```
+
+`role: "user"` 不能省，少了 400。全链路实测：生图 → sha256 → 传 COS → 匿名读**字节逐一致** → 跨域读 `allow-origin: *`。
+
+#### 落地的东西
+
+| | |
+|---|---|
+| `storage_configs` 表 | 单行。COS 凭证 / 桶 / 地域 / 前缀 / 自定义域名 / 启用 |
+| `asset_sources` 表 | 单行。搜图源 + key、生图模型、长边上限、两个独立开关 |
+| `model_configs.rate_limit_per_min` | 按模型配限流，null = 不限 |
+| `runtime/objectStore.ts` | COS 签名 v5 + 内容寻址上传，**时钟注入** |
+| `runtime/imageSearch.ts` | 四家图库收敛成一个形状 + 硬超时 |
+| 设置页 ×2 | 「对象存储」「素材来源」，都带**真实连接测试** |
+| 模型管理 | 加「每分钟上限」列 |
+
+**搜图和生图刻意分成两个开关、两个工具**：耗时差 15~50 倍、配额松紧完全不同。
+生图被限流时 agent 自己改用搜图 —— 选图源是**内容决策**，本来就该模型做，
+和「排版决策不该给模型」不冲突。
+
+**密钥永不回传前端**：响应里只有 `hasSecretKey: boolean`；提交时留空 = 不改动已存的那把。
+`PATCH /admin/models/:id` 顺手从 `set(await c.req.json())`（任意列都能写）收紧成 Zod 白名单。
+
+#### 三个实测撞出来的坑，都不在图片本身上
+
+**① `Bun.serve` 默认 `idleTimeout` 只有 10 秒。**
+超了它自己掐掉请求，日志里只留一句 `request timed out after 10 seconds`，
+客户端拿到一个没有响应体的失败。**这条会让 D1 必然失败** ——
+搜图 5~9.5 秒（时好时坏），**生图 15~50 秒，每一次都会被掐死**。
+而且它骗人：浏览器里失败、curl 却成功，差别只是那一次快了几秒。已设成上限 255。
+
+**② bun 的 fetch 不回退 IPv4。**
+`commons.wikimedia.org` 的 AAAA 在这条网络上连不通，bun 直接卡 15 秒超时。
+`dns.setDefaultResultOrder('ipv4first')` 在 bun 里是**空操作**，只有环境变量有效。
+已写进 `server/package.json` 的 dev / start 脚本，**不靠人记得**。
+
+**③ Wikimedia 是个弱兜底，比我一开始说的弱得多。**
+先是 9.5 秒返回、再是 4.9 秒，十分钟后**完全连不上**（curl -4 也 30 秒超时）。
+不是慢，是时通时不通。所以搜图加了 8 秒硬超时 —— **挂住比失败更糟**：
+没有它，一次搜图会一直拖到服务器的 255 秒才算完，agent 干等。
+相关性也一般（「business team meeting」搜出拉斯维加斯赌场照片）。
+**能注册到 Unsplash / Pixabay 的 key 就别用它。**
+
+#### 测试 945 → 965
+
+`objectStore.test.ts` 20 条。签名那组的钉法值得记：
+**照腾讯云签名 v5 的文字规范在测试里独立实现一遍再比对**，
+不是把当前实现的输出抄下来当期望（那种测试改了实现跟着改，不设防）。
+外加 5 条负对照（换密钥 / 换方法 / 换路径 / 换时间 / 加 header，签名都必须变）——
+**签名错了的表现是 403，而 403 看起来跟「密钥填错」一模一样**，人第一反应永远是去查凭证。
+
+`imageSearch.ts` 和路由没有单测：前者是纯网络 IO，后者经 `db/index.ts` 拉 `bun:sqlite`
+（vitest import 不进来）。这两块靠真实往返验的，见下。
+
+#### 验证：真的起了前后端，在浏览器里看了
+
+四道闸门全过 + 后端实起。外加 playwright 驱动真实前后端：
+
+- 三个页面截图逐一看过，无控制台错误
+- **看出一个 bug**：生图模型下拉显示裸的 `0` —— 我用 0 当「未选择」哨兵值，
+  但下拉里没有对应选项，原始值漏到界面上了。补了 `{ label: '未选择', value: 0 }`
+- 真实点选模型 → 开两个开关 → 保存 → **查库确认落库**（`1|18|1|1600`）
+- 点「测试」→ 就是在这一步撞出了上面的坑 ①
+
+COS 连接测试实测：`ok:true`、`publicReadable:true`、`corsAllowOrigin:*`、995ms，
+且它会把「桶不是公有读」「没配 CORS」分别报成告警 —— 后者尤其重要，
+**没有 CORS 时画布一切正常，只有导出 PPTX / PNG 时图片静默丢失**。
+
+#### 判断错过的地方
+
+**① 我说「你那个 Gemini 中转是坏的」，错了。**
+是我路径探错：`/v` 404、`/v1beta` 500，正确的是 `/v/v1beta`。
+中转好得很，23 个模型都在。**我该先用 `GET /models` 确认路径再下结论**，
+而不是从一个 500 直接推断服务坏了。
+
+**② 顺带查出库里 Gemini provider 的 baseUrl 配错了。**
+填的是 `https://g.92.run/v`，SDK 会拼成 `/v/models/…` → 404。
+应改成 `https://g.92.run/v/v1beta`。`normalizeBaseUrl` 没自动修是**故意的**
+（注释写着「路径已有内容的一律不动，宁可不修也不能把本来能用的配置改坏」），这条判断仍然对。
+四个角色现在全跑在 DeepSeek 上，所以没人发现 Gemini 这条是断的。
+
+**③ 起 vite 时 `cd` 泄漏到了后一条后台命令**，导致 vite 在 `server/` 里启动、
+报「找不到入口」。多花了一轮才看出来 —— 复合命令里的 `cd` 会影响同一次调用中后续的命令。
+
+#### 补记：Pixabay 接上了，并抓到一个自己写的真 bug
+
+拿到 key 之后实测，**Pixabay 明显优于 Wikimedia**：
+
+| | Pixabay | Wikimedia |
+|---|---|---|
+| 延迟 | **347~1197 ms** | 5000~9500 ms，或完全连不上 |
+| 「business team meeting」 | 真的商务照片 | 拉斯维加斯赌场 |
+| 中文 / 抽象概念 | 都正常 | 抽象概念不对题 |
+| 单图体积 | ~200~280 KB (JPEG) | — |
+
+搜图全链路实测通过：搜 → 下载 → sha256 → 传 COS → 匿名读 → 跨域读 → 清理。
+顺带一个数字：搜来的 JPEG 约 280 KB，而生图的 PNG 是 1~2 MB —— **搜图对存储轻一个数量级**。
+
+**抓到的真 bug**：我交出去的是 `largeImageURL`（最长边被缩到 1280），
+报的宽高却是 `imageWidth/imageHeight`（**原图**，能到 5760）。
+版式拿这个宽高算 cover / contain，就会以为手里有张 5760px 的图而实际只有 1280px ——
+**满屏背景直接糊掉，且不报任何错**。修法是按最长边换算，实测三组全中
+（3354×2019→1280×771 · 5760×3840→1280×853 · 5868×4004→1280×873），
+修完再打真 API 逐张比对下载到的真实像素，**包括竖图 921×1280 全部一致**。
+
+判据的期望值是**实测量出来的**（抓真实响应 + 从 JPEG 的 SOF 段读像素），
+不是从公式反推 —— 那样只能证明「代码等于代码」。
+
+按文档同时补上：`safesearch=true`（图要插进用户文稿）· `lang` 自动切 zh ·
+`q` 截到 100 字符 · `per_page` 夹到 3~200 · 429 单独报「100 次/60 秒」。
+`fullHDURL` / `imageURL` 实测**本 key 没有**（需申请完整 API 权限），所以 1280 就是上限。
+
+**三条合规要求钉进了模块注释**，因为它们最容易在实装时被忘掉：
+不许长期热链（我们下载后传自己的 COS，本来就合规，但**绝不能把图库 URL 写进 deck**）·
+必须署名（`attribution` 字段留了**不等于兑现了**）· 请求要缓存 24 小时（**搜索请求还没缓存**）。
+
+#### 没做的
+
+- **`searchImage` / `generateImage` 工具没有注册给 agent**。按 R-32 的教训，
+  没实现的工具不注册（「一个永远返回『未接入』的工具只会白白消耗步数预算」）
+- 限流的**执行**（`runtime/rateLimiter.ts`）没写，现在只有配置字段
+- 图片压缩（`maxEdgePx`）只有配置，没有实现
+- `assets` 任务表 / 票据状态机没建
+
 ## 待完成
 
 > 下面这张表是**当前**的权威清单。其中 agent 相关的多项已被
@@ -1437,12 +1580,12 @@ BitFun 那句点破要害的话：「问『这个 Turn 在屏幕上看起来完�
 | 思考过程落库 | 现在只在实时流里，重开会话看不到。要不要存、存多少（很占地方）没定 | 低 |
 | **E3 地面真相** | 导出的动画在真实 PowerPoint 里逐个验，样本已生成（`samples/animations/`），清单见 [09-powerpoint-verify.md](./09-powerpoint-verify.md)。**网页侧已在无头浏览器里逐帧验完**（R-36），剩下的确实只有 PowerPoint 那一半 | **高** |
 | **`in` / `out` 光圈方向** | `box-in` / `circle-in` / `diamond-in` / `plus-in` 网页侧一律「自中心向外张开」。若 PowerPoint 的 `filter=circle(in)` 实际是「自外向内收拢」，这四个方向就是反的 —— 只能开 PowerPoint 看，判法见 [09](./09-powerpoint-verify.md) 第三节 | **高** |
-| **图片 / 图标能力** | 08 号文档诊断 ① 里最大的一条，本轮按决策 P1 只定了接口（`server/src/agent/assets.ts`），provider 未接 | **高** |
+| **图片 / 图标能力** | 08 号诊断 ① 里最大的一条。**第十七轮已完成配置层**（COS 桶 + 生图模型 + 两个设置页，全部实测通过）；**仍缺工具层**：`searchImage` / `generateImage` 未注册、限流未执行、压缩未实现、`assets` 任务表未建 | **高** |
 | R-09 / R-18 | 旧 AI 路径包装成 agent 工具 `fillFromTemplate` | 中 |
 | **事务 / 回滚** | 逐工具提交，中途失败留半成品。Oh My PPT 的 job/rollback 还没抄。**第十五轮之后这条变重了**：中途落库把原来那个「失败时库是干净的」的意外回滚拿掉了，现在半成品会永久留在库里 —— checkpoint 是把它还回来的那一步 | **高** |
 | ~~并发控制~~ | ~~agent 跑时用户手改画布会被整份 `agent.deck` 覆盖~~ —— **第十六轮已修**（单一权威写者，画布锁 + 接管） | ✅ |
 | **乐观并发从没生效过** | `routes/deck.ts:60` 的 `version < existing.version → 409` 实现了，但前端 `saveDeck`（`App.vue:99`）**从来不传 `version`**，那道检查一次都没跑过。表现是两个标签页开同一份文稿会互相静默覆盖。和 agent 无关，是独立的老毛病 | 中 |
-| 图片资产存储 | 对象存储（S3/R2），图片能力落地的前置 | 中 |
+| ~~图片资产存储~~ | ~~对象存储（S3/R2）~~ —— **第十七轮已完成**：腾讯云 COS，桶 / CORS / 内容寻址全部实测通过 | ✅ |
 | 调研摄入 | MinerU / 联网搜索，目前 TODO | 低 |
 | OAuth 登录 | GitHub / Google，目前只有账号密码 | 低 |
 | agent 中途提问 | `ws/handler.ts` 的 `agent.confirm` 是空分支，需要 agent 暂停等待机制 | 低 |
