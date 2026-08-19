@@ -114,7 +114,7 @@ const bottomThumbnailsVisible = ref(false)
 
 const openAudienceView = () => {
   manualExitFullscreen()
-  window.open(`${location.origin}${location.pathname}?mode=audience`, 'pptist-audience', 'popup')
+  window.open(`${location.origin}${location.pathname}?mode=audience`, 'rabbit-audience', 'popup')
 }
 
 const exitScreening = () => {

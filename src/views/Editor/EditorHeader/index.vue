@@ -36,7 +36,7 @@
                 importSpecificFile(files)
                 mainMenuVisible = false
               }">
-                <span class="icon"><i-custom:file-pptist /></span>
+                <span class="icon"><i-custom:file-rabbit /></span>
                 <span class="label">RABBIT</span>
                 <span class="sub-label">（专属格式）</span>
               </FileInput>

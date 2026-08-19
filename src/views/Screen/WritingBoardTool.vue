@@ -116,7 +116,7 @@ import Slider from '@/components/Slider.vue'
 import Popover from '@/components/Popover.vue'
 import Divider from '@/components//Divider.vue'
 
-const AUDIENCE_SYNC_CHANNEL = 'pptist-audience-sync'
+const AUDIENCE_SYNC_CHANNEL = 'rabbit-audience-sync'
 
 const writingBoardColors = ['#000000', '#ffffff', '#1e497b', '#4e81bb', '#e2534d', '#9aba60', '#8165a0', '#47acc5', '#f9974c', '#ffff3a']
 

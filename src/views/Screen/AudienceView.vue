@@ -53,7 +53,7 @@ const laserPenX = ref(0)
 const laserPenY = ref(0)
 
 // 建立接收频道，向主窗口请求当前状态，并处理同步指令
-const syncChannel = new BroadcastChannel('pptist-audience-sync')
+const syncChannel = new BroadcastChannel('rabbit-audience-sync')
 
 onMounted(() => {
   syncChannel.postMessage({ type: 'REQUEST_STATE' })

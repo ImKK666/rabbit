@@ -14,7 +14,7 @@ declare module 'vue' {
     'ICustom:click': typeof import('~icons/custom/click')['default']
     'ICustom:fileJpg': typeof import('~icons/custom/file-jpg')['default']
     'ICustom:filePpt': typeof import('~icons/custom/file-ppt')['default']
-    'ICustom:filePptist': typeof import('~icons/custom/file-pptist')['default']
+    'ICustom:fileRabbit': typeof import('~icons/custom/file-rabbit')['default']
     'ICustom:left': typeof import('~icons/custom/left')['default']
     'ICustom:right': typeof import('~icons/custom/right')['default']
     'IIconParkOutline:add': typeof import('~icons/icon-park-outline/add')['default']

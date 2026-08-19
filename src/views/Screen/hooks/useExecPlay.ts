@@ -7,7 +7,7 @@ import { ANIMATION_CLASS_PREFIX, getAnimationCssClass } from '@/configs/animatio
 import message from '@/utils/message'
 import type { Slide } from '@/types/slides'
 
-const AUDIENCE_SYNC_CHANNEL = 'pptist-audience-sync'
+const AUDIENCE_SYNC_CHANNEL = 'rabbit-audience-sync'
 
 type SyncMessage =
   | { type: 'EXEC_NEXT' }

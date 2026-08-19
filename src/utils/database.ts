@@ -18,7 +18,10 @@ export interface Snapshot {
   actionLabel?: string
 }
 
-const databaseNamePrefix = 'PPTist'
+// 每次启动新建一个带时间戳的临时库，退出时把 id 记进 localStorage 等下次清 ——
+// 所以改前缀不会丢任何用户数据。代价是改名前遗留的旧前缀库对不上过滤条件、
+// 再也不会被这里清掉，需要的话在浏览器里手动删一次。
+const databaseNamePrefix = 'Rabbit'
 
 // 删除失效/过期的数据库
 // 应用关闭时（关闭或刷新浏览器），会将其数据库ID记录在 localStorage 中，表示该ID指向的数据库已失效
@@ -33,7 +36,7 @@ export const deleteDiscardedDB = async () => {
   const databaseNames = await Dexie.getDatabaseNames()
   const discardedDBNames = databaseNames.filter(name => {
     if (name.indexOf(databaseNamePrefix) === -1) return false
-    
+
     const [prefix, id, time] = name.split('_')
     if (prefix !== databaseNamePrefix || !id || !time) return true
     if (localStorageDiscardedDBList.includes(id)) return true

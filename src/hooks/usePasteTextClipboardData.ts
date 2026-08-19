@@ -14,15 +14,19 @@ interface PasteTextClipboardDataOptions {
 
 /**
  * 判断图片URL字符串
- * 
+ *
  * ！！！注意，你需要判断允许哪些来源的图片地址被匹配，然后自行编写正则表达式
  * ！！！必须确保图片来源都是合法、可靠、可控、无访问限制的
+ *
+ * 原本还放行 `pptist.cn`（上游的图床）。这个 fork 不控制那个域名，
+ * 而这是一张**安全白名单**——放行一个自己管不到的域名正是上面两行警告说的事。
+ * 内置模板用的图全在 `images.pexels.com`（`public/mocks/`），去掉它不影响任何东西。
  */
-const isValidImgURL = (url: string) => {
-  const pexels = /^https?:\/\/(?:[a-zA-Z0-9-]+\.)*pexels\.com\/[^\s]+\.(?:jpg|jpeg|png|svg|webp)(?:\?.*)?$/i.test(url)
-  const pptist = /^https?:\/\/(?:[a-zA-Z0-9-]+\.)*pptist\.cn\/[^\s]+\.(?:jpg|jpeg|png|svg|webp)(?:\?.*)?$/i.test(url)
-  return pexels || pptist
-}
+const ALLOWED_IMG_HOSTS = [
+  /^https?:\/\/(?:[a-zA-Z0-9-]+\.)*pexels\.com\/[^\s]+\.(?:jpg|jpeg|png|svg|webp)(?:\?.*)?$/i,
+]
+
+const isValidImgURL = (url: string) => ALLOWED_IMG_HOSTS.some(re => re.test(url))
 
 export default () => {
   const { shiftKeyState } = storeToRefs(useKeyboardStore())

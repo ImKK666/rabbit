@@ -1,5 +1,5 @@
 <template>
-  <div class="pptist-editor">
+  <div class="rabbit-editor">
     <EditorHeader class="layout-header" @openSettings="emit('openSettings')" @backToList="emit('backToList')" @titleChange="emit('saveDeck')" />
     <div class="layout-content">
       <Thumbnails class="layout-content-left" />
@@ -107,7 +107,7 @@ const emit = defineEmits<{
 </script>
 
 <style lang="scss" scoped>
-.pptist-editor {
+.rabbit-editor {
   height: 100%;
 }
 .layout-header {

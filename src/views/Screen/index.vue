@@ -1,5 +1,5 @@
 <template>
-  <div class="pptist-screen">
+  <div class="rabbit-screen">
     <AudienceView v-if="isAudienceMode" />
     <BaseView :changeViewMode="changeViewMode" v-else-if="viewMode === 'base'" />
     <PresenterView :changeViewMode="changeViewMode" v-else-if="viewMode === 'presenter'" />
@@ -25,7 +25,7 @@ const changeViewMode = (mode: 'base' | 'presenter') => {
 
 const { exitScreening: _exitScreening } = useScreening()
 
-const syncChannel = !isAudienceMode ? new BroadcastChannel('pptist-audience-sync') : null
+const syncChannel = !isAudienceMode ? new BroadcastChannel('rabbit-audience-sync') : null
 
 const exitScreening = () => {
   syncChannel?.postMessage({ type: 'EXIT' })
@@ -48,7 +48,7 @@ onUnmounted(() => {
 </script>
 
 <style lang="scss" scoped>
-.pptist-screen {
+.rabbit-screen {
   width: 100%;
   height: 100%;
 }

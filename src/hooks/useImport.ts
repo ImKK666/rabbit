@@ -361,7 +361,7 @@ export default () => {
     reader.readAsText(file)
   }
 
-  // 导入专属文件（.rabbit，兼容上游的 .pptist）
+  // 导入专属文件（.rabbit，见 configs/specificFile.ts）
   const importSpecificFile = (files: FileList | File[], cover = false) => {
     const file = files[0]
 
