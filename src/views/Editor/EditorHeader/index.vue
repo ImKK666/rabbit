@@ -32,12 +32,12 @@
                 <span class="label">JSON</span>
                 <span class="sub-label">（仅供测试）</span>
               </FileInput>
-              <FileInput class="import-block" accept=".pptist" @change="files => {
+              <FileInput class="import-block" :accept="SPECIFIC_FILE_ACCEPT" @change="files => {
                 importSpecificFile(files)
                 mainMenuVisible = false
               }">
                 <span class="icon"><i-custom:file-pptist /></span>
-                <span class="label">PPTIST</span>
+                <span class="label">RABBIT</span>
                 <span class="sub-label">（专属格式）</span>
               </FileInput>
             </div>
@@ -48,8 +48,6 @@
           <PopoverMenuItem class="popover-menu-item" @click="resetSlides(); mainMenuVisible = false"><i-icon-park-outline:refresh class="icon" /> 重置幻灯片</PopoverMenuItem>
           <PopoverMenuItem class="popover-menu-item" @click="openMarkupPanel(); mainMenuVisible = false"><i-icon-park-outline:mark class="icon" /> 幻灯片类型标注</PopoverMenuItem>
           <PopoverMenuItem class="popover-menu-item" @click="mainMenuVisible = false; hotkeyDrawerVisible = true"><i-icon-park-outline:command class="icon" /> 快捷操作</PopoverMenuItem>
-          <PopoverMenuItem class="popover-menu-item" @click="goLink('https://github.com/pipipi-pikachu/PPTist/issues')"><i-icon-park-outline:comment class="icon" /> 意见反馈</PopoverMenuItem>
-          <PopoverMenuItem class="popover-menu-item" @click="goLink('https://github.com/pipipi-pikachu/PPTist/blob/master/doc/Q&A.md')"><i-icon-park-outline:helpcenter class="icon" /> 常见问题</PopoverMenuItem>
           <Divider :margin="10" />
           <div class="statement">注：本站仅作测试/演示，不提供任何形式的服务</div>
         </template>
@@ -120,6 +118,7 @@ import { useMainStore, useSlidesStore } from '@/store'
 import useScreening from '@/hooks/useScreening'
 import useImport from '@/hooks/useImport'
 import useSlideHandler from '@/hooks/useSlideHandler'
+import { SPECIFIC_FILE_ACCEPT } from '@/configs/specificFile'
 import type { DialogForExportTypes } from '@/types/export'
 
 import HotkeyDoc from './HotkeyDoc.vue'
@@ -154,11 +153,6 @@ const handleUpdateTitle = () => {
   slidesStore.setTitle(titleValue.value)
   editingTitle.value = false
   emit('titleChange')
-}
-
-const goLink = (url: string) => {
-  window.open(url)
-  mainMenuVisible.value = false
 }
 
 const setDialogForExport = (type: DialogForExportTypes) => {

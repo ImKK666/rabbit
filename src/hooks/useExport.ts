@@ -43,6 +43,7 @@ import { type AST, toAST } from '@/utils/htmlParser'
 import { type SvgPoints, toPoints } from '@/utils/svgPathParser'
 import { encrypt } from '@/utils/crypto'
 import { svg2Base64 } from '@/utils/svg2Base64'
+import { SPECIFIC_FILE_EXT } from '@/configs/specificFile'
 import message from '@/utils/message'
 
 import BaseLatexElement from '@/views/components/element/LatexElement/BaseLatexElement.vue'
@@ -73,7 +74,7 @@ export default () => {
     if (viewportRatio.value === 0.625) pptx.layout = 'LAYOUT_16x10'
     else if (viewportRatio.value === 0.75) pptx.layout = 'LAYOUT_4x3'
     else {
-      const layoutName = 'PPTIST_CUSTOM_LAYOUT'
+      const layoutName = 'RABBIT_CUSTOM_LAYOUT'
       pptx.defineLayout({
         name: layoutName,
         width: viewportSize.value / ratioPx2Inch.value,
@@ -150,7 +151,7 @@ export default () => {
     }, 200)
   }
   
-  // 导出pptist文件（特有 .pptist 后缀文件）
+  // 导出专属文件（.rabbit 后缀，见 configs/specificFile.ts）
   const exportSpecificFile = (_slides: Slide[]) => {
     const json = {
       title: title.value,
@@ -160,7 +161,7 @@ export default () => {
       slides: _slides,
     }
     const blob = new Blob([encrypt(JSON.stringify(json))], { type: '' })
-    saveAs(blob, `${title.value}.pptist`)
+    saveAs(blob, `${title.value}.${SPECIFIC_FILE_EXT}`)
   }
   
   // 导出JSON文件
@@ -521,7 +522,7 @@ export default () => {
     if (masterOverwrite) {
       const { color: bgColor, alpha: bgAlpha } = formatColor(theme.value.backgroundColor)
       pptx.defineSlideMaster({
-        title: 'PPTIST_MASTER',
+        title: 'RABBIT_MASTER',
         background: { color: bgColor, transparency: (1 - bgAlpha) * 100 },
       })
     }

@@ -24,11 +24,11 @@
         />
       </div>
       <div class="tip">
-        提示：.pptist 是本应用的特有文件后缀，支持将该类型的文件导入回应用中。
+        提示：.rabbit 是本应用的特有文件后缀，支持将该类型的文件导入回应用中（也兼容旧的 .pptist 文件）。
       </div>
     </div>
     <div class="btns">
-      <Button class="btn export" type="primary" @click="exportSpecificFile(selectedSlides)"><i-icon-park-outline:download /> 导出 PPTIST 文件</Button>
+      <Button class="btn export" type="primary" @click="exportSpecificFile(selectedSlides)"><i-icon-park-outline:download /> 导出 RABBIT 文件</Button>
       <Button class="btn close" @click="emit('close')">关闭</Button>
     </div>
   </div>

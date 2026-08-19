@@ -1,4 +1,5 @@
 import { MIME_MAP } from '@/configs/mime'
+import { isSpecificFileName } from '@/configs/specificFile'
 import { getImageDataURL } from '@/utils/image'
 import useCreateElement from './useCreateElement'
 import useImport from './useImport'
@@ -55,13 +56,9 @@ export default () => {
       else if (!isFile) {
         const unknownFile = dataTransferFirstItem.getAsFile()
 
-        if (unknownFile && unknownFile.name) {
-          const ext = unknownFile.name.split('.').pop() || ''
-
-          if (ext === 'pptist') {
-            importSpecificFile([unknownFile])
-            isFile = true
-          }
+        if (unknownFile && unknownFile.name && isSpecificFileName(unknownFile.name)) {
+          importSpecificFile([unknownFile])
+          isFile = true
         }
       }
     }

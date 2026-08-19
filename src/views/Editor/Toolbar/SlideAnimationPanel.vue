@@ -100,7 +100,7 @@ const applyAllSlide = () => {
   align-items: center;
 
   @mixin elAnimation($animationType) {
-    content: 'PPTist';
+    content: 'Rabbit';
     width: 100%;
     height: 100%;
     position: absolute;

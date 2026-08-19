@@ -76,7 +76,6 @@ declare module 'vue' {
     'IIconParkOutline:graphicDesign': typeof import('~icons/icon-park-outline/graphic-design')['default']
     'IIconParkOutline:group': typeof import('~icons/icon-park-outline/group')['default']
     'IIconParkOutline:hamburgerButton': typeof import('~icons/icon-park-outline/hamburger-button')['default']
-    'IIconParkOutline:helpcenter': typeof import('~icons/icon-park-outline/helpcenter')['default']
     'IIconParkOutline:highLight': typeof import('~icons/icon-park-outline/high-light')['default']
     'IIconParkOutline:home': typeof import('~icons/icon-park-outline/home')['default']
     'IIconParkOutline:indentLeft': typeof import('~icons/icon-park-outline/indent-left')['default']
