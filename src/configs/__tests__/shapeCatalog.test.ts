@@ -12,9 +12,9 @@ import { SHAPE_LIST } from '../shapes'
  * 代价是上游一旦重排下标，会**静默**指到另一个形状上 —— 这一组测试就是那道警报。
  */
 describe('shapeCatalog', () => {
-  it('exposes 37 named shapes', () => {
-    expect(SHAPE_CATALOG_KEYS).toHaveLength(37)
-    expect(new Set(SHAPE_CATALOG_KEYS).size).toBe(37)
+  it('exposes 86 named shapes', () => {
+    expect(SHAPE_CATALOG_KEYS).toHaveLength(86)
+    expect(new Set(SHAPE_CATALOG_KEYS).size).toBe(86)
   })
 
   it('every key resolves to a real shape pool item', () => {
@@ -73,6 +73,101 @@ describe('shapeCatalog', () => {
       expect(item.pathFormula).toBe(pathFormula)
     },
   )
+
+
+  // R-41 · 图标字形逐条钉住
+  //
+  // 图标的 path 是上千字符的贝塞尔串，肉眼比不出来 —— 上游一旦重排下标，
+  // 「盾牌对勾」会静默变成「垃圾桶」，而 agent 会照样把它盖进用户的文稿里。
+  //
+  // 钉的是**长度 + 末 24 字符**，不是开头。第一版钉前 28 个字符，
+  // 实测 checkCircle / minusCircle / closeCircle / plusCircle / playCircle / clock / ban
+  // 七个的开头一模一样（都是同一个外圆），方形那五个也一样 ——
+  // 那种钉法会在 ✓ 变成 ✗ 的时候一声不吭地通过。长度 + 尾巴对 86 个键全部可区分。
+  it.each([
+    ['arrowUndo', 139, '597.312-625.792-657.088z'],
+    ['arrowRedo', 141, '597.312 625.792-657.088z'],
+    ['heart', 1266, '96-24.5784-119.83439999z'],
+    ['starRound', 873, '6667-32.256-43.36640001z'],
+    ['cloud', 446, '9.07377778-219.93244445z'],
+    ['bolt', 496, '-6.78091476-16.89064221z'],
+    ['flame', 1677, '4.01955556-160.31288889z'],
+    ['tshirt', 745, '56.06968888-56.06968888z'],
+    ['folder', 429, '40.77795555-40.77795556z'],
+    ['phone', 1219, '5.24719482-140.30329077z'],
+    ['funnel', 581, '55.23363335-22.09345359z'],
+    ['crown', 567, '3.36579793-269.52286815z'],
+    ['thumbUp', 802, '8.30850884H643.02466884z'],
+    ['user', 408, '9.72444445-291.27111111z'],
+    ['bird', 786, '50.72971852-181.5589926z'],
+    ['home', 643, '0.11182708-101.20351027z'],
+    ['pin', 1096, '5.8722316 0-63.51539759z'],
+    ['wrench', 693, '9.97328693-390.05465535z'],
+    ['checkCircle', 675, ' 7.39555555 14.44977778z'],
+    ['minusCircle', 510, ' 9.10222222v54.61333334z'],
+    ['closeCircle', 994, '2-9.10222222 9.10222223z'],
+    ['plusCircle', 822, ' 9.10222222v54.61333334z'],
+    ['playCircle', 661, '11111-2.048 12.62933334z'],
+    ['clock', 649, '33333 2.048 12.62933333z'],
+    ['chat', 1792, '54.49955555 54.61333333z'],
+    ['checkSquare', 785, '38 8.27023406 16.158765z'],
+    ['minusSquare', 635, ' 10.17874962v61.0724977z'],
+    ['closeSquare', 1076, '5.60763474 185.63494611z'],
+    ['playSquare', 600, '6.6677025 0 22.39324918z'],
+    ['plusSquare', 978, ' 10.17874962v61.0724977z'],
+    ['shieldCheck', 1105, ' 7.15518603 14.09021248z'],
+    ['trash', 773, '86.79248536v91.60874653z'],
+    ['flag', 668, '40.71499846-40.71499846z'],
+    ['hourglass', 968, '35.3773699-246.83467817z'],
+    ['tag', 727, '76.45866665 76.45866667z'],
+    ['percent', 1324, '4.23039603 104.23039603z'],
+    ['lineArrowRight', 628, '9.1579333 0-66.83269582z'],
+    ['lineArrowUp', 630, ' 8.41655359-18.51641789z'],
+    ['lineArrowLeft', 628, '11.04672658-11.04672657z'],
+    ['lineArrowDown', 638, '-8.41655359-18.51641789z'],
+    ['swap', 891, '11.04672658-11.04672659z'],
+    ['menuLines', 953, '10.17874961-10.17874959z'],
+    ['closeLine', 769, '284176L591.98717801 512z'],
+    ['userLine', 1809, '484444 512 540.03484444z'],
+    ['mail', 849, '48.58311112 37.77422222z'],
+    ['monitor', 707, '55.6088889v473.31555555z'],
+    ['ban', 720, '5.00444444 267.15022222z'],
+    ['document', 632, '667h245.76v562.06222223z'],
+    ['funnelLine', 616, '0.70542222 574.95096888z'],
+  ] as [string, number, string][])('%s 仍然指向命名时看到的那个字形', (key, len, tail) => {
+    const { item } = SHAPE_CATALOG[key]
+    // 对不上就是上游重排了：跑 `npm run shapes` 看联系表，按新下标改 pick()
+    expect(item.path.length, `${key} 的 path 长度变了`).toBe(len)
+    expect(item.path.endsWith(tail), `${key}: path 结尾是 "${item.path.slice(-30)}"`).toBe(true)
+  })
+
+  // 图标拉伸就不成样子 —— 云被压成 3:1 就不是云了
+  it('every icon keeps its aspect ratio', () => {
+    const icons = SHAPE_CATALOG_KEYS.filter(k => SHAPE_CATALOG[k].category === 'icon')
+    expect(icons.length).toBe(47)
+    for (const key of icons) {
+      expect(SHAPE_CATALOG[key].fixedRatio, key).toBe(true)
+      expect(SHAPE_CATALOG[key].item.viewBox, key).toEqual([1024, 1024])
+    }
+  })
+
+  /**
+   * 刻意没收进来的 4 个 —— 把这条决定钉住，免得哪天有人「顺手补全」又加回去。
+   *
+   * 三个第三方品牌标识：把别家商标交给一个会自动往用户文稿里盖图形的 agent，
+   * 是给用户埋雷。它们在 UI 的形状面板里照常可选 —— 人自己挑是人自己的决定。
+   * 一个孤零零的 ♂：集合里没有配套的 ♀，它最可能的用途恰恰是它一个人干不了的。
+   */
+  it.each([
+    [3, 8, 'QQ 企鹅'],
+    [3, 9, 'Twitter 小鸟'],
+    [3, 14, 'GitLab 狐狸'],
+    [4, 14, '男性符号 ♂'],
+  ])('SHAPE_LIST[%i][%i]（%s）刻意不收进目录', (gi, ci) => {
+    const item = SHAPE_LIST[gi].children[ci]
+    const inCatalog = SHAPE_CATALOG_KEYS.some(k => SHAPE_CATALOG[k].item === item)
+    expect(inCatalog).toBe(false)
+  })
 
   describe('buildShapeGeometry', () => {
     it('returns null for an unknown key', () => {

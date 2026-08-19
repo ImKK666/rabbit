@@ -194,7 +194,8 @@ class Builder {
       rotate: opts.rotate ?? 0,
       viewBox: geometry.viewBox,
       path: geometry.path,
-      fixedRatio: false,
+      // 目录里标了等比的（圆、正多边形、图标）要带下去，否则用户一拖就变形
+      fixedRatio: geometry.fixedRatio,
       fill: opts.fill,
       ...(geometry.pathFormula ? { pathFormula: geometry.pathFormula } : {}),
       ...(geometry.keypoints ? { keypoints: geometry.keypoints } : {}),

@@ -121,6 +121,57 @@ describe('kernel · addShape', () => {
     })) as Slide[]
     expect(validateElement(slides[0].elements[0])).toEqual({ ok: true })
   })
+
+  // R-41：原来这里写死 fixedRatio: false，shapeCatalog 那一列等于白写 ——
+  // 用户在画布上拖一下就把圆拖成椭圆、把图标拖变形
+  it('carries fixedRatio down from the catalog', () => {
+    const square = ok(applyAddShape([emptySlide()], 's1', {
+      shape: 'cloud', left: 0, top: 0, width: 40, height: 40, fill: '#000',
+    })) as Slide[]
+    expect((square[0].elements[0] as unknown as { fixedRatio: boolean }).fixedRatio).toBe(true)
+
+    const free = ok(applyAddShape([emptySlide()], 's1', {
+      shape: 'rect', left: 0, top: 0, width: 300, height: 40, fill: '#000',
+    })) as Slide[]
+    expect((free[0].elements[0] as unknown as { fixedRatio: boolean }).fixedRatio).toBe(false)
+  })
+
+  describe('图标长宽比', () => {
+    const addIcon = (width: number, height: number, shape = 'cloud') =>
+      applyAddShape([emptySlide()], 's1', { shape, left: 0, top: 0, width, height, fill: '#000' })
+
+    // 渲染是裸的 scale(w/1024, h/1024)，给云一个扁框出来的是一条云状面条
+    it('warns when an icon gets a stretched box', () => {
+      const r = addIcon(120, 40)
+      expect(r.ok).toBe(true)
+      const warn = (r as { issues: { message: string }[] }).issues.find(i => i.message.includes('拉变形'))
+      expect(warn).toBeDefined()
+      expect(warn!.message).toContain('3.0:1')
+    })
+
+    it('stays quiet for a square box', () => {
+      const r = addIcon(48, 48)
+      expect((r as { issues: { message: string }[] }).issues.some(i => i.message.includes('拉变形'))).toBe(false)
+    })
+
+    it('tolerates a slight difference', () => {
+      const r = addIcon(48, 40) // 1.2:1
+      expect((r as { issues: { message: string }[] }).issues.some(i => i.message.includes('拉变形'))).toBe(false)
+    })
+
+    // ellipse 的名字就叫「椭圆 / 圆」，把椭圆画成椭圆不是错
+    it('does not police non-icon shapes that are merely fixedRatio', () => {
+      const r = applyAddShape([emptySlide()], 's1', {
+        shape: 'ellipse', left: 0, top: 0, width: 300, height: 60, fill: '#000',
+      })
+      expect((r as { issues: { message: string }[] }).issues.some(i => i.message.includes('拉变形'))).toBe(false)
+    })
+
+    it('still applies the shape —— 这是建议不是拒绝', () => {
+      const slides = ok(addIcon(200, 40)) as Slide[]
+      expect(slides[0].elements).toHaveLength(1)
+    })
+  })
 })
 
 describe('kernel · addChart', () => {

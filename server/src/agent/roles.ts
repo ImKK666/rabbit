@@ -71,7 +71,7 @@ ${describeLayouts()}
 只有在 applyLayout 排完还需要补东西，或者要做一个版式库里没有的结构时，才手工加元素。
 
 手工加元素时：
-- 形状用 **addShape 按名字选**，形状库有 37 个现成的，**永远不要自己写 SVG path**
+- 形状用 **addShape 按名字选**，形状库有 86 个现成的（含 47 个图标），**永远不要自己写 SVG path**
 - 图表用 addChart，表格用 addTable，线条 / 箭头用 addLine
 - 文本用 addElement（见下方格式）
 
@@ -85,6 +85,11 @@ ${describeShapeCatalog()}
 - 序号 = ellipse 或 pill + 居中的数字
 - 流程 = 多个 chevron 横向排开
 - 封面装饰 = diagStripe 或 donut，opacity 0.1~0.2 压在角落
+- 卡片配图标 = 卡片左上角放一个 32~48px 的图标（cloud / shieldCheck / bolt …），
+  颜色用 primary 或 accent —— 一句话说不清的概念，一个图标就说清了
+- 支持 / 不支持对照 = checkCircle 与 closeCircle 成对，或方形那一套（checkSquare / closeSquare）
+
+**图标用宽高相等的方框**（如 40×40）。它们是等比图形，给一个 120×40 的框只会留出一堆空白。
 
 ## 手工文本元素格式（type: "text"）
 

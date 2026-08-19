@@ -150,10 +150,10 @@ PPTist 自带的文档已并入 [`docs/upstream/`](./upstream/)（`AI_PPT_SCHEMA
 → 每步实时同步画布 → 完成后保存 DB
 ```
 
-**771 个单测**（vitest，截至 2026-08-19 第十轮）：
-layouts 224 + buildTimingXml 114 + kernel-elements 100 + animation 71 + kernel 53 +
-shapeCatalog 38 + design 30 + history 26 + buildTransitionXml 21 + assetUrl 19 +
-reasoning 18 + baseUrl 15 + budget 15 + animation-reach 11 + animationSteps 8 + spidMap 8。
+**831 个单测**（vitest，截至 2026-08-19 第十二轮）：
+layouts 224 + buildTimingXml 114 + kernel-elements 106 + shapeCatalog 92 + animation 71 +
+kernel 53 + design 30 + history 26 + buildTransitionXml 21 + assetUrl 19 + reasoning 18 +
+baseUrl 15 + budget 15 + animation-reach 11 + animationSteps 8 + spidMap 8。
 
 `npm run build` exit 0（前端），`bunx tsc --noEmit` exit 0（后端），`npx vitest run` 全绿。
 
@@ -814,6 +814,73 @@ fork 自 PPTist 之后，自己新加的页面（登录 / Deck 列表）早就�
 > `FileSystemIconLoader` 按需读盘，svg 改名不会让它失效。重启 dev server + 浏览器硬刷新即可。
 > 干净启动实测：转换出来的 import 已经是 `~icons/custom/file-rabbit`，无报错。
 
+### 2026-08-19 第十二轮：图标字形命名（R-41）
+
+「待完成」里挂了很久的一条：`configs/shapes.ts` 的「其他形状」「线性」两类共 51 个
+1024 viewBox 图标字形没名字，agent 用不了。`shapeCatalog.ts` 里当初写的理由是
+**「光看 path 无法可靠命名，猜错名字比没有更糟」**。
+
+前半句是对的，结论下早了 —— **看不出来是因为没把它们画出来看。**
+一个 1600 字符的贝塞尔串人眼读不出是云还是锁，渲染成 150px 就一目了然。
+
+#### 工具
+
+| | 做什么 |
+|---|---|
+| `npm run shapes` → `scripts/build-shape-sheet.ts` | 生成 `samples/shape-sheet.html`：150 个形状按 `pick(分类下标, 条目下标)` 标好铺成联系表，已收录的压暗，未命名的正常显示 |
+| `node scripts/shoot-shape-sheet.mjs` | 截成 PNG（`--group N` 只截一类）。和 `measure-animation-lab.mjs` 一样，playwright-core 按需装，不进依赖表 |
+
+51 个逐个看过来命名，存疑的（企鹅？狐狸？鸟？）放大到 150px 再看一遍。
+
+#### 收了 47 个，刻意排除 4 个
+
+新增 `icon` 分类 47 个 + 弧形箭头 2 个（`arrowUndo` / `arrowRedo`，在箭头分类里躺着也没名字），
+目录从 **37 → 86**。`describeShapeCatalog()` 只多了一行（它输出的是 `key(名字)` 紧凑清单），
+Generator 的 system prompt 从 5340 → 6130 字符。
+
+排除的 4 个及理由：
+
+- **QQ 企鹅 / Twitter 小鸟 / GitLab 狐狸** —— 第三方品牌标识。
+  把别家商标交给一个会自动往用户文稿里盖图形的 agent，是给用户埋雷。
+  它们在 UI 的形状面板里照常可选 —— 人自己挑是人自己的决定。
+- **孤零零的男性符号 ♂** —— 集合里没有配套的 ♀，
+  它最可能的用途（性别构成对比）恰恰是它一个人干不了的。
+
+这四条决定**钉在测试里**（`shapeCatalog.test.ts`），免得哪天有人「顺手补全」又加回去。
+
+#### 顺带修的两处
+
+**① `fixedRatio` 一直没被传下去。** `buildShapeGeometry` 算了这一位，
+但 `applyAddShape`（kernel.ts）和 `Builder.shape`（layouts.ts）两处都写死 `fixedRatio: false` ——
+shapeCatalog 里 `ellipse` / `donut` / `star5` 那一列标记等于白写，用户在画布上拖一下就把圆拖成椭圆。
+现在两处都传 `geometry.fixedRatio`。
+
+**② 图标被拉长没人管。** 形状渲染是裸的 `scale(width/viewBox[0], height/viewBox[1])`
+（`BaseShapeElement.vue`），给云一个 120×40 的框，出来的是一条云状的面条。
+`applyAddShape` 现在对 **icon 分类**且长宽比 > 1.3 的调用回一条 warning。
+只查 icon：`ellipse` 的名字就叫「椭圆 / 圆」，把椭圆画成椭圆不是错。
+
+#### 钉住身份的方式改了 —— 第一版钉法是假的
+
+目录按 `(分类下标, 条目下标)` 引用 `SHAPE_LIST`，上游一旦重排就会**静默**指到另一个字形上。
+原有的 37 个靠「path 前缀 + pptxShapeType + pathFormula」三件套钉住，图标没有后两者，
+所以第一版只钉了 path 前 28 个字符。
+
+**实测这个钉法是假的**：`checkCircle` / `minusCircle` / `closeCircle` / `plusCircle` /
+`playCircle` / `clock` / `ban` 七个的开头一模一样（同一个外圆），方形那五个也一样 ——
+✓ 变成 ✗ 的时候它会一声不吭地通过，而 agent 会照样把 ✗ 盖进用户的对比表。
+
+改成钉 **path 长度 + 末 24 字符**，对 86 个键全部可区分。
+负对照做过：把 `checkCircle` 偷偷指向 `closeCircle` 的字形，测试立刻红。
+
+#### 测试
+
+**771 → 831**（新增 54 条 shapeCatalog + 6 条 addShape）：
+49 条身份钉住 · 47 个图标全部 `fixedRatio` 且 viewBox 为 1024 · 4 条排除决定 ·
+`fixedRatio` 传递 · 图标长宽比警告的边界。
+
+51 个字形的 path 全部过了 `toPoints`（PPTX 导出用的转换器），无一失败 —— 命名之前先确认过它们导得出去。
+
 ## 待完成
 
 | 项 | 说明 | 优先级 |
@@ -828,7 +895,6 @@ fork 自 PPTist 之后，自己新加的页面（登录 / Deck 列表）早就�
 | 事务 / 回滚 | 逐工具提交，中途失败留半成品。Oh My PPT 的 job/rollback 还没抄 | 中 |
 | 并发控制 | agent 跑时用户手改画布会被整份 `agent.deck` 覆盖 | 中 |
 | 图片资产存储 | 对象存储（S3/R2），图片能力落地的前置 | 中 |
-| 图标命名 | `configs/shapes.ts` 里「其他形状」「线性」两类共 51 个图标字形没有可靠名字，agent 用不了 | 低 |
 | 调研摄入 | MinerU / 联网搜索，目前 TODO | 低 |
 | OAuth 登录 | GitHub / Google，目前只有账号密码 | 低 |
 | agent 中途提问 | `ws/handler.ts` 的 `agent.confirm` 是空分支，需要 agent 暂停等待机制 | 低 |

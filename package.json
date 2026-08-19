@@ -16,7 +16,8 @@
     "test:watch": "vitest",
     "samples": "vite-node scripts/build-animation-samples.ts",
     "lab": "vite-node scripts/build-animation-lab.ts",
-    "layout-order": "vite-node scripts/inspect-layout-order.ts"
+    "layout-order": "vite-node scripts/inspect-layout-order.ts",
+    "shapes": "vite-node scripts/build-shape-sheet.ts"
   },
   "homepage": "https://github.com/ImKK666/rabbit",
   "dependencies": {

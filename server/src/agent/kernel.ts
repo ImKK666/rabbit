@@ -10,7 +10,7 @@ import type {
   Slide, PPTElement, PPTAnimation, SlideTheme, AnimationEffect, TurningMode,
 } from '@/types/slides'
 import { ANIMATION_DEFS, TURNING_MODES } from '@/configs/animation'
-import { buildShapeGeometry, SHAPE_CATALOG_KEYS } from '@/configs/shapeCatalog'
+import { buildShapeGeometry, getCatalogShape, SHAPE_CATALOG_KEYS } from '@/configs/shapeCatalog'
 import { lintSlideAnimationOrder } from './animationOrder'
 import { buildPalette, CANVAS_WIDTH as DESIGN_W, CANVAS_HEIGHT as DESIGN_H } from './design'
 import {
@@ -1072,7 +1072,10 @@ export const applyAddShape = (
     rotate: spec.rotate ?? 0,
     viewBox: geometry.viewBox,
     path: geometry.path,
-    fixedRatio: false,
+    // 目录里标了等比的形状（圆、正多边形、全部图标）要把这个标记带下去，
+    // 否则用户在画布上拖一下就把它拖变形了。原来这里写死 false，
+    // shapeCatalog 那一列 fixedRatio 等于白写
+    fixedRatio: geometry.fixedRatio,
     fill: spec.fill,
     ...(geometry.pathFormula ? { pathFormula: geometry.pathFormula } : {}),
     ...(geometry.keypoints ? { keypoints: geometry.keypoints } : {}),
@@ -1096,8 +1099,32 @@ export const applyAddShape = (
       : {}),
   }
 
-  return applyAddElement(slides, slideId, element as unknown as PPTElement)
+  const outcome = applyAddElement(slides, slideId, element as unknown as PPTElement)
+
+  // 图标被拉长就不是那个图标了 —— 渲染是裸的 scale(w/1024, h/1024)
+  // （views/components/element/ShapeElement/BaseShapeElement.vue），
+  // 给云一个 120×40 的框，出来的是一条云状的面条。
+  //
+  // 只查 icon 分类：ellipse 的名字就叫「椭圆 / 圆」，把椭圆画成椭圆不是错。
+  const catalog = getCatalogShape(spec.shape)
+  if (outcome.ok && catalog?.category === 'icon') {
+    const ratio = Math.max(spec.width, spec.height) / Math.min(spec.width, spec.height)
+    if (ratio > ICON_ASPECT_TOLERANCE) {
+      outcome.issues = [...outcome.issues, {
+        level: 'warning',
+        slideId,
+        elementId: element.id,
+        message: `图标 "${catalog.name}" 用了 ${Math.round(spec.width)}×${Math.round(spec.height)} 的框（长宽比 ${ratio.toFixed(1)}:1），`
+          + '会被拉变形 —— 图标是等比图形，给它一个正方形的框（比如 40×40），要占更大空间就整体放大',
+      }]
+    }
+  }
+
+  return outcome
 }
+
+/** 图标长宽比超过这个值就算拉变形了 */
+const ICON_ASPECT_TOLERANCE = 1.3
 
 export interface ChartSpec {
   chartType: typeof CHART_TYPES[number]
