@@ -755,6 +755,65 @@ Reviewer 的 prompt 只加了一条：把 lintDeck 报的出场顺序问题转�
 **负对照做过**：把新测试挂到修改前的 `layouts.ts` 上，21 条失败，
 和核查工具查出来的 8 个版式一一对应。全绿的检查器和没有检查器是一回事。
 
+### 2026-08-19 第十一轮：品牌改名 Rabbit（R-40）
+
+fork 自 PPTist 之后，自己新加的页面（登录 / Deck 列表）早就叫 Rabbit，
+但上游带过来的编辑器外壳里还到处是 PPTist。这一轮清干净，**破坏性重建，不留兼容路径**。
+
+#### 删掉的
+
+主菜单「意见反馈」「常见问题」两项 —— 它们链的是上游仓库的 issues 和 Q&A 文档，
+对这个 fork 的用户没有意义。随之删掉只服务这两项的 `goLink()`。
+
+#### 改名的
+
+| | 旧 | 新 |
+|---|---|---|
+| 标签页标题 / meta | PPTist | Rabbit |
+| 动画面板预览色块 | CSS `content: 'PPTist'` | `'Rabbit'` |
+| `public/mocks/slides.json` | 112px 示例标题 | Rabbit |
+| 专属文件后缀 | `.pptist` | `.rabbit` |
+| 加密密钥 | `pptist` | `rabbit` |
+| IndexedDB 前缀 | `PPTist` | `Rabbit` |
+| localStorage key | `PPTIST_DISCARDED_DB` | `RABBIT_DISCARDED_DB` |
+| BroadcastChannel / 窗口名 | `pptist-audience[-sync]` | `rabbit-audience[-sync]` |
+| 导出对话框 key | `'pptist'` | `'rabbit'` |
+| CSS 类 | `.pptist-editor` / `.pptist-screen` / `.export-pptist-dialog` | `.rabbit-editor` / `.rabbit-screen` / `.export-specific-dialog` |
+| 图标 | `file-pptist.svg` | `file-rabbit.svg` |
+| PPTX 内部母版名 | `PPTIST_MASTER` / `PPTIST_CUSTOM_LAYOUT` | `RABBIT_*`（PowerPoint 母版视图里看得到） |
+
+后缀集中到 `src/configs/specificFile.ts` 一处（导出、两个 file input、粘贴判断都从这里取），
+免得下次改名又要满仓库找字符串。
+
+#### 破坏性后果（都是有意的）
+
+- **改名前导出的 `.pptist` 文件打不开** —— 后缀不认、密钥也换了。
+  第一版做过兼容（accept 收两个后缀、decrypt 试两把密钥），按「不要保留兼容」的要求撤掉了。
+  真要救旧文件，把 `configs/specificFile.ts` 的后缀和 `utils/crypto.ts` 的密钥临时改回去导一次。
+- **遗留的 `PPTist_*` IndexedDB 不会被自动清掉** —— 那是每次启动新建、下次启动清掉的
+  临时库（撤销快照 + 画板图），**没有用户数据**，但对不上新前缀的过滤会一直留在浏览器里。
+
+#### 顺带去掉的一条白名单
+
+`usePasteTextClipboardData` 的图片来源白名单原本放行 `pptist.cn`（上游图床）。
+这个 fork 不控制那个域名，而**这是一张安全白名单** —— 那个文件自己的注释就写着
+「必须确保图片来源都是合法、可靠、可控的」。内置模板用的图全在 `images.pexels.com`
+（`public/mocks/`），去掉不影响任何东西。顺手把散着的两条正则收进数组。
+
+#### 没改的
+
+代码注释里对上游 PPTist 的事实性引用 —— 那些在解释「这段代码为什么长这样」，
+是出处说明不是标识符。**AGPL-3.0 第 5 条要求的归属仍在 `NOTICE` / `LICENSE`，两个文件没动。**
+
+#### 验证
+
+四道闸门全过。产物实测：`dist/` 的 js + css + html 里 `pptist` 命中数为 **0**。
+
+> 改名后第一次 `npm run dev` 若报 `Icon custom/file-pptist not found`，
+> 是**已经在跑的那个 dev server** 的陈旧模块图 —— `unplugin-icons` 的
+> `FileSystemIconLoader` 按需读盘，svg 改名不会让它失效。重启 dev server + 浏览器硬刷新即可。
+> 干净启动实测：转换出来的 import 已经是 `~icons/custom/file-rabbit`，无报错。
+
 ## 待完成
 
 | 项 | 说明 | 优先级 |
@@ -772,6 +831,7 @@ Reviewer 的 prompt 只加了一条：把 lintDeck 报的出场顺序问题转�
 | 图标命名 | `configs/shapes.ts` 里「其他形状」「线性」两类共 51 个图标字形没有可靠名字，agent 用不了 | 低 |
 | 调研摄入 | MinerU / 联网搜索，目前 TODO | 低 |
 | OAuth 登录 | GitHub / Google，目前只有账号密码 | 低 |
+| agent 中途提问 | `ws/handler.ts` 的 `agent.confirm` 是空分支，需要 agent 暂停等待机制 | 低 |
 | AGPL-3.0 授权 | 需联系 PPTist 作者询价（决策 C） | **高风险** |
 
 ## 待确认
