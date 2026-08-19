@@ -77,9 +77,10 @@ Claude Code（1902 文件）已经打了很久的仗。
 
 ## 三 · 现在的实际形状
 
-读 `server/src/agent/orchestrator.ts` 得到的四个结构性事实：
+规划时读 `server/src/agent/orchestrator.ts` 得到的四个结构性事实。
+**②③④ 已经修掉了**，原文保留 —— 它们是这几轮工作的起点，划掉比删掉有用。
 
-**① 编排是硬编码的直线剧本，不是循环。**
+**① 编排是硬编码的直线剧本，不是循环。**（**未修**）
 `runAgentTask` 里 if/else 两条写死的路径：Editor 单角色，
 或 `Planner → Generator → Reviewer →（可能）Generator 修正`。
 角色顺序、次数、prompt 拼接全在那 100 行里。
@@ -87,13 +88,21 @@ Claude Code（1902 文件）已经打了很久的仗。
 **这卡死了三类任务**：调研（搜不够要再搜，长度不定）· 深挖单页（要派生子任务）·
 并行修多个问题。**剧本表达不了「形状未知」的任务。**
 
-**② `activeTasks` 按 `userId` 键**（见 §二③）。
+**~~② `activeTasks` 按 `userId` 键~~**（见 §二③）。
+→ **A4 已修**：改成按工作区键（`deck:42`），跨 deck 并行、同 deck 串行；
+顺带修掉注销的 ABA 竞态（`runtime/taskRegistry.ts`）。
 
-**③ `saveDeckState` 只在最后调一次**（`:506`），但 `agent.deck` 每步都实时推画布。
+**~~③ `saveDeckState` 只在最后调一次~~**，但 `agent.deck` 每步都实时推画布。
 中途失败 → **画布上有改动、库里没有**，刷新就没了。
 这比「留半成品」更隐蔽 —— 它是前后端不一致。
+→ **B 期第一组已修**：落库与推画布合成一次 `commit`（`runtime/commit.ts`），
+每次 mutation 都提交。实测逐次落库 0.19 ms，不需要节流。
 
-**④ `cancelAgentTask` 只是 `abort()`**，在途的 `agent.deck` / `agent.text` 照发。
+**~~④ `cancelAgentTask` 只是 `abort()`~~**，在途的 `agent.deck` / `agent.text` 照发。
+→ **B 期第一组已修**：`runtime/cancellation.ts` 的闸门，取消后只放行 `agent.deck`
+（它和一次库写入配对，丢掉就是库与画布不一致）。**世代号刻意没做** ——
+我们的 send 在调用点同步发，`signal.aborted` 就够；
+等接 `cancelAllMatching`（登出 / 断线取消）那条路时再补。
 
 ---
 
@@ -125,7 +134,8 @@ server/src/
     turn.ts                   单轮循环（State record 写全字段 + transition.reason）
     session.ts                会话 / 回合 / 世代号
     ownership.ts              单一权威写者（TurnOwnership）
-    cancellation.ts           取消 + 在途事件回收
+    cancellation.ts    ✅     取消 + 在途事件回收（世代号未做，见下）
+    commit.ts          ✅     状态提交：落库与推前端合成一次，顺序即契约
     checkpoint.ts             快照 / 回滚
     permission.ts             权限闸门（纯函数）
     questions.ts              提问注册表（revision 快照 + 生命周期绑定）
@@ -139,6 +149,8 @@ server/src/
     deck/                     ← 现有能力原样搬进来，成为第一个域
       kernel.ts   layouts.ts   design.ts   animationOrder.ts   （不动）
       tools.ts    → 注册为 deck 工具组
+      events.ts   ✅ 域的取消策略：哪些下行事件在取消后仍必须送达
+      channel.ts  ✅ 闸门 + 提交器的接线（域把两个 IO 端点交进去）
       agents.ts   ← roles.ts 改名：4 个角色变成 deck 域的 agent 定义
     research/                 ← 第二个域（阶段 D）
       tools.ts                搜索 / 抓取 / 摄入
@@ -147,6 +159,16 @@ server/src/
 **`kernel.ts` / `layouts.ts` / `design.ts` 一行不动。**
 它们是域内深度，通用化不该碰它们 —— 碰了就是 §二④ 那笔成本提前发生。
 
+> **`events.ts` / `channel.ts` 是规划时没预见到的两个文件，理由值得记。**
+> 它们本可以写在 `pipeline.ts` 里，但那个文件经 `db/index.ts` 拉进 `bun:sqlite`，
+> **在 vitest 里 import 不进来** —— 写在里面等于没有判据。
+> 一个装的是**策略**（取消放行哪些事件），一个装的是**接线**（闸门 + 提交器怎么接）。
+>
+> 后者尤其值得单列：`cancellation.ts` 和 `commit.ts` 各自都有判据，
+> 但**「它们被接对了没有」是另一回事**。实测负对照 ⑦⑧ 证明了这一点 ——
+> 把 signal 接错、把 publish 改成绕过闸门，两个零件的判据都是全绿的。
+> **零件对 ≠ 装配对。**
+
 ---
 
 ## 六 · 分期
@@ -154,7 +176,7 @@ server/src/
 | 期 | 内容 | 可见产出 | 前置 |
 |---|---|---|---|
 | **A · 拆层** ✅ | ✅A1 建 `runtime/` + `domains/deck/` · ✅A2 边界机器判据 · ✅A3 工具注册表 · ✅A4 任务注册表 + 剧本归域 | 无 | — |
-| **B · runtime 必备件** | 单一权威写者 · 中途落库 · 取消回收 · checkpoint · 权限闸门 · 上下文压缩 · 子任务派生 · 收益递减 | 无（但止血） | A |
+| **B · runtime 必备件** | ✅中途落库 · ✅取消回收 · 单一权威写者 · checkpoint · 权限闸门 · 上下文压缩 · 子任务派生 · 收益递减 | 无（但止血） | A |
 | **C · 交互** | `FINISHING` 态 · 派生状态 · 五模式按钮 · 排队输入 · `agent.confirm` 落地 | ★★ | B |
 | **D · 能力** | D1 图片/图标 · D2 调研/摄入 · D3 渲染后反思 | ★★★ | D1 无前置 |
 
@@ -176,8 +198,8 @@ server/src/
 | 1 | ✅ **`runtime/` 不得 import `domains/`** | `server/src/runtime/__tests__/boundary.test.ts`（10 条，含真负对照）。抄 BitFun 的 `check:core-boundaries` |
 | 2 | **接入 research 域时，`runtime/` 的改动行数为 0** | 阶段 D2 时用 `git diff --stat runtime/` 验。**不为 0 就说明 A 划错了边界** |
 | 3 | ✅ **现有 831 个测试不许改，且全绿** | 拆层是搬家不是改行为。要改测试就说明搬出了行为差异 |
-| 4 | **取消后不再有任何 `agent.*` 消息到达前端** | 集成测试：发 cancel，断言此后 socket 静默 |
-| 5 | **任务中途 kill 进程，重启后库里的 deck 与画布一致** | 手动 + 集成测试 |
+| 4 | ✅ **取消后除 `agent.deck` 外 `agent.*` 为 0 条；且任务结束时库里的 `slidesJson` 与最后一条 `agent.deck` 逐字节相等** | `domains/deck/__tests__/channel.test.ts`（10 条，含真负对照）。**这条被改写过，理由见下** |
+| 5 | ✅ **任务中途 kill 进程，重启后库里的 deck 与画布一致** | `channel.test.ts` +『每一步之后都成立』· `toolCommit.test.ts` 用真工具走一遍。判据形式是「库里 == 最后一条 `agent.deck`」，而不是两个数各自对 |
 | 6 | **`applyLayout` 产物仍然零告警** | `kernel-elements.test.ts` 已有，不许破 |
 | 7 | ✅ **每个工具都至少属于一个工具组** | `findUngroupedTools` + `toolGroups.test.ts`。防的是「加了新工具忘了归组 → agent 永远拿不到 → 没有任何东西报错」 |
 | 8 | ✅ **角色配额与拆层前逐键等价** | `toolGroups.test.ts` 把拆层前的 23 / 5 个键**独立抄一份**当期望，不从新数据反推 |
@@ -190,6 +212,21 @@ server/src/
 > 于是 9 个测试文件**一个字都没改**。这比「只改 import 不改断言」强一档：
 > 连改都没改，就没有「改的时候顺手动了断言」的空间。
 > 前提是先逐个确认过没有测试跨新边界。
+>
+> **判据 4 是改写过的，记一笔。**（2026-08-19 第十五轮）
+> 原文是「取消后**不再有任何** `agent.*` 消息到达前端」。做「中途落库」时发现
+> 它和判据 5 会互相顶：abort 掐的是 LLM 那条 fetch，**工具函数一个都不看 signal**，
+> 当前这一步的 mutation 仍会跑完并落库；如果闸门把配套的 `agent.deck` 一起丢掉，
+> **画布就比库少一步**，判据 5 立刻破。
+>
+> 三个方案（前端收到取消回执后重新拉一次 / `agent.deck` 永不回收 / 什么都不补）
+> 里决策者选了第二个。新判据断言的是**与库相等**而不是**没有消息**，比原来强；
+> 也和 BitFun 一致 —— 它的 `is_reclaimable_stream_data` 回收的是
+> `TextChunk` / `ThinkingChunk`，从来不是权威状态。
+>
+> **教训不在改得对不对，在于判据是什么时候写的。** 这条和判据 3 是同一个毛病：
+> 规划阶段凭对系统的想象写下的判据，落地时才发现和别的判据冲突。
+> 判据 3 蒙对了，判据 4 没蒙对。
 >
 > **判据 2 是这份路线里最重要的一条。**
 > 拆层的成败不取决于目录长得好不好看，取决于**第二个域接进来时要不要改地基**。

@@ -39,6 +39,7 @@ import {
 import { resolveModelForRole, type ResolvedModel } from '@server/runtime/llm'
 import { createAgentTools, type DeckState } from './tools'
 import { getSystemPrompt, getToolSubset } from './roles'
+import { createDeckChannel, type DeckChannel } from './channel'
 
 const DEFAULT_THEME: SlideTheme = {
   themeColors: ['#5b9bd5', '#ed7d31', '#a5a5a5', '#ffc000', '#4472c4', '#70ad47'],
@@ -74,6 +75,18 @@ interface StepToolResult { toolCallId: string, result: unknown }
 const send = (ws: ServerWebSocket<WsUserData>, msg: ServerMessage) => {
   ws.send(JSON.stringify(msg))
 }
+
+/**
+ * 角色循环拿到的下行通道。
+ *
+ * `runRole` 原来直接收 `ws`，但它对 ws 的用法**只有发消息**一种；
+ * 换成通道之后角色循环不再知道 WebSocket 的存在，
+ * 取消回收与落库这两件事也就有了唯一的入口 —— 想绕过它们得先改签名。
+ *
+ * 只取 `emit` / `commit` 两个能力：`drain` / `stats` 是收尾时才用的，
+ * 给角色循环看见只会多出「谁该负责排干」的歧义。
+ */
+type TaskChannel = Pick<DeckChannel, 'emit' | 'commit'>
 
 const loadDeckState = async (deckId: number, userId: number): Promise<{ deckRow: typeof decks.$inferSelect, state: DeckState } | null> => {
   const row = await db.select().from(decks)
@@ -212,14 +225,14 @@ const runRole = async (
   userId: number,
   prompt: string,
   state: DeckState,
-  ws: ServerWebSocket<WsUserData>,
+  channel: TaskChannel,
   signal: AbortSignal,
   history: HistoryTurn[] = [],
   conversationId?: number,
 ): Promise<{ text: string, state: DeckState, truncated: boolean }> => {
   const label = ROLE_LABELS[role]
-  send(ws, { type: 'agent.status', status: 'thinking', message: `${label} 正在思考...` })
-  send(ws, { type: 'agent.text', role, content: `--- ${label} 开始工作 ---` })
+  channel.emit({ type: 'agent.status', status: 'thinking', message: `${label} 正在思考...` })
+  channel.emit({ type: 'agent.text', role, content: `--- ${label} 开始工作 ---` })
 
   let resolved: ResolvedModel
   try {
@@ -236,13 +249,10 @@ const runRole = async (
   const accessor = {
     get: () => state,
     set: (newState: DeckState) => { state = newState },
-    onChange: () => {
-      send(ws, {
-        type: 'agent.deck',
-        slidesJson: JSON.stringify(state.slides),
-        version: state.version,
-      })
-    },
+    // 每一次成功的 mutation 都在这里落库 + 推画布。
+    // 原来只推画布，库要等剧本最后那一次 saveDeckState —— 中途失败就是
+    // 「画布有、库里没有」，刷新即丢。现在两件事合成一次，不可能再错开
+    onChange: () => channel.commit(state),
   }
   const allTools = createAgentTools(accessor)
   const tools = getToolSubset(role, allTools)
@@ -269,12 +279,12 @@ const runRole = async (
       abortSignal: signal,
       onStepFinish: async ({ text, toolCalls, toolResults }) => {
         if (reasoningOpen) {
-          send(ws, { type: 'agent.reasoning.done', role })
+          channel.emit({ type: 'agent.reasoning.done', role })
           reasoningOpen = false
         }
 
         if (text) {
-          send(ws, { type: 'agent.text', role, content: text })
+          channel.emit({ type: 'agent.text', role, content: text })
         }
 
         // tools 是 Partial<AgentTools>（角色只拿工具子集），
@@ -297,7 +307,7 @@ const runRole = async (
             }
           }
 
-          send(ws, {
+          channel.emit({
             type: 'agent.tool',
             tool: tc.toolName,
             args: tc.args,
@@ -330,7 +340,7 @@ const runRole = async (
     for await (const part of stream.fullStream) {
       if (part.type === 'reasoning') {
         reasoningOpen = true
-        send(ws, { type: 'agent.reasoning', role, delta: part.textDelta })
+        channel.emit({ type: 'agent.reasoning', role, delta: part.textDelta })
       }
       else if (part.type === 'error') throw part.error
     }
@@ -346,7 +356,7 @@ const runRole = async (
   const truncated = result.steps.length >= maxSteps && result.finishReason === 'tool-calls'
   if (truncated) {
     console.warn(`[agent] ${role} truncated at maxSteps=${maxSteps}`)
-    send(ws, {
+    channel.emit({
       type: 'agent.text',
       role,
       content: `⚠ ${label} 达到步数上限（${maxSteps} 步），未做完 —— 带着当前进度继续`,
@@ -372,7 +382,7 @@ const runRoleToCompletion = async (
   userId: number,
   prompt: string,
   state: DeckState,
-  ws: ServerWebSocket<WsUserData>,
+  channel: TaskChannel,
   signal: AbortSignal,
   history: HistoryTurn[],
   conversationId: number,
@@ -387,13 +397,13 @@ const runRoleToCompletion = async (
   const save = (text: string, suffix = '') =>
     saveMessage(conversationId, 'assistant', tag ? `[${tag}${suffix}] ${text}` : text)
 
-  let result = await runRole(role, userId, prompt, state, ws, signal, history, conversationId)
+  let result = await runRole(role, userId, prompt, state, channel, signal, history, conversationId)
   await save(result.text)
 
   for (let round = 1; result.truncated && round <= MAX_CONTINUATIONS; round++) {
     if (signal.aborted) break
 
-    send(ws, {
+    channel.emit({
       type: 'agent.status',
       status: 'thinking',
       message: `${ROLE_LABELS[role]} 还没做完，继续第 ${round} 轮…`,
@@ -410,12 +420,12 @@ const runRoleToCompletion = async (
       `用户的原始需求：${originalRequest}`,
     ].join('\n')
 
-    result = await runRole(role, userId, contPrompt, result.state, ws, signal, [], conversationId)
+    result = await runRole(role, userId, contPrompt, result.state, channel, signal, [], conversationId)
     await save(result.text, ` 续作 ${round}`)
   }
 
   if (result.truncated) {
-    send(ws, {
+    channel.emit({
       type: 'agent.text',
       role,
       content: `⚠ 续作 ${MAX_CONTINUATIONS} 轮后仍未做完，先交付当前进度。`
@@ -455,15 +465,23 @@ export const runDeckTask = async ({
 }: DeckTaskInput) => {
   const { userId } = ws.data
 
+  // 下行通道：取消闸门 + 状态提交。接线本身在 channel.ts（那里测得到），
+  // 这里只把两个 IO 端点交给它 —— WebSocket 和库
+  const channel = createDeckChannel({
+    signal,
+    deliver: msg => send(ws, msg),
+    persist: next => saveDeckState(deckId, next),
+  })
+
   const loaded = await loadDeckState(deckId, userId)
   if (!loaded) {
-    send(ws, { type: 'error', message: '演示文稿不存在' })
+    channel.emit({ type: 'error', message: '演示文稿不存在' })
     return
   }
 
   const conv = await resolveConversation(userId, deckId, conversationId, prompt)
   // 前端据此把新建的会话挂进列表，也用来纠正对不上的 conversationId
-  send(ws, { type: 'agent.conversation', id: conv.id, title: conv.title })
+  channel.emit({ type: 'agent.conversation', id: conv.id, title: conv.title })
 
   // 先读历史再存当前这条，否则当前 prompt 会重复出现在 messages 里
   const history = await loadHistory(conv.id)
@@ -475,19 +493,19 @@ export const runDeckTask = async ({
     if (selectedElementIds?.length) {
       const editorPrompt = `${describeSelection(state, selectedElementIds)}\n\n用户的要求：${prompt}`
       const result = await runRoleToCompletion(
-        'editor', userId, editorPrompt, state, ws, signal, history, conv.id, prompt,
+        'editor', userId, editorPrompt, state, channel, signal, history, conv.id, prompt,
       ) // 无 tag：Editor 的产物原样落库，和改动前一致
       state = result.state
     }
     else {
-      const planResult = await runRole('planner', userId, prompt, state, ws, signal, history, conv.id)
+      const planResult = await runRole('planner', userId, prompt, state, channel, signal, history, conv.id)
       await saveMessage(conv.id, 'assistant', `[Planner] ${planResult.text}`)
 
       const genPrompt = `按照以下计划执行：\n${planResult.text}\n\n用户原始需求：${prompt}`
       // 做完才轮到 Reviewer —— 拿一份没做完的稿子去审，报出来的全是「缺这缺那」，
       // 既浪费一轮 Reviewer，又会把 Generator 的修正轮引去补它本来就要补的东西
       const genResult = await runRoleToCompletion(
-        'generator', userId, genPrompt, state, ws, signal, history, conv.id, prompt, 'Generator',
+        'generator', userId, genPrompt, state, channel, signal, history, conv.id, prompt, 'Generator',
       )
       state = genResult.state
 
@@ -495,7 +513,7 @@ export const runDeckTask = async ({
         // Reviewer 不给历史：它的职责是拿当前 deck 对照本轮需求，
         // 喂历史只会让它翻出上几轮已经解决的问题
         const reviewPrompt = `请审查 Generator 刚才对演示文稿所做的修改。用户的原始需求是：${prompt}`
-        const reviewResult = await runRole('reviewer', userId, reviewPrompt, state, ws, signal, [], conv.id)
+        const reviewResult = await runRole('reviewer', userId, reviewPrompt, state, channel, signal, [], conv.id)
         await saveMessage(conv.id, 'assistant', `[Reviewer] ${reviewResult.text}`)
 
         let reviewPassed = true
@@ -510,45 +528,53 @@ export const runDeckTask = async ({
         }
 
         if (!reviewPassed) {
-          send(ws, { type: 'agent.status', status: 'thinking', message: 'Reviewer 发现问题，Generator 正在修正...' })
+          channel.emit({ type: 'agent.status', status: 'thinking', message: 'Reviewer 发现问题，Generator 正在修正...' })
           const fixPrompt = `Reviewer 发现了以下问题，请修正：\n${reviewResult.text}`
           // 修正轮同样要跑到自己停 —— 修到一半就交付，和没修一样
           const fixResult = await runRoleToCompletion(
-            'generator', userId, fixPrompt, state, ws, signal, [], conv.id, prompt, 'Generator 修正',
+            'generator', userId, fixPrompt, state, channel, signal, [], conv.id, prompt, 'Generator 修正',
           )
           state = fixResult.state
         }
       }
       catch (reviewErr) {
         const msg = reviewErr instanceof Error ? reviewErr.message : '审查阶段出错'
-        send(ws, { type: 'agent.text', role: 'reviewer', content: `⚠ 审查跳过: ${msg}` })
+        channel.emit({ type: 'agent.text', role: 'reviewer', content: `⚠ 审查跳过: ${msg}` })
         await saveMessage(conv.id, 'system', `Reviewer 跳过: ${msg}`)
       }
     }
 
-    await saveDeckState(deckId, state)
-
-    send(ws, {
-      type: 'agent.deck',
-      slidesJson: JSON.stringify(state.slides),
-      version: state.version,
-    })
-    send(ws, { type: 'agent.status', status: 'done', message: '任务完成' })
+    // 收尾再提交一次。绝大多数时候这和最后一次 mutation 提交的内容相同，
+    // 但 state 是从各个角色的返回值接回来的，最后统一提交一次才敢说
+    // 「剧本返回时库里就是最终态」——而且它和中途每一次走的是同一条路径
+    await channel.commit(state)
+    channel.emit({ type: 'agent.status', status: 'done', message: '任务完成' })
   }
   catch (err) {
     console.error('[agent] task failed:', err)
     if (signal.aborted) {
-      send(ws, { type: 'agent.status', status: 'error', message: '任务已取消' })
+      // 取消路径下这条发不出去（闸门会回收它），前端的取消回执由
+      // ws/handler.ts 当场回过了。留着是为了非取消的失败路径共用同一段代码
+      channel.emit({ type: 'agent.status', status: 'error', message: '任务已取消' })
     }
     else {
       const msg = err instanceof Error ? err.message : '未知错误'
-      send(ws, { type: 'agent.status', status: 'error', message: msg })
+      channel.emit({ type: 'agent.status', status: 'error', message: msg })
     }
     await saveMessage(conv.id, 'system', `错误: ${err instanceof Error ? err.message : '未知错误'}`)
   }
   finally {
+    // 排队中的提交必须全部落地才算收尾 —— 否则「任务结束了」和
+    // 「库里是最终态」之间还留着一个窗口，而那正是这一轮要关掉的东西
+    await channel.drain()
+
     // 无论成败都刷新时间戳，会话列表按「最近活动」排序才准
     await touchConversation(conv.id)
+
+    const { delivered, reclaimed, committed } = channel.stats()
+    if (reclaimed > 0) {
+      console.log(`[agent] deck:${deckId} 取消后回收在途事件 ${reclaimed} 条（已投递 ${delivered} 条，落库 ${committed} 次）`)
+    }
   }
 }
 

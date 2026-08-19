@@ -53,17 +53,25 @@ export interface DeckState {
 export type DeckStateAccessor = {
   get: () => DeckState
   set: (state: DeckState) => void
-  onChange?: () => void
+  /**
+   * 状态变更后的回调。**可以是异步的，且必须被 await** ——
+   * 落库挂在这里（见 runtime/commit.ts），不等它落地就返回的话，
+   * 工具会回一句 `{ ok: true }` 告诉 agent「改好了」，而那次写入其实还在飞。
+   *
+   * 改成 async 之后 17 个调用点一个字都没动：它们全是
+   * `return applyMutation(...)` 且外层已经是 `async execute`。
+   */
+  onChange?: () => void | Promise<void>
 }
 
-const applyMutation = (
+const applyMutation = async (
   accessor: DeckStateAccessor,
   outcome: KernelOutcome,
-): string => {
+): Promise<string> => {
   if (!outcome.ok) return JSON.stringify({ ok: false, error: outcome.error })
   const state = accessor.get()
   accessor.set({ ...state, slides: outcome.data, version: state.version + 1 })
-  accessor.onChange?.()
+  await accessor.onChange?.()
 
   // errors 此前被 filter 掉了 —— agent 写出零尺寸元素、留下孤儿动画，
   // 拿到的都是干净的 { ok: true }，永远学不到自己写错了。两级都要回传。
@@ -265,7 +273,7 @@ export const createAgentTools = (accessor: DeckStateAccessor) => ({
       const outcome = applySetTheme(state.theme, props as Partial<SlideTheme>)
       if (!outcome.ok) return JSON.stringify({ ok: false, error: outcome.error })
       accessor.set({ ...state, theme: outcome.data, version: state.version + 1 })
-      accessor.onChange?.()
+      await accessor.onChange?.()
       return JSON.stringify({ ok: true, version: state.version + 1 })
     },
   }),

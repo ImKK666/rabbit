@@ -150,12 +150,18 @@ PPTist 自带的文档已并入 [`docs/upstream/`](./upstream/)（`AI_PPT_SCHEMA
 → 每步实时同步画布 → 完成后保存 DB
 ```
 
-**831 个单测**（vitest，截至 2026-08-19 第十二轮）：
+**930 个单测**（vitest，截至 2026-08-19 第十五轮）：
 layouts 224 + buildTimingXml 114 + kernel-elements 106 + shapeCatalog 92 + animation 71 +
-kernel 53 + design 30 + history 26 + buildTransitionXml 21 + assetUrl 19 + reasoning 18 +
-baseUrl 15 + budget 15 + animation-reach 11 + animationSteps 8 + spidMap 8。
+kernel 53 + design 30 + history 26 + buildTransitionXml 21 + assetUrl 19 + taskRegistry 18 +
+reasoning 18 + commit 15 + budget 15 + baseUrl 15 + boundary 14 + toolRegistry 11 +
+toolGroups 11 + animation-reach 11 + channel 10 + spidMap 8 + cancellation 8 +
+animationSteps 8 + toolCommit 7 + events 5。
 
 `npm run build` exit 0（前端），`bunx tsc --noEmit` exit 0（后端），`npx vitest run` 全绿。
+
+> **后端要从 `server/` 目录起**（`PORT=3099 bun run src/index.ts`）——
+> `migrate()` 的 `./drizzle` 是相对 cwd 的，从仓库根跑会死在
+> `Can't find meta/_journal.json`，且在死之前已经在根目录建了一个空的 `data/`。
 
 功能测试脚本见 [07-agent-test.md](./07-agent-test.md)。
 动画导出的 PowerPoint 人工验证清单见 [09-powerpoint-verify.md](./09-powerpoint-verify.md)。
@@ -1159,6 +1165,171 @@ eslint 也是旁证：HEAD 的 orchestrator 是 `3e 6w`，
 `/opt/homebrew/bin`）。软链过去了，但**还要再重启一次才生效** ——
 LSP 注册表是会话启动时快照的。这一轮全程还是 grep + Read 做的。
 
+### 2026-08-19 第十五轮：中途落库 + 取消回收在途事件（R-44）
+
+[11-agent-roadmap.md](./11-agent-roadmap.md) **B 期第一组**，治的是 11 号文档第三节
+③ ④ 两条：`saveDeckState` 只在最后调一次、`cancelAgentTask` 只 `abort()`。
+
+#### ① 中途落库
+
+原来 `saveDeckState` 在剧本最后调一次，而 `agent.deck` 每步实时推画布。
+中途失败 → **画布上有改动、库里没有**，刷新即丢。这比「留半成品」更隐蔽 ——
+它是前后端不一致，界面上完全看不出来。
+
+改法**不是**「在更多地方记得调 `saveDeckState`」。那是把「两件事各自做对」当解法，
+而它已经错过一次了。新增 `runtime/commit.ts`，把两者合成**一次 `commit`**，让它们不可能错开。
+
+**先量再定 cadence**：12 页 / 129 元素的 deck 序列化 43.5 KB，
+按 `db/index.ts` 同款 WAL 建库实测 `JSON.stringify + UPDATE` **0.19 ms/次**，500 次 94 ms。
+相对于一次任务几十步 LLM 调用（每步几十秒），逐 mutation 落库是白送的 ——
+**节流、合并、防抖这些设计问题量完就不存在了**，直接每次都写。
+
+三个刻意的决定：
+
+| | 为什么 |
+|---|---|
+| **先落库，再推画布** | 反过来的话，写库失败会留下「画布已经变了、库没变」——正是要修的那个形状 |
+| **内部串行**（尾巴 promise 排队） | 模型可以在一步里发多个工具调用，SDK 并发执行。两次提交同时在飞时，写库完成的先后可能和调用先后相反，结果是**库停在 state1、画布停在 state2** —— 只在并发下出现、手测撞不到 |
+| **写库失败向调用方抛，不吞** | 吞掉的话工具会回一句 `{ ok: true }`，agent 不会重试，这条修改从此谁也不知道丢了 |
+
+`DeckStateAccessor.onChange` 随之改成可 `await`，`applyMutation` 变 async。
+**17 个调用点一个字都没改** —— 它们全是 `return applyMutation(...)` 且外层已经是
+`async execute`，返回 promise 自动展开。只有 `setTheme` 那处手写的 `onChange` 要单独加 `await`。
+
+#### ② 取消回收在途事件
+
+`abort()` 掐的是 LLM 那条 fetch，而**正在执行的工具函数一个都不看 signal** ——
+它们会跑完，然后照常往 WebSocket 上发 `agent.text` / `agent.tool` / `agent.reasoning`。
+用户看到的是「点了取消，面板还在自己往下滚」。
+
+新增 `runtime/cancellation.ts`：abort 之后，可回收的事件不再投递。
+抄 BitFun 的 `is_reclaimable_stream_data`（docs/10 第 1.4 节）。
+
+**世代号没抄。** BitFun 要 `execution_generation` 是因为事件先进优先级队列、可能延迟出队；
+我们的 `send` 在调用点同步发，`signal.aborted` 一置位后面每次都看得见。
+唯一会让它变必要的路径是 `taskRegistry.cancelAllMatching`（它立刻删注册，
+新任务能在旧任务收尾前占同一个键）—— 而它**目前零调用方**，是 A4 给「登出 / 断线取消」留的接口。
+**接那条路时要连世代号一起补**，记在这里免得到时候忘了。
+
+闸门还数被丢掉的条数。抄 BitFun 视口登记处那句：
+「一个『拒绝』的写者也要说出来 —— 没发生的写入在别处完全不可见，
+而『什么都没发生』才是更常见的报障。」闸门坏掉的两种表现（该丢的没丢 / 不该丢的丢了）都只有计数看得见。
+
+#### 判据 4 被改写了 —— 这是一次改自己的验收标准
+
+原文：**「取消后不再有任何 `agent.*` 消息到达前端」**。
+
+中途落库落地之后这条和判据 5 会互相顶：abort 之后当前步的 mutation 仍会落库，
+如果闸门把配套的 `agent.deck` 一起丢掉，**画布就比库少一步**，判据 5 破。
+
+摆了三个方案（前端收到取消回执后重新拉一次 / `agent.deck` 永不回收 / 什么都不补），
+**决策者选了「`agent.deck` 永不回收」**。改写后：
+
+> 取消后除 `agent.deck` 外 `agent.*` 为 0 条；
+> 且任务结束时库里的 `slidesJson` 与最后一条 `agent.deck` **逐字节相等**。
+
+比原判据强 —— 它断言的是**与库相等**，而不是**没有消息**。
+和 BitFun 也一致：它回收的是 `TextChunk` / `ThinkingChunk`，不是权威状态。
+
+取消的**回执**不受影响：`ws/handler.ts` 收到 `agent.cancel` 当场就回一条，
+所以剧本这边彻底静音不会让用户失去反馈。
+
+#### 为了能测，挪了两处代码出来
+
+`pipeline.ts` 经 `db/index.ts` 拉进 `bun:sqlite`，**在 vitest 里 import 不进来**
+（实测报 `Failed to load url bun:sqlite`，和当初 `budget.ts` 被拆出去是同一个原因）。
+写在里面的东西等于没有判据，所以挪了两块出来：
+
+| 新文件 | 是什么 | 不挪出来会怎样 |
+|---|---|---|
+| `domains/deck/events.ts` | 取消策略（哪些事件放行） | 这是本轮**唯一的策略决定**，躺在 pipeline 里只能靠读代码确认 |
+| `domains/deck/channel.ts` | 闸门 + 提交器的接线 | **零件对 ≠ 装配对**。R-36 静态核过「45 个 cssClass 都有定义」但没有一个被看过，是同一类病 |
+
+策略写成 `Record<ServerMessage['type'], 'survives' \| 'reclaimable'>` 而不是一行
+`msg.type === 'agent.deck'`：协议里加一种新消息却忘了决定它的取消策略时，**这里编译不过**。
+一行写法会让新消息默认落进「可回收」而没有任何东西提醒 ——
+如果那条新消息恰好是权威状态，表现就是「取消之后画布悄悄少了一块」。
+和 `toolGroups.ts` 的 `satisfies` 防的是同一类病。
+
+`runRole` / `runRoleToCompletion` 的 `ws` 参数换成了通道。
+它们对 ws 的用法**只有发消息**一种，换掉之后角色循环不再知道 WebSocket 存在，
+取消回收与落库也就有了唯一入口 —— **想绕过它们得先改签名**。
+
+#### 测试 885 → 930
+
+| 文件 | 条数 | 守什么 |
+|---|---:|---|
+| `runtime/__tests__/commit.test.ts` | 15 | 顺序 / 失败不推画布 / 失败不毒死链 / 并发串行化 / 中途 kill / drain / 计数 |
+| `runtime/__tests__/cancellation.test.ts` | 8 | 取消前后的投递、signal 发送时读、闸门非一次性、计数 |
+| `domains/deck/__tests__/channel.test.ts` | 10 | **判据 ① 和 ② 就在这里**，加接线本身 |
+| `domains/deck/__tests__/toolCommit.test.ts` | 7 | 真工具 + 真提交器：每次调用后不变量成立、工具必须等写入落地才返回 |
+| `domains/deck/__tests__/events.test.ts` | 5 | 策略表逐条，期望独立抄一份 |
+
+原有 885 条一字未改。
+
+#### 八个负对照，全部挂到真源码上跑过
+
+「合成的输入过了不算数」（A2 立的规矩），所以每一条都是真的改坏 `server/src/` 里的文件：
+
+| 改坏什么 | 变红 |
+|---|---|
+| ① 闸门不看 `signal` | cancellation 7 · channel 3 |
+| ② 先推画布再落库 | commit 3 |
+| ③ 去掉串行化 | commit 1 |
+| ④ `applyMutation` 不 await onChange | toolCommit 3 |
+| ⑤ `setTheme` 不 await onChange | toolCommit 1 |
+| ⑥ `agent.deck` 改成可回收 | events 4 · channel 3 |
+| ⑦ 接线时 signal 接错 | channel 3 |
+| ⑧ publish 绕过闸门 | channel 1 |
+
+八条全部还原干净，复跑 930 全绿。
+
+#### 验证
+
+四道闸门全过（930 / build / type-check / server tsc），**外加实际启动后端** ——
+`PORT=3099 bun run src/index.ts` 正常起、`/api/auth/me` 无 token 返回 401。
+
+eslint：4 个新源文件 + 5 个新测试文件**全部 0 问题**；
+`tools.ts` 23 → **22** errors（`setTheme` 的 execute 现在有 await 了，少一条 `require-await`）；
+`pipeline.ts` 3e 6w → 3e **7**w，多的那一条是新加的 `console.log`（该文件本来就有 7 条）。
+
+#### 判断错过的地方
+
+**① 两个判据是假的，而且都只有挂负对照才暴露。**
+
+- `toolCommit` 那条「工具必须等写入落地才返回」写的是 `await Promise.resolve()`，
+  只推进一个微任务 tick —— 「没 await onChange」的版本也来得及显示成「还没返回」，
+  **两版都是绿的**。改成 `setTimeout(0)` 落到宏任务才分得开。
+- `channel` 那条「`agent.deck` 也走闸门」用的是 `emit`，而 `emit` 无论如何都走闸门 ——
+  把 `publish` 改成绕过闸门**照样全绿**。它测的根本不是 publish 那条路，得用 `commit` 验。
+
+两条都是「测了一件必然成立的事」。这一轮真正的收获是：
+**负对照不只在验代码，它同时在验判据本身。**
+R-36 那次负对照回答的是「检查器会不会红」，这次回答的是
+「判据测的是不是它名字说的那件事」—— 后者更隐蔽，因为它全程绿着。
+
+**② 差点把一个没做成的验证记成做过的。**
+负对照②（顺序反过来）第一次用 perl 改，模式没匹配上，文件根本没变，而测试**全绿** ——
+我差一点就把这条记成「负对照通过」。实际上它证明的是「没改代码时测试是绿的」，一句废话。
+后面每一条都加了 `grep` 先确认改动真的落到文件上再跑。
+**「跑出来看」的前提是先确认跑的是改过的那一版。**
+
+**③ 后端第一次没起来，是我从仓库根跑的。**
+`migrate()` 的 `./drizzle` 相对 cwd，从根跑直接死在 `Can't find meta/_journal.json`；
+而在死之前 `db/index.ts:10` 已经 `mkdirSync('./data')` 了，
+于是仓库根多出一个 `data/rabbit.db`（0 张表）—— 而 `.gitignore:38` 只忽略 `server/data/`。
+**必须从 `server/` 起**。顺带值得补一行 `/data/` 进 `.gitignore`，
+或者把 `DB_PATH` 改成相对 server 目录解析。
+
+#### 这一组没做的（说清楚边界）
+
+中途落库**拿掉了一个白捡的「全或无」回滚** —— 原来任务失败时库是干净的，
+现在失败 / 取消之后半成品**永久留在库里且没有撤销**。
+11 号文档判据 5 就是这个方向，但在 B 期的 **checkpoint / 回滚**落地之前，
+中间有一段「失败即留半成品」的窗口。这是有意的取舍，不是漏掉的。
+
+`FINISHING` 态、权限闸门、上下文压缩、子任务派生、收益递减都还没做，它们是 B 期后面的活。
+
 ## 待完成
 
 > 下面这张表是**当前**的权威清单。其中 agent 相关的多项已被
@@ -1174,7 +1345,7 @@ LSP 注册表是会话启动时快照的。这一轮全程还是 grep + Read 做
 | **`in` / `out` 光圈方向** | `box-in` / `circle-in` / `diamond-in` / `plus-in` 网页侧一律「自中心向外张开」。若 PowerPoint 的 `filter=circle(in)` 实际是「自外向内收拢」，这四个方向就是反的 —— 只能开 PowerPoint 看，判法见 [09](./09-powerpoint-verify.md) 第三节 | **高** |
 | **图片 / 图标能力** | 08 号文档诊断 ① 里最大的一条，本轮按决策 P1 只定了接口（`server/src/agent/assets.ts`），provider 未接 | **高** |
 | R-09 / R-18 | 旧 AI 路径包装成 agent 工具 `fillFromTemplate` | 中 |
-| 事务 / 回滚 | 逐工具提交，中途失败留半成品。Oh My PPT 的 job/rollback 还没抄 | 中 |
+| **事务 / 回滚** | 逐工具提交，中途失败留半成品。Oh My PPT 的 job/rollback 还没抄。**第十五轮之后这条变重了**：中途落库把原来那个「失败时库是干净的」的意外回滚拿掉了，现在半成品会永久留在库里 —— checkpoint 是把它还回来的那一步 | **高** |
 | 并发控制 | agent 跑时用户手改画布会被整份 `agent.deck` 覆盖 | 中 |
 | 图片资产存储 | 对象存储（S3/R2），图片能力落地的前置 | 中 |
 | 调研摄入 | MinerU / 联网搜索，目前 TODO | 低 |

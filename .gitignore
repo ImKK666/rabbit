@@ -37,6 +37,9 @@ pnpm-debug.log*
 # 后端运行时数据
 server/data/
 server/node_modules/
+# 从仓库根误起后端时会在这里建一个空库：db/index.ts 的 DB_PATH 是 './data/rabbit.db'，
+# 相对 cwd。正确起法是 cd server && bun run src/index.ts（migrate 的 './drizzle' 同样相对 cwd）
+/data/
 
 # 参考项目（外部仓库 clone，不纳入本仓库）
 refs/
