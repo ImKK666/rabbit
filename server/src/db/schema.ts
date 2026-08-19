@@ -11,7 +11,7 @@ export const users = sqliteTable('users', {
 export const modelProviders = sqliteTable('model_providers', {
   id: integer('id').primaryKey({ autoIncrement: true }),
   name: text('name').notNull(),
-  providerType: text('provider_type', { enum: ['openai', 'anthropic', 'google'] }).notNull(),
+  providerType: text('provider_type', { enum: ['openai', 'anthropic', 'google', 'deepseek'] }).notNull(),
   baseUrl: text('base_url').notNull(),
   apiKey: text('api_key').notNull(),
   remark: text('remark').default(''),

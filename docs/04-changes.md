@@ -585,12 +585,75 @@ solution-style（`files: []` + references），没有 paths。`src/` 里其余�
 思考流的**端到端效果没验**：需要一个真开了 reasoning 的模型才看得到。
 类型、编译、启动都过了，但「思考块长什么样」得你跑一次才知道。
 
+### 2026-08-19 第九轮：修 streamText 挂死 + 思考过程真正落地（R-38）
+
+#### ① R-37 的 streamText 迁移会**永久挂死**（严重，已修）
+
+`streamText` 的 `text` / `steps` / `finishReason` 都是 promise，但**只在流被读干之后才 settle**。
+R-37 写的是直接 `await Promise.all([...])` —— 没有任何东西去驱动那条流，于是三个 promise
+永远 pending。表现是「`XX 角色 开始工作`」之后再无下文，**没有报错、没有超时**。
+
+`consumeStream()` 看着是对的解法，实测**更糟**：它把错误吞掉再正常返回，之后那三个
+promise 同样再不 settle —— 换来的是同一种挂死，只是更难查。坏 API key 实测：
+
+| 做法 | 正常 key | 坏 key |
+|---|---|---|
+| `await Promise.all([...])` | 挂死 | 挂死 |
+| `await consumeStream()` | 1 秒完成 | **静静挂死** |
+| `for await (fullStream)` | 0.9 秒完成 | **1 秒抛出 AI_APICallError** |
+
+改成 for-await 读干 `fullStream`，遇到 `error` 分片就自己抛。思考增量也顺手在这个循环里转发，
+`onChunk` 回调随之删掉 —— 流总要读一遍，读的时候顺手发比多挂一个回调更好懂。
+
+#### ② 思考过程为什么一条都没有
+
+R-37 把管道和 UI 都建好了，但实测一条 reasoning 都收不到。原因**不在那条管道上**，
+在模型那一端根本没开、或者开了被 SDK 丢了，而且三家的情况各不相同：
+
+| provider | 思考在哪 | 处置 |
+|---|---|---|
+| **deepseek** | SSE delta 的 `reasoning_content` 字段 | **新增 provider 类型**，见下 |
+| google | 默认思考但不回传 | `thinkingConfig.includeThoughts = true` |
+| openai | o 系列只在 Responses API 给摘要 | 不动；兼容端点常用 `<think>` 标签，挂 `extractReasoningMiddleware` 兜住 |
+| anthropic | 需显式开 extended thinking | **默认不开**，见下 |
+
+**DeepSeek 的坑**：它的端点是 OpenAI 兼容的，所以自然会被配成 `providerType: 'openai'`。
+但 `@ai-sdk/openai` 用 zod schema 解析 SSE，`reasoning_content` 不在 schema 里，
+**在到达任何中间件之前就被剥掉了** —— 靠中间件救不回来，只能换 provider。
+
+实测确认（直接打端点）：`deepseek-v4-flash` / `-pro` 的 delta 确实带 `reasoning_content`
+且**不带** `<think>` 标签。换用 `@ai-sdk/deepseek` 后同一个模型：
+
+```
+@ai-sdk/openai  : reasoning 0 字
+@ai-sdk/deepseek: reasoning 64 字
+```
+
+所以新增 `deepseek` provider 类型（schema / admin zod / 设置页下拉三处）。
+`text('provider_type', { enum })` 在 drizzle-sqlite 里只是类型级约束、不生成 CHECK，**无需迁移**。
+**已有的 DeepSeek provider 要在设置里把类型从「OpenAI 兼容」改成「DeepSeek（带思考过程）」才会生效。**
+
+**anthropic 默认不开**：extended thinking 一开就锁 temperature、要求 `budgetTokens`、
+老模型直接报错，还改变计费。给一个没人配过的 provider 默认打开这些属于替用户做主。
+需要时 `AGENT_ANTHROPIC_THINKING_BUDGET=4096`，低于 1024（Anthropic 侧下限）视为没开。
+
+#### 端到端实测
+
+用真实模型跑通了整条链，不是只过类型：
+
+```
+steps=2 · 工具调用=3 · reasoning=170 字 · finish=stop · 2.7 秒
+```
+
+多步工具循环、思考增量、正常收尾三件事同时成立。
+
 ## 待完成
 
 | 项 | 说明 | 优先级 |
 |---|---|---|
 | **applyLayout 返回创建的元素** | 省掉每页一次 `getSlide` 回读（实测 13 次），是当前最大的一块步数浪费 | 中 |
 | **查清 updateElement 改宽度** | 实测 24 次里 17 次只改 `width`。是 `applyLayout` 估宽不够，还是模型多手？ | 中 |
+| 思考过程落库 | 现在只在实时流里，重开会话看不到。要不要存、存多少（很占地方）没定 | 低 |
 | **E3 地面真相** | 导出的动画在真实 PowerPoint 里逐个验，样本已生成（`samples/animations/`），清单见 [09-powerpoint-verify.md](./09-powerpoint-verify.md)。**网页侧已在无头浏览器里逐帧验完**（R-36），剩下的确实只有 PowerPoint 那一半 | **高** |
 | **`in` / `out` 光圈方向** | `box-in` / `circle-in` / `diamond-in` / `plus-in` 网页侧一律「自中心向外张开」。若 PowerPoint 的 `filter=circle(in)` 实际是「自外向内收拢」，这四个方向就是反的 —— 只能开 PowerPoint 看，判法见 [09](./09-powerpoint-verify.md) 第三节 | **高** |
 | **图片 / 图标能力** | 08 号文档诊断 ① 里最大的一条，本轮按决策 P1 只定了接口（`server/src/agent/assets.ts`），provider 未接 | **高** |

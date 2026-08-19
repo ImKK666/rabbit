@@ -23,7 +23,7 @@ import {
   serializeToolCall,
   type HistoryTurn,
 } from './history'
-import { resolveModelForRole } from './llm'
+import { resolveModelForRole, type ResolvedModel } from './llm'
 import { getSystemPrompt, getToolSubset } from './roles'
 import { resolveMaxSteps } from './budget'
 
@@ -210,10 +210,11 @@ const runRole = async (
   send(ws, { type: 'agent.status', status: 'thinking', message: `${label} 正在思考...` })
   send(ws, { type: 'agent.text', role, content: `--- ${label} 开始工作 ---` })
 
-  let model: LanguageModel
+  let resolved: ResolvedModel
   try {
-    model = await resolveModelForRole(role, userId)
-    console.log(`[agent] ${role} → model resolved: ${typeof model === 'string' ? model : model.modelId}`)
+    resolved = await resolveModelForRole(role, userId)
+    const { model: m } = resolved
+    console.log(`[agent] ${role} → model resolved: ${typeof m === 'string' ? m : m.modelId}`)
   }
   catch (err) {
     const msg = err instanceof Error ? err.message : '模型解析失败'
@@ -243,21 +244,18 @@ const runRole = async (
   // 不开 reasoning 的模型一条都不会发，前端也就不会画出一个空思考块
   let reasoningOpen = false
 
+  const { model, providerOptions } = resolved
   const result = await withModelContext(role, model, async () => {
     const stream = streamText({
       model,
+      // 让模型把思考带回来。哪个 provider 需要什么参数见 reasoning.ts；
+      // 不需要的 provider 这里是空对象，等于没传
+      providerOptions,
       system,
       messages: [...history, { role: 'user', content: prompt }],
       tools,
       maxSteps,
       abortSignal: signal,
-      // 换 streamText 就是为了这个回调：generateText 要等一整步跑完才有东西可发，
-      // 而一步可能是几十秒 —— 用户那段时间只能看着转圈
-      onChunk: ({ chunk }) => {
-        if (chunk.type !== 'reasoning') return
-        reasoningOpen = true
-        send(ws, { type: 'agent.reasoning', role, delta: chunk.textDelta })
-      },
       onStepFinish: async ({ text, toolCalls, toolResults }) => {
         if (reasoningOpen) {
           send(ws, { type: 'agent.reasoning.done', role })
@@ -308,8 +306,24 @@ const runRole = async (
       },
     })
 
-    // 这三个 promise 任何一个都会驱动流跑完；一起 await 顺带把错误抛回
-    // withModelContext，好让它补上「哪个角色 / 哪个模型 / 哪个 baseUrl」
+    // **必须把流读干**。text / steps / finishReason 都是 promise，但它们只在流
+    // 跑完后才 settle —— 光 await 它们不会驱动流，整个 agent 会永久挂起，
+    // 表现就是「XX 开始工作」之后再无下文，没有任何报错。
+    //
+    // 用 for-await 而不是 consumeStream()：后者会把错误**吞掉**再返回，
+    // 之后那三个 promise 就再也不 settle 了 —— 换来的是同一种挂起，只是更难查。
+    // 实测坏 API key：for-await 1 秒抛出 AI_APICallError，consumeStream 静静挂死。
+    //
+    // 思考增量也在这里转发。原来挂 onChunk 也能收到，但流总要读一遍，
+    // 读的时候顺手发比多挂一个回调更好懂。
+    for await (const part of stream.fullStream) {
+      if (part.type === 'reasoning') {
+        reasoningOpen = true
+        send(ws, { type: 'agent.reasoning', role, delta: part.textDelta })
+      }
+      else if (part.type === 'error') throw part.error
+    }
+
     const [text, steps, finishReason] = await Promise.all([
       stream.text, stream.steps, stream.finishReason,
     ])

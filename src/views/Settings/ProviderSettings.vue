@@ -75,9 +75,14 @@ const typeLabels: Record<string, string> = {
   openai: 'OpenAI 兼容',
   anthropic: 'Anthropic',
   google: 'Google',
+  deepseek: 'DeepSeek',
 }
+// DeepSeek 的端点是 OpenAI 兼容的，选 'OpenAI 兼容' 也能跑，
+// 但思考过程会丢 —— reasoning_content 不在 @ai-sdk/openai 的解析范围内。
+// 想看思考过程就得选这一项
 const typeOptions = [
   { label: 'OpenAI 兼容', value: 'openai' },
+  { label: 'DeepSeek（带思考过程）', value: 'deepseek' },
   { label: 'Anthropic', value: 'anthropic' },
   { label: 'Google', value: 'google' },
 ]

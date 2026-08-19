@@ -18,7 +18,7 @@ admin.use('*', async (c, next) => {
 
 const providerSchema = z.object({
   name: z.string().min(1),
-  providerType: z.enum(['openai', 'anthropic', 'google']),
+  providerType: z.enum(['openai', 'anthropic', 'google', 'deepseek']),
   baseUrl: z.string().url(),
   apiKey: z.string().min(1),
   remark: z.string().optional(),
