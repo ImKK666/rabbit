@@ -150,12 +150,12 @@ PPTist 自带的文档已并入 [`docs/upstream/`](./upstream/)（`AI_PPT_SCHEMA
 → 每步实时同步画布 → 完成后保存 DB
 ```
 
-**930 个单测**（vitest，截至 2026-08-19 第十五轮）：
+**945 个单测**（vitest，截至 2026-08-19 第十六轮）：
 layouts 224 + buildTimingXml 114 + kernel-elements 106 + shapeCatalog 92 + animation 71 +
 kernel 53 + design 30 + history 26 + buildTransitionXml 21 + assetUrl 19 + taskRegistry 18 +
-reasoning 18 + commit 15 + budget 15 + baseUrl 15 + boundary 14 + toolRegistry 11 +
-toolGroups 11 + animation-reach 11 + channel 10 + spidMap 8 + cancellation 8 +
-animationSteps 8 + toolCommit 7 + events 5。
+reasoning 18 + commit 15 + budget 15 + baseUrl 15 + deckWriter 15 + boundary 14 +
+toolRegistry 11 + toolGroups 11 + animation-reach 11 + channel 10 + spidMap 8 +
+cancellation 8 + animationSteps 8 + toolCommit 7 + events 5。
 
 `npm run build` exit 0（前端），`bunx tsc --noEmit` exit 0（后端），`npx vitest run` 全绿。
 
@@ -1330,6 +1330,100 @@ R-36 那次负对照回答的是「检查器会不会红」，这次回答的是
 
 `FINISHING` 态、权限闸门、上下文压缩、子任务派生、收益递减都还没做，它们是 B 期后面的活。
 
+### 2026-08-19 第十六轮：单一权威写者（R-45）
+
+B 期第二组。治的是 docs/10 可迁移清单第 1 条 —— **清单里唯一一条「真实改动丢失」**。
+
+#### 先把 bug 变成看得见的
+
+症状是可以推理出来的，但推理出来的 bug 和看见的 bug 不是一回事。
+先写了 `src/store/__tests__/deckWriter.test.ts`，用**真 pinia store 跑真路径**
+（`agentStore.handleMessage` → `slidesStore`），三条断言当时全绿 —— 绿的是**坏行为**：
+
+- 用户拖动的元素位置，下一条 `agent.deck` 到达即消失
+- 用户新加的元素整个不见
+- **连 Ctrl+Z 都救不回来** —— `setSlides` 只替换数组 + `version++`，
+  不经 `addHistorySnapshot`，所以 agent 那次覆盖**根本不是一个撤销步**
+
+第三条是查的时候才发现的，它把这个 bug 的严重性抬了一档：不是「改动被盖掉」，是「改动被盖掉且没有退路」。
+
+#### 契约：对称的所有权
+
+抄 BitFun 的 TurnOwnership（docs/10 第 1.7 节）：
+**同一份文档同一时刻只有一个权威写者，所有权在终止事件上恰好转移一次。**
+
+| 所有权 | 用户写入 | `agent.deck` |
+|---|---|---|
+| `agent` | 拒绝（画布锁住） | 应用 |
+| `user` | 应用 | **丢弃** |
+
+**后半条不是对称美学，是断线时的救命绳。** 点「接管」**本地立刻转移所有权，不等后端确认** ——
+`send()` 在 socket 未连接时是空转（`services/websocket.ts:140`），
+要是解锁得等后端回消息，断一次线画布就永久锁死了。
+**一把鼠标解不开的锁比丢一次改动更糟。** 代价是后端任务还在收尾、还会推几条 `agent.deck`，
+而它们正好被「`user` 持有时丢弃 agent 写入」这半条挡住。
+
+#### 守卫放在 store 里，不放在调用点上
+
+实测 `slidesStore` 的写 action 有 **197 个调用点、散在 77 个文件**。
+挨个拦是那种「做了 80% 然后静默回归」的活。守卫放进 store 的 action 里，
+**一处覆盖全部调用点**。
+
+三个刻意的例外：
+
+| | 处置 | 为什么 |
+|---|---|---|
+| `setSlides` | **不锁** | 它是「装载 / 清空整个文档」的路径（打开、登出清场、导入、撤销重做）。锁住它，登出时清不掉画布，换账号会看到上一个人的文稿 —— 比它防住的问题更糟 |
+| 撤销 / 重做 | 在 snapshot store 单独挡 | 它们绕过细粒度 action 直接整份替换，画布守卫拦不住 |
+| `setTitle` / 视口 | 不锁 | agent 根本不写这两样，不存在两个写者 |
+
+顺带把 `setSlides` 里的 `this.setTheme(themeProps)` 改成直接赋值：
+`setTheme` 现在带守卫，转调会让锁定期间的整份替换**只写一半**（slides 写了、theme 和 version 没跟上）。
+
+#### 所有权由事件驱动，不从画布推导
+
+BitFun 那句点破要害的话：「问『这个 Turn 在屏幕上看起来完成了吗』正是这个契约要消除的那种检查」。
+
+- `submitTask` → 取所有权。**在发出请求时就取，不等后端回第一条消息** —— 那段空窗期用户照样能拖
+- `agent.status` 为 `done` / `error` → 还所有权。每次任务恰好一条终止事件（上一轮已经验过）
+- `reset()` → 兜底解锁。切文稿 / 登出 / 清空历史时要是还锁着，新文稿会带一把没有任何任务与之对应的锁
+
+#### 锁必须看得见
+
+写入守卫在 store 里，用户拖不动元素时界面要是什么都不说，**表现就是「编辑器坏了」**。
+`views/Editor/index.vue` 在 CanvasTool 和 Canvas 之间加了一条横幅
+（紧贴画布上沿 —— 它解释的是「为什么拖不动」，离画布越近越容易被联系起来），
+右侧一个「接管并编辑」。**这条横幅是那把锁唯一的解释，也是唯一的钥匙。**
+
+#### 测试 930 → 945
+
+15 条，全在 `deckWriter.test.ts`：锁定期间六类写入被拒 · agent 自己的写入照常 ·
+接管后可写且迟到的 `agent.deck` 被丢 · 接管不依赖后端确认 ·
+终止事件解锁 / 中间态不解锁 / `reset` 兜底 · 撤销重做被挡 · `setSlides` 仍可清场。
+
+**五个负对照全部挂到真 store 上跑过**：
+
+| 摘掉什么 | 变红 |
+|---|---|
+| ① 全部用户写入守卫 | 2 |
+| ② `applyAgentDeck` 的对称守卫 | 1 |
+| ③ `submitTask` 不取所有权 | 7 |
+| ④ 终止事件不还所有权 | 2 |
+| ⑤ 撤销 / 重做不挡 | 2 |
+
+全部还原干净，复跑 945 全绿。eslint：4 个改动文件与 HEAD 同为 0 问题。
+
+#### 没做的 / 没验的
+
+- **横幅只验到「CSS 编译进了产物」**（`dist` 里能查到 `.deck-locked-banner`，
+  `$themeColor` 解析成 `#d14424`），**没有在浏览器里看过它长什么样**。
+  逻辑全测了、样式没眼看过 —— 这一条得跑一次 `npm run dev` 才知道。
+- **后端没有加对应的闸门。** `PUT /decks/:id` 在任务运行时仍会接受写入。
+  画布锁住之后前端在运行期不会发这个请求，所以这条不再是「两个写者抢」，
+  而是**陈旧标签页**的问题 —— 而那是个独立的老毛病：`decks.version` 的乐观并发
+  后端实现了（`routes/deck.ts:60`），**前端的 `saveDeck` 从来不传 `version`**，
+  于是那道检查一次都没生效过。已记进待完成。
+
 ## 待完成
 
 > 下面这张表是**当前**的权威清单。其中 agent 相关的多项已被
@@ -1346,7 +1440,8 @@ R-36 那次负对照回答的是「检查器会不会红」，这次回答的是
 | **图片 / 图标能力** | 08 号文档诊断 ① 里最大的一条，本轮按决策 P1 只定了接口（`server/src/agent/assets.ts`），provider 未接 | **高** |
 | R-09 / R-18 | 旧 AI 路径包装成 agent 工具 `fillFromTemplate` | 中 |
 | **事务 / 回滚** | 逐工具提交，中途失败留半成品。Oh My PPT 的 job/rollback 还没抄。**第十五轮之后这条变重了**：中途落库把原来那个「失败时库是干净的」的意外回滚拿掉了，现在半成品会永久留在库里 —— checkpoint 是把它还回来的那一步 | **高** |
-| 并发控制 | agent 跑时用户手改画布会被整份 `agent.deck` 覆盖 | 中 |
+| ~~并发控制~~ | ~~agent 跑时用户手改画布会被整份 `agent.deck` 覆盖~~ —— **第十六轮已修**（单一权威写者，画布锁 + 接管） | ✅ |
+| **乐观并发从没生效过** | `routes/deck.ts:60` 的 `version < existing.version → 409` 实现了，但前端 `saveDeck`（`App.vue:99`）**从来不传 `version`**，那道检查一次都没跑过。表现是两个标签页开同一份文稿会互相静默覆盖。和 agent 无关，是独立的老毛病 | 中 |
 | 图片资产存储 | 对象存储（S3/R2），图片能力落地的前置 | 中 |
 | 调研摄入 | MinerU / 联网搜索，目前 TODO | 低 |
 | OAuth 登录 | GitHub / Google，目前只有账号密码 | 低 |

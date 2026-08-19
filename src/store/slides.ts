@@ -36,6 +36,26 @@ const pruneOrphanAnimations = (slide: Slide) => {
   if (animations.length !== slide.animations.length) slide.animations = animations
 }
 
+/**
+ * 谁此刻有权写这份演示文稿。
+ *
+ * 抄 BitFun 的 TurnOwnership（docs/10 第 1.7 节）：
+ * **同一份文档在同一时刻只有一个权威写者，所有权在终止事件上恰好转移一次。**
+ *
+ * 治的是 docs/10 可迁移清单第 1 条 —— 清单里唯一一条**真实改动丢失**：
+ * agent 跑着时用户在画布上拖一下，下一条 `agent.deck` 整份覆盖回去，
+ * 而且 `setSlides` 不进撤销历史，**连 Ctrl+Z 都救不回来**。
+ *
+ * 规则是**对称**的，这一点很重要：
+ * - `agent` 持有时，用户的写入被拒（画布锁住，横幅提示，点「接管」解锁）
+ * - `user` 持有时，迟到的 `agent.deck` 被丢弃（用户已经接管了，agent 说了不算）
+ *
+ * 后半条不是多余的：点「接管」之后**本地立刻转移所有权**，不等后端确认 ——
+ * 否则 WebSocket 一断，取消发不出去，画布就永久锁死了。
+ * 代价是后端任务还在收尾、还会推几条 `agent.deck`，而它们正好被这半条规则挡住。
+ */
+export type DeckOwner = 'user' | 'agent'
+
 export interface SlidesState {
   title: string
   theme: SlideTheme
@@ -45,6 +65,7 @@ export interface SlidesState {
   viewportSize: number
   viewportRatio: number
   templates: SlideTemplate[]
+  deckOwner: DeckOwner
 }
 
 export const useSlidesStore = defineStore('slides', {
@@ -82,9 +103,14 @@ export const useSlidesStore = defineStore('slides', {
       { name: '深邃沉稳', id: 'template_7', cover: './imgs/template_7.webp', origin: '社区贡献+官方深度完善优化' },
       { name: '浅蓝小清新', id: 'template_8', cover: './imgs/template_8.webp', origin: '社区贡献+官方深度完善优化' },
     ], // 模板
+    deckOwner: 'user', // 谁此刻有权写这份文稿，见 DeckOwner
   }),
 
   getters: {
+    /** 画布是否锁住（agent 持有所有权）。UI 据此置灰并显示横幅 */
+    isDeckLocked(state) {
+      return state.deckOwner === 'agent'
+    },
     currentSlide(state) {
       return state.slides[state.slideIndex]
     },
@@ -132,6 +158,27 @@ export const useSlidesStore = defineStore('slides', {
   },
 
   actions: {
+    /**
+     * 转移所有权。**由任务的起止事件驱动，不从画布状态推导** ——
+     * BitFun 那句「问『这个 Turn 在屏幕上看起来完成了吗』正是这个契约要消除的检查」。
+     */
+    setDeckOwner(owner: DeckOwner) {
+      this.deckOwner = owner
+    },
+
+    /**
+     * agent 的权威写入。返回是否真的写进去了。
+     *
+     * 所有权不在 agent 手上就**丢弃**：用户点过「接管」了，
+     * 此刻还在路上的 `agent.deck` 属于上一任写者，写进去就是把用户刚拿回的画布又抢走。
+     */
+    applyAgentDeck(slides: Slide[]) {
+      if (this.deckOwner !== 'agent') return false
+      this.slides = slides
+      this.version++
+      return true
+    },
+
     setTitle(title: string) {
       if (!title) this.title = '未命名演示文稿'
       else this.title = title
@@ -139,6 +186,7 @@ export const useSlidesStore = defineStore('slides', {
     },
 
     setTheme(themeProps: Partial<SlideTheme>) {
+      if (this.deckOwner === 'agent') return
       this.theme = { ...this.theme, ...themeProps }
       this.version++
     },
@@ -153,10 +201,20 @@ export const useSlidesStore = defineStore('slides', {
       this.version++
     },
 
+    /**
+     * 整份替换。**刻意不受所有权约束** —— 这是「装载 / 清空整个文档」的路径：
+     * 打开演示文稿、登出清场、导入、撤销重做都走它。
+     * 加了锁之后登出时清不掉画布，比它防住的问题更糟。
+     *
+     * 用户真正会在画布上做的那些操作走下面那些细粒度 action，锁在那儿。
+     * 撤销 / 重做单独在 snapshot store 里挡（它们绕过细粒度 action 直接整份替换）。
+     */
     setSlides(slides: Slide[], themeProps?: Partial<SlideTheme>) {
       this.slides = slides
-      if (themeProps) this.setTheme(themeProps)
-      else this.version++
+      // 不再转调 setTheme：那个已经带所有权守卫，
+      // 会让锁定期间的整份替换只写一半（slides 写了、theme 和 version 没跟上）
+      if (themeProps) this.theme = { ...this.theme, ...themeProps }
+      this.version++
     },
   
     setTemplates(templates: SlideTemplate[]) {
@@ -164,6 +222,7 @@ export const useSlidesStore = defineStore('slides', {
     },
   
     addSlide(slide: Slide | Slide[]) {
+      if (this.deckOwner === 'agent') return
       const slides = Array.isArray(slide) ? slide : [slide]
       for (const slide of slides) {
         if (slide.sectionTag) delete slide.sectionTag
@@ -176,6 +235,7 @@ export const useSlidesStore = defineStore('slides', {
     },
 
     updateSlide(props: Partial<Slide>, slideId?: string) {
+      if (this.deckOwner === 'agent') return
       const slideIndex = slideId ? this.slides.findIndex(item => item.id === slideId) : this.slideIndex
       this.slides[slideIndex] = { ...this.slides[slideIndex], ...props }
       // R-05: elements 被整体替换时清理孤儿动画。UI 的元素删除走这条路
@@ -185,6 +245,7 @@ export const useSlidesStore = defineStore('slides', {
     },
 
     removeSlideProps(data: RemovePropData) {
+      if (this.deckOwner === 'agent') return
       const { id, propName } = data
 
       const slides = this.slides.map(slide => {
@@ -195,6 +256,7 @@ export const useSlidesStore = defineStore('slides', {
     },
 
     deleteSlide(slideId: string | string[]) {
+      if (this.deckOwner === 'agent') return
       const slidesId = Array.isArray(slideId) ? slideId : [slideId]
       const slides: Slide[] = JSON.parse(JSON.stringify(this.slides))
   
@@ -229,6 +291,7 @@ export const useSlidesStore = defineStore('slides', {
     },
 
     addElement(element: PPTElement | PPTElement[]) {
+      if (this.deckOwner === 'agent') return
       const elements = Array.isArray(element) ? element : [element]
       const currentSlideEls = this.slides[this.slideIndex].elements
       const newEls = [...currentSlideEls, ...elements]
@@ -237,6 +300,7 @@ export const useSlidesStore = defineStore('slides', {
     },
 
     deleteElement(elementId: string | string[]) {
+      if (this.deckOwner === 'agent') return
       const elementIdList = Array.isArray(elementId) ? elementId : [elementId]
       const slide = this.slides[this.slideIndex]
       slide.elements = slide.elements.filter(item => !elementIdList.includes(item.id))
@@ -245,6 +309,7 @@ export const useSlidesStore = defineStore('slides', {
     },
 
     updateElement(data: UpdateElementData) {
+      if (this.deckOwner === 'agent') return
       const { id, props, slideId } = data
       const elIdList = typeof id === 'string' ? [id] : id
 
@@ -258,6 +323,7 @@ export const useSlidesStore = defineStore('slides', {
     },
 
     removeElementProps(data: RemovePropData) {
+      if (this.deckOwner === 'agent') return
       const { id, propName } = data
       const propsNames = typeof propName === 'string' ? [propName] : propName
 

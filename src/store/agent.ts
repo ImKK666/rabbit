@@ -84,6 +84,10 @@ export const useAgentStore = defineStore('agent', {
       // 追加而不是覆盖 —— 同一条会话里多轮对话要能连起来看
       this.log.push({ type: 'text', role: 'user', content: prompt })
       this.currentDeckId = deckId
+      // agent 接过这份文稿的所有权：画布锁住，直到任务终止或用户点「接管」。
+      // 在**发出请求时**就转移，不等后端回第一条消息 —— 中间那段空窗期
+      // 用户照样能拖元素，而那正是要防的丢失
+      useSlidesStore().setDeckOwner('agent')
       send({
         type: 'agent.task',
         deckId,
@@ -101,6 +105,22 @@ export const useAgentStore = defineStore('agent', {
       send({ type: 'agent.cancel', deckId: this.currentDeckId })
     },
 
+    /**
+     * 用户接管这份演示文稿：停掉 agent，画布解锁。
+     *
+     * **本地先转移所有权，不等后端确认。** 反过来的话，WebSocket 一断
+     * `send` 就是空转，画布会永久锁死 —— 一个用鼠标解不开的锁比丢一次改动更糟。
+     *
+     * 代价是后端任务还在收尾、还会推几条 `agent.deck`。
+     * 它们由 `applyAgentDeck` 的对称守卫挡住（所有权已经不在 agent 手上）。
+     */
+    takeOver() {
+      this.cancelTask()
+      useSlidesStore().setDeckOwner('user')
+      this.status = 'idle'
+      this.statusMessage = ''
+    },
+
     confirmAsk(value: boolean) {
       send({ type: 'agent.confirm', value })
     },
@@ -111,6 +131,12 @@ export const useAgentStore = defineStore('agent', {
           this.status = msg.status
           this.statusMessage = msg.message || ''
           this.log.push({ type: 'status', status: msg.status, message: msg.message || '' })
+          // 终止事件上把所有权还回来 —— 每次任务恰好收到一条 done 或 error
+          // （取消的回执由后端 ws/handler 当场发，正常收尾和出错各一条），
+          // 所以这里转移一次、且只转移一次
+          if (msg.status === 'done' || msg.status === 'error') {
+            useSlidesStore().setDeckOwner('user')
+          }
           break
 
         case 'agent.tool':
@@ -164,9 +190,9 @@ export const useAgentStore = defineStore('agent', {
         }
 
         case 'agent.deck': {
-          const slidesStore = useSlidesStore()
-          const slides = JSON.parse(msg.slidesJson)
-          slidesStore.setSlides(slides)
+          // 走权威写入而不是 setSlides：用户点过「接管」之后，
+          // 还在路上的这几条属于上一任写者，必须丢掉
+          useSlidesStore().applyAgentDeck(JSON.parse(msg.slidesJson))
           break
         }
 
@@ -193,6 +219,10 @@ export const useAgentStore = defineStore('agent', {
       this.currentDeckId = null
       this.conversations = []
       this.activeConversationId = null
+      // 兜底解锁。正常路径上终止事件已经还过所有权了，但 reset 会在
+      // 切换文稿、登出、清空历史时调用 —— 那些时刻要是还锁着，
+      // 新打开的文稿会带着一把没有任何任务与之对应的锁，谁也解不开
+      useSlidesStore().setDeckOwner('user')
     },
 
     /**

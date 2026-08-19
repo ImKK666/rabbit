@@ -133,7 +133,7 @@ server/src/
   runtime/                    ← 域无关。禁止 import domains/
     turn.ts                   单轮循环（State record 写全字段 + transition.reason）
     session.ts                会话 / 回合 / 世代号
-    ownership.ts              单一权威写者（TurnOwnership）
+    ownership.ts       ⊘      单一权威写者 —— **没建这个文件，见下**
     cancellation.ts    ✅     取消 + 在途事件回收（世代号未做，见下）
     commit.ts          ✅     状态提交：落库与推前端合成一次，顺序即契约
     checkpoint.ts             快照 / 回滚
@@ -159,6 +159,18 @@ server/src/
 **`kernel.ts` / `layouts.ts` / `design.ts` 一行不动。**
 它们是域内深度，通用化不该碰它们 —— 碰了就是 §二④ 那笔成本提前发生。
 
+> **`ownership.ts` 规划了但没建，理由值得记（第十六轮）。**
+> 「单一权威写者」这条能力落地了，但它**落在前端** —— 丢失发生在
+> `agentStore.handleMessage` → `slidesStore.setSlides` 这条路径上，
+> 权威写者的争夺是「画布 vs agent 推送」，不是两个服务端模块。
+> 所以所有权状态在 `src/store/slides.ts` 的 `deckOwner` 上，守卫也在那儿。
+>
+> 后端本来可以有一个对应的闸门（任务运行时拒绝 `PUT /decks/:id`），
+> **也没建** —— `taskRegistry.isBusy()` 已经是那个谓词了，
+> 再包一层 `runtime/ownership.ts` 只是给一个 `!` 套壳。
+> A4b「没有顺手抽泛型的 runTask 骨架」是同一条理由：**别为想象中的需求建抽象。**
+> 等第二个域真的也要抢同一份资源时再抽，那时能看见真正共用的是什么。
+>
 > **`events.ts` / `channel.ts` 是规划时没预见到的两个文件，理由值得记。**
 > 它们本可以写在 `pipeline.ts` 里，但那个文件经 `db/index.ts` 拉进 `bun:sqlite`，
 > **在 vitest 里 import 不进来** —— 写在里面等于没有判据。
@@ -176,7 +188,7 @@ server/src/
 | 期 | 内容 | 可见产出 | 前置 |
 |---|---|---|---|
 | **A · 拆层** ✅ | ✅A1 建 `runtime/` + `domains/deck/` · ✅A2 边界机器判据 · ✅A3 工具注册表 · ✅A4 任务注册表 + 剧本归域 | 无 | — |
-| **B · runtime 必备件** | ✅中途落库 · ✅取消回收 · 单一权威写者 · checkpoint · 权限闸门 · 上下文压缩 · 子任务派生 · 收益递减 | 无（但止血） | A |
+| **B · runtime 必备件** | ✅中途落库 · ✅取消回收 · ✅单一权威写者 · checkpoint · 权限闸门 · 上下文压缩 · 子任务派生 · 收益递减 | 无（但止血） | A |
 | **C · 交互** | `FINISHING` 态 · 派生状态 · 五模式按钮 · 排队输入 · `agent.confirm` 落地 | ★★ | B |
 | **D · 能力** | D1 图片/图标 · D2 调研/摄入 · D3 渲染后反思 | ★★★ | D1 无前置 |
 

@@ -104,6 +104,11 @@ export const useSnapshotStore = defineStore('snapshot', {
       const slidesStore = useSlidesStore()
       const mainStore = useMainStore()
 
+      // 撤销 / 重做绕过细粒度 action 直接整份替换（setSlides），
+      // 所以画布上的所有权守卫拦不住它们，得在这里单独挡一道 ——
+      // agent 持有时撤销一步，等于把它做到一半的成果推回去再让它继续往上盖
+      if (slidesStore.isDeckLocked) return
+
       const snapshotCursor = this.snapshotCursor - 1
       const snapshots: Snapshot[] = await db.snapshots.orderBy('id').toArray()
       const snapshot = snapshots[snapshotCursor]
@@ -122,6 +127,9 @@ export const useSnapshotStore = defineStore('snapshot', {
 
       const slidesStore = useSlidesStore()
       const mainStore = useMainStore()
+
+      // 同 unDo：整份替换绕过画布守卫
+      if (slidesStore.isDeckLocked) return
 
       const snapshotCursor = this.snapshotCursor + 1
       const snapshots: Snapshot[] = await db.snapshots.orderBy('id').toArray()

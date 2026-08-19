@@ -350,7 +350,7 @@ BitFun 假设随时有 N 个客户端在不同重连状态上看同一个会话�
 
 | # | 拿什么 | 出处 | 治 rabbit 的什么 |
 |---|---|---|---|
-| 1 | **单一权威写者**（TurnOwnership） | BitFun `turnOwnership.ts` | 「agent 跑时用户手改画布被全量 `agent.deck` 覆盖」—— 真实改动丢失 |
+| 1 | ✅ **单一权威写者**（TurnOwnership） | BitFun `turnOwnership.ts` | 「agent 跑时用户手改画布被全量 `agent.deck` 覆盖」—— 真实改动丢失。**已落地**（`src/store/slides.ts` 的 `deckOwner`，规则对称：agent 持有时用户写入被拒，user 持有时迟到的 agent 写入被丢）。落在前端而不是 `runtime/`，因为争的是「画布 vs agent 推送」 |
 | 2 | ✅ **取消回收在途事件**（世代号未做） | BitFun `event_queue.rs` | `cancelAgentTask` 只 `abort()`，在途 `agent.text` / `agent.tool` 照发。**已落地**（`runtime/cancellation.ts`）。世代号刻意没抄：BitFun 需要它是因为事件在优先级队列里可能延迟出队，我们的 send 在调用点同步发。唯一会让它变必要的路径是 `cancelAllMatching`，目前零调用方 |
 | 3 | **提问注册表 + revision 快照 + drop guard** | BitFun `user_questions.rs` | `ws/handler.ts` 的 `agent.confirm` 空分支；且我们无限重连，pending 提问必丢 |
 | 4 | **`FINISHING` 态 + 派生状态 + 五模式按钮 + 排队输入** | BitFun state-machine | agent 跑时用户只能干等；「插话」和「打断」现在是同一个动作 |

@@ -5,6 +5,15 @@
       <Thumbnails class="layout-content-left" />
       <div class="layout-content-center">
         <CanvasTool class="center-top" />
+        <!--
+          所有权横幅。画布锁住时**必须有一个看得见的出口** ——
+          写入守卫在 slidesStore 里，用户拖不动元素时如果界面什么都不说，
+          表现就是「编辑器坏了」。这条横幅是那把锁唯一的解释和唯一的钥匙。
+        -->
+        <div class="deck-locked-banner" v-if="isDeckLocked">
+          <span class="text">Agent 正在修改这份文稿，画布暂时锁定</span>
+          <span class="takeover" @click="agentStore.takeOver()">接管并编辑</span>
+        </div>
         <Canvas class="center-body" :style="{ height: `calc(100% - ${remarkHeight + 40}px)` }" />
         <Remark
           class="center-bottom" 
@@ -51,7 +60,7 @@
 <script lang="ts" setup>
 import { ref, inject } from 'vue'
 import { storeToRefs } from 'pinia'
-import { useMainStore, useAgentStore } from '@/store'
+import { useMainStore, useAgentStore, useSlidesStore } from '@/store'
 import useGlobalHotkey from '@/hooks/useGlobalHotkey'
 import usePasteEvent from '@/hooks/usePasteEvent'
 
@@ -76,7 +85,11 @@ import Modal from '@/components/Modal.vue'
 
 const mainStore = useMainStore()
 const agentStore = useAgentStore()
+const slidesStore = useSlidesStore()
 agentStore.init()
+
+// 画布锁定状态。写入守卫在 slidesStore 里，这里只负责让锁**看得见**
+const { isDeckLocked } = storeToRefs(slidesStore)
 
 const {
   dialogForExport,
@@ -109,6 +122,36 @@ const emit = defineEmits<{
 <style lang="scss" scoped>
 .rabbit-editor {
   height: 100%;
+}
+
+// 所有权横幅。放在 CanvasTool 和 Canvas 之间，紧贴画布上沿 ——
+// 它解释的是「为什么拖不动」，离画布越近越容易被联系起来
+.deck-locked-banner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 16px;
+  font-size: 12px;
+  color: #8a6d13;
+  background-color: #fdf6e3;
+  border-bottom: 1px solid #f0e0b0;
+
+  .text {
+    flex: 1;
+  }
+
+  .takeover {
+    padding: 2px 10px;
+    color: #fff;
+    background-color: $themeColor;
+    border-radius: $borderRadius;
+    cursor: pointer;
+    user-select: none;
+
+    &:hover {
+      opacity: .85;
+    }
+  }
 }
 .layout-header {
   height: 40px;
