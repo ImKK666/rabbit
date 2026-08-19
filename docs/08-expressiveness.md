@@ -18,6 +18,11 @@
 > 工具留在 `scripts/build-animation-lab.ts` + `scripts/measure-animation-lab.mjs`，
 > 结论见 [04-changes.md](./04-changes.md#2026-08-19-第七轮动画三方一致性核查r-36)。
 > **PowerPoint 那一半仍未做**，且新增一个只能靠它回答的问题（`in` / `out` 光圈方向）。
+>
+> **补充（2026-08-19，R-39）**：R-36 验的是**单个效果**，而「一页里先看到什么、后看到什么」
+> 是另一回事 —— 它由 `layouts.ts` 的 `b.animate()` 调用顺序 + trigger 决定，与 CSS 无关。
+> 那一片查下来 **10 个版式里 8 个有问题**（3 个漏挂动画共 20 个元素，5 个装饰抢在标题前面），
+> 已全部修完。工具是 `npm run layout-order`，第四节的验收标准也补了对应的一行。
 
 前置阅读：[04-changes.md](./04-changes.md)（改动清单）· [05-pptx-export.md](./05-pptx-export.md)（导出方案）· [03-architecture.md](./03-architecture.md) 第六节（动画决策）
 
@@ -160,10 +165,23 @@ plan_asset({ kind: 'image' | 'icon', prompt, targetBox: {width, height},
 | 版式多样性 | 同一份 deck 内相邻页不使用同一版式 | 可写进 Reviewer / lint |
 | 非文本元素 | 每页至少含一个形状 / 图表 / 线条 | 自动 |
 | 动画多样性 | 单份 deck 用到的 effect 种类 ≥ 3，且不全是 fade 系 | 自动 |
+| **出场顺序** | **每个元素都挂了动画 · 标题领跑 · 装饰不单独占标题前面那一步** | **自动（R-39 补）** |
 | 导出保真 | 新增效果在真实 PowerPoint 里能正常播放 | **人工，只能你来** |
 | 主观 | 你看着不再无语 | 你说了算 |
 
-前三条建议直接落成 `lintDeck` 的新规则或 Reviewer 的检查项 —— 变成机器能判的，才不会退化。
+前四条建议直接落成 `lintDeck` 的新规则或 Reviewer 的检查项 —— 变成机器能判的，才不会退化。
+
+> **R-39 补的那一条，正好是这句话的反证。** 前三条落成 `lintDeckDesign` 的时候，
+> 「出场顺序」压根不在清单上 —— 于是 10 个版式里 8 个从第一天起就是错的，
+> 25→45 的动画扩容、45 个效果的逐帧采样、31→114 条 buildTimingXml 单测全都从它旁边走过去，
+> 一个都没碰到。**没被写成判据的东西不会退化，因为它从来就没立起来过。**
+>
+> 落法见 [04-changes.md 第十轮](./04-changes.md#2026-08-19-第十轮出场顺序核查与修复r-39)。
+> 关键不是「加了条 lint」，而是**修在哪一层**：这些页由 `applyLayout` 生成，
+> Generator 除了重新套一次版式（逐字节重现同一个错）没有别的修复动作 ——
+> 交给 Reviewer 只会得到一条永远报、永远修不掉的意见。
+> 所以主修在 `layouts.ts`，lint 守的是手工搭页那条路，
+> 而「applyLayout 产物零告警」本身也是一条测试。
 
 ## 五 · 风险
 

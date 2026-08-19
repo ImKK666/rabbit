@@ -7,6 +7,7 @@ import {
   applyArrangeElements, applyLayoutToSlide, applySetSlideTransition,
   mintElementId,
 } from '../kernel'
+import { lintSlideAnimationOrder } from '../animationOrder'
 
 const THEME: SlideTheme = {
   themeColors: ['#2f6feb', '#f2596b', '#a5a5a5', '#ffc000', '#4472c4', '#70ad47'],
@@ -519,5 +520,154 @@ describe('kernel · deck-level design lint', () => {
     const slides = [{ id: 's1', elements: [textEl('a')] }]
     expect(lintDeck(slides, { designChecks: false })).toHaveLength(0)
     expect(lintDeck(slides).length).toBeGreaterThan(0)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// R-39 · 出场顺序 lint
+//
+// 这条规则守的是**手工搭页**那条路：agent 用 addElement + addAnimation 自己拼时间线，
+// 就可能拼出一个读不通的顺序。版式那条路由 layouts.ts 保证，
+// 所以第一条测试是「applyLayout 的产物必须零告警」——
+// 它一旦报警，agent 每跑一份 deck 都会收到一条自己修不掉的意见，
+// Reviewer → Generator 就会白白多绕一圈（08-expressiveness.md 第四节）。
+// ---------------------------------------------------------------------------
+
+describe('kernel · 出场顺序 lint', () => {
+  const anim = (
+    id: string, elId: string, trigger: 'click' | 'auto' | 'meantime',
+    over: Partial<{ type: 'in' | 'out' | 'attention', effect: string }> = {},
+  ) => ({
+    id, elId, effect: 'fade', type: 'in', duration: 500, trigger, ...over,
+  } as unknown as NonNullable<Slide['animations']>[number])
+
+  const shapeEl = (id: string, name: string): PPTElement => ({
+    id, type: 'shape', left: 0, top: 0, width: 100, height: 100, rotate: 0,
+    viewBox: [200, 200], path: 'M 0 0 L 200 0 L 200 200 L 0 200 Z', fixedRatio: false,
+    fill: '#2f6feb', name,
+  } as unknown as PPTElement)
+
+  it.each(LAYOUT_PATTERNS)('%s 的 applyLayout 产物零告警', pattern => {
+    const slides = ok(applyLayoutToSlide([emptySlide()], 's1', THEME, pattern, contentFor(pattern))) as Slide[]
+    const issues = lintSlideAnimationOrder(slides[0], 0)
+    expect(issues.map(i => i.message), pattern).toEqual([])
+  })
+
+  it('A · 报出没挂动画的文本', () => {
+    const slide: Slide = {
+      id: 's1',
+      elements: [textEl('t', { textType: 'title', name: '标题' }), textEl('b', { textType: 'item', name: '正文' })],
+      animations: [anim('a1', 't', 'click')],
+    }
+    const issues = lintSlideAnimationOrder(slide, 2)
+    expect(issues).toHaveLength(1)
+    expect(issues[0].message).toContain('第 3 页')
+    expect(issues[0].message).toContain('"正文"')
+    expect(issues[0].message).toContain('没有入场动画')
+  })
+
+  it('A · 不管没挂动画的形状 —— 一块常驻底板是正常设计', () => {
+    const slide: Slide = {
+      id: 's1',
+      elements: [shapeEl('bg', '底板'), textEl('t', { textType: 'title' })],
+      animations: [anim('a1', 't', 'click')],
+    }
+    expect(lintSlideAnimationOrder(slide)).toHaveLength(0)
+  })
+
+  it('B · 报出排在正文之后的标题', () => {
+    const slide: Slide = {
+      id: 's1',
+      elements: [textEl('body', { textType: 'item', name: '正文' }), textEl('t', { textType: 'title', name: '标题' })],
+      animations: [anim('a1', 'body', 'click'), anim('a2', 't', 'auto')],
+    }
+    const issues = lintSlideAnimationOrder(slide)
+    expect(issues.some(i => i.message.includes('排在正文之后出场'))).toBe(true)
+  })
+
+  // eyebrow 和章节号总是紧贴标题排版，它们先出来是建场不是抢跑
+  it('B · 放过标题块内部的先后（eyebrow / 章节号）', () => {
+    const slide: Slide = {
+      id: 's1',
+      elements: [
+        textEl('eb', { textType: 'header', name: 'eyebrow' }),
+        textEl('num', { textType: 'partNumber', name: '章节号' }),
+        textEl('t', { textType: 'title', name: '标题' }),
+      ],
+      animations: [anim('a1', 'eb', 'click'), anim('a2', 'num', 'auto'), anim('a3', 't', 'auto')],
+    }
+    expect(lintSlideAnimationOrder(slide)).toHaveLength(0)
+  })
+
+  it('C · 报出标题之前那一整格纯装饰', () => {
+    const slide: Slide = {
+      id: 's1',
+      elements: [shapeEl('ring', '装饰环'), textEl('t', { textType: 'title', name: '标题' })],
+      animations: [anim('a1', 'ring', 'click'), anim('a2', 't', 'auto')],
+    }
+    const issues = lintSlideAnimationOrder(slide)
+    expect(issues).toHaveLength(1)
+    expect(issues[0].message).toContain('只有装饰性图形')
+    expect(issues[0].message).toContain('装饰环')
+  })
+
+  it('C · 装饰与标题同格（meantime）不报', () => {
+    const slide: Slide = {
+      id: 's1',
+      elements: [shapeEl('ring', '装饰环'), textEl('t', { textType: 'title', name: '标题' })],
+      animations: [anim('a1', 't', 'click'), anim('a2', 'ring', 'meantime')],
+    }
+    expect(lintSlideAnimationOrder(slide)).toHaveLength(0)
+  })
+
+  it('整页一条入场动画都没有 —— 全静态页是合法的，不报', () => {
+    const slide: Slide = {
+      id: 's1',
+      elements: [textEl('a'), textEl('b'), shapeEl('c', '底板')],
+    }
+    expect(lintSlideAnimationOrder(slide)).toHaveLength(0)
+    expect(lintSlideAnimationOrder({ ...slide, animations: [] })).toHaveLength(0)
+  })
+
+  it('孤儿动画不参与分步（它指向的元素已经不在了）', () => {
+    const slide: Slide = {
+      id: 's1',
+      elements: [textEl('t', { textType: 'title', name: '标题' })],
+      animations: [anim('a1', 'ghost', 'click'), anim('a2', 't', 'click')],
+    }
+    expect(lintSlideAnimationOrder(slide)).toHaveLength(0)
+  })
+
+  // lintSlide 的结果跟在每一次元素改动后面返回给 agent。
+  // 手工搭页时元素和动画是分两步加的，中间那一刻必然「有元素没挂动画」——
+  // 在那里报警等于每加一个元素就催一次，白烧步数还催不出正确结果
+  it('不进 lintSlide，只进 lintDeck', () => {
+    const slide: Slide = {
+      id: 's1',
+      elements: [textEl('t', { textType: 'title', name: '标题' }), textEl('b', { textType: 'item', name: '正文' })],
+      animations: [anim('a1', 't', 'click')],
+    }
+    expect(lintSlide(slide).some(i => i.message.includes('入场动画'))).toBe(false)
+    expect(lintDeck([slide]).some(i => i.message.includes('入场动画'))).toBe(true)
+  })
+
+  it('随 designChecks:false 一起关掉', () => {
+    const slide: Slide = {
+      id: 's1',
+      elements: [textEl('t', { textType: 'title' }), textEl('b', { textType: 'item' })],
+      animations: [anim('a1', 't', 'click')],
+    }
+    expect(lintDeck([slide], { designChecks: false }).some(i => i.message.includes('入场动画'))).toBe(false)
+  })
+
+  it('全是 warning，不会把 deck 判成结构错误', () => {
+    const slide: Slide = {
+      id: 's1',
+      elements: [shapeEl('ring', '环'), textEl('t', { textType: 'title' }), textEl('b', { textType: 'item' })],
+      animations: [anim('a1', 'ring', 'click'), anim('a2', 't', 'auto')],
+    }
+    const issues = lintSlideAnimationOrder(slide)
+    expect(issues.length).toBeGreaterThan(0)
+    expect(issues.every(i => i.level === 'warning')).toBe(true)
   })
 })

@@ -36,6 +36,7 @@ import {
   type PptxAnimationPreset,
   type PptxMotion,
 } from '@/configs/animation'
+import { groupTriggersIntoSteps } from '@/utils/animationSteps'
 
 export interface TimingBuildResult {
   xml: string
@@ -314,34 +315,16 @@ const buildEffectXml = (anim: EligibleAnimation, nodeType: string): string => {
 }
 
 /**
- * PPTist trigger → 时间线分组
+ * PPTist trigger → 时间线分组。
  *
- *   click    新开一个「点击步」（① 层），播放时停在这里等用户点
- *   auto     在当前点击步里新开一个「子步」（② 层），上一子步结束后自动接上
- *   meantime 并进当前子步，与同组的效果一起播
- *
- * 第一条动画特殊：它没有「上一条」，所以 auto / meantime 都退化成
- * 「进页即播」——点击步照开，只是 stCondLst 用 delay=0 而不是 indefinite。
+ * 规则本身在 `@/utils/animationSteps` —— 网页播放、PPTX 导出、kernel 的出场顺序 lint
+ * 三处共用同一份，这里只负责把下标换回带 preset / spid 的条目。
  */
-const groupIntoSteps = (eligible: EligibleAnimation[]): ClickStep[] => {
-  const steps: ClickStep[] = []
-
-  for (const anim of eligible) {
-    const trigger = anim.animation.trigger
-
-    if (!steps.length) {
-      steps.push({ waitsForClick: trigger === 'click', subSteps: [[anim]] })
-      continue
-    }
-
-    const current = steps[steps.length - 1]
-    if (trigger === 'click') steps.push({ waitsForClick: true, subSteps: [[anim]] })
-    else if (trigger === 'auto') current.subSteps.push([anim])
-    else current.subSteps[current.subSteps.length - 1].push(anim)
-  }
-
-  return steps
-}
+const groupIntoSteps = (eligible: EligibleAnimation[]): ClickStep[] =>
+  groupTriggersIntoSteps(eligible.map(a => a.animation.trigger)).map(step => ({
+    waitsForClick: step.waitsForClick,
+    subSteps: step.subSteps.map(group => group.map(i => eligible[i])),
+  }))
 
 /** 效果在时间线里的位置 → OOXML nodeType */
 const nodeTypeFor = (stepIndex: number, subStepIndex: number, effectIndex: number, waitsForClick: boolean): string => {

@@ -150,9 +150,10 @@ PPTist 自带的文档已并入 [`docs/upstream/`](./upstream/)（`AI_PPT_SCHEMA
 → 每步实时同步画布 → 完成后保存 DB
 ```
 
-**542 个单测**（vitest）：
-assetUrl 19 + spidMap 8 + buildTimingXml 110 + buildTransitionXml 21 + shapeCatalog 38 +
-kernel 53 + kernel-elements 79 + design 30 + layouts 143 + history/baseUrl 41。
+**771 个单测**（vitest，截至 2026-08-19 第十轮）：
+layouts 224 + buildTimingXml 114 + kernel-elements 100 + animation 71 + kernel 53 +
+shapeCatalog 38 + design 30 + history 26 + buildTransitionXml 21 + assetUrl 19 +
+reasoning 18 + baseUrl 15 + budget 15 + animation-reach 11 + animationSteps 8 + spidMap 8。
 
 `npm run build` exit 0（前端），`bunx tsc --noEmit` exit 0（后端），`npx vitest run` 全绿。
 
@@ -646,6 +647,113 @@ steps=2 · 工具调用=3 · reasoning=170 字 · finish=stop · 2.7 秒
 ```
 
 多步工具循环、思考增量、正常收尾三件事同时成立。
+
+### 2026-08-19 第十轮：出场顺序核查与修复（R-39）
+
+症状是肉眼看到的：生成出来的每一页，**信息出现的先后顺序不对**。内容直接就在那儿、
+动画播完才轮到标题、装饰图形抢在正文前面。
+
+R-36 验的是**单个效果**动不动、动得对不对，验完是全绿的 —— 因为「一页里先看到什么、
+后看到什么」根本不由 CSS 决定，它由 `layouts.ts` 里 `b.animate()` 的**调用顺序 + trigger** 决定。
+那是一片从来没有任何检查覆盖过的地方。
+
+#### 怎么查的 —— 把「编排的问题」和「渲染的问题」分开
+
+新增 `npm run layout-order`（`scripts/inspect-layout-order.ts`），逐版式打三张表：
+元素清单（谁挂了动画、谁没挂）· 动画序列（effect / trigger / 时长）· 分步结果。
+
+工具里没有一行是规则的第二实现：元素与动画调 `buildLayout`，网页分步起一个真的
+pinia store 读 `formatedAnimations`，PPTX 分步调 `groupTriggersIntoSteps`，判据调
+`lintSlideAnimationOrder`。它只负责把四者摆到一起。
+
+#### 查出来的：10 个版式里 8 个有问题，分两类
+
+| 版式 | 修前的实际出场序列 | 问题 |
+|---|---|---|
+| title-center | 斜块×2 → eyebrow → **标题** → 强调条 → 副标题 | 装饰独占第 1 步 |
+| title-split | 主色块+分界线 → 装饰环 → eyebrow → **标题** → … | 装饰占掉前 2 步，标题第 4 步才出 |
+| section | 章节号 → 竖线 → **标题** → 正文 | 竖线独占一步 |
+| bullets | 强调条+标题 → 每条要点 | **副标题、3 个序号数字从头就在** |
+| cards | 标题+强调条 → 每张卡的底板+编号 | **副标题、卡内标题正文共 10 个从头就在** |
+| compare | 标题 → 两块底板 → 分界线 | **两栏下划条、标题、正文共 6 个从头就在** |
+| timeline | 标题+强调条 → 轴 → 逐个节点 | ✓ 无 |
+| stat | 光晕+eyebrow → **数字** → 标签+条 → 注释 | 只给必填时光晕独占第 1 步 |
+| quote | 引号 → 引文 → 分隔条+出处 | ✓ 无 |
+| end | 装饰环 → **标题** → 强调条 → 副标题 | 装饰独占第 1 步 |
+
+**两类的表现和处置完全不同**：
+
+- **漏挂动画**（bullets / cards / compare，共 20 个元素）。没挂 ≠ 不动，而是
+  「第一次点击之前它就已经在画布上」——`views/Screen/ScreenElement.vue` 的
+  `needWaitAnimation` 查不到动画就一律 `visible`。cards 最典型：底板 `fade-up`
+  升上来，而卡里的文字早就摆好了。这是**功能缺陷**。
+- **编排写反**（另外 5 个版式）。所有元素都挂了动画，但装饰单独占了标题前面的一步。
+  title-split 最重：主色块 700ms + 装饰环 600ms + eyebrow 400ms，1.7 秒之后标题才出现。
+  这是**编排缺陷**。
+
+#### 修法：装饰跟着它修饰的内容走
+
+`layouts.ts` 顶部记了三条硬规矩（每个元素都挂动画 · 标题领跑 · 装饰不单独占步），
+十个版式逐个按这三条重排。核心手法只有一个：把装饰的 trigger 从 `auto` 改成 `meantime`，
+让它和标题同格出场 —— 封面的「几何开场」观感一点没少，但第一眼看到的是标题。
+
+顺手修的：`Builder.animate` 现在兜底把第一条落地的动画改成 `click`。
+版式里大量元素是条件创建的，`animate(null, …)` 会静默跳过 ——
+领跑的那条被跳过时，整页时间线就会变成「进页自动播一半」。
+「只给必填」的 stat 正是这么暴露出来的。
+
+修完每页的步数反而少了（title-center 5 → 3，title-split 6 → 3）：
+原来一堆装饰各占一步，现在并成一格。
+
+#### 网页与 PPTX 的分步逻辑：一致，且已经钉死
+
+顺带确认的那件事有答案了。分步规则原来有两份实现：
+`src/store/slides.ts` 的 `formatedAnimations`（网页放映）和 `buildTimingXml.ts` 的
+`groupIntoSteps`（PPTX 导出）。**结论是等价的**，但此前没有任何东西在守这一点。
+
+现在规则提到 `src/utils/animationSteps.ts`，导出侧和新的 lint 都用这一份；
+`formatedAnimations` 保持原样（上游 PPTist 的播放路径，动它不值得），
+等价性由 `src/store/__tests__/animationSteps.test.ts` **穷举长度 1~5 的全部 363 条
+trigger 序列**逐格比对，外加「进页是否自动播」两侧结论一致。
+
+记录在案的唯一差异：同一元素在同一格里挂两条动画时网页会去重、PPTX 不会。
+不改 —— 一个元素同一瞬间播两个入场动画本身没有产品含义，版式引擎也产不出这种输入。
+
+#### 这个问题该在哪一层拦住
+
+**主修在 layouts.ts，不在 Reviewer。** 理由是「Generator 有没有可用的修复动作」：
+这些页是 `applyLayout` 生成的，Generator 唯一能做的是**重新套一次版式** ——
+而那会逐字节重现同一个顺序。于是 Reviewer 每轮都报同一条、Generator 每轮都白改一遍，
+Planner→Generator→Reviewer→Generator 的回路永远不收敛。**每次都报同一个问题、每次都得改一遍，
+这正是把它放进 Reviewer 会发生的事。**
+
+lint 规则照样加了（`server/src/agent/animationOrder.ts` → `lintDeckDesign` 第 ④ 条），
+但它守的是**另一条路**：agent 用 `addElement` + `addAnimation` 手工拼时间线时，
+它拼错了、也拼得回来。三条判据和版式引擎那三条是同一份代码。
+
+两个刻意的设计约束：
+
+- **进 `lintDeckDesign`，不进 `lintSlide`。** `lintSlide` 的结果跟在每一次元素改动后面返回，
+  而手工搭页时元素和动画是分两步加的 —— 在那里报「有元素没挂动画」等于每加一个元素催一次。
+  `lintDeck` 是收尾时才跑的，那时候页面已经成型。
+- **applyLayout 的产物必须零告警**，`kernel-elements.test.ts` 里 10 个版式逐个守着。
+  一旦破了，agent 每跑一份 deck 都会收到一条自己修不掉的意见 —— 那才是真正的烧步数。
+
+Reviewer 的 prompt 只加了一条：把 lintDeck 报的出场顺序问题转成 issue，
+并写明「版式页报警是版式引擎的 bug，不要让 Generator 反复重排」。
+
+#### 测试
+
+**661 → 771**。新增 110 条，全部是机器判据（08 号文档第四节「变成机器能判的，才不会退化」）：
+
+| | 条数 | 守什么 |
+|---|---:|---|
+| `layouts.test.ts` · 出场顺序 | 81 | 10 版式 × 2 份内容 × 4 条不变量（覆盖 / 标题领跑 / 装饰不抢跑 / 首条是 click） |
+| `kernel-elements.test.ts` · 出场顺序 lint | 21 | 判据本身 + applyLayout 产物零告警 + 不进 lintSlide |
+| `animationSteps.test.ts` | 8 | 网页 ≡ PPTX，穷举 363 条 trigger 序列 |
+
+**负对照做过**：把新测试挂到修改前的 `layouts.ts` 上，21 条失败，
+和核查工具查出来的 8 个版式一一对应。全绿的检查器和没有检查器是一回事。
 
 ## 待完成
 

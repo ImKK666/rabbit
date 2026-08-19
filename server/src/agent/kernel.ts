@@ -11,6 +11,7 @@ import type {
 } from '@/types/slides'
 import { ANIMATION_DEFS, TURNING_MODES } from '@/configs/animation'
 import { buildShapeGeometry, SHAPE_CATALOG_KEYS } from '@/configs/shapeCatalog'
+import { lintSlideAnimationOrder } from './animationOrder'
 import { buildPalette, CANVAS_WIDTH as DESIGN_W, CANVAS_HEIGHT as DESIGN_H } from './design'
 import {
   buildLayout, validateLayoutContent, isLayoutPattern,
@@ -602,6 +603,16 @@ export const lintDeckDesign = (slides: Slide[]): LintIssue[] => {
         message: '所有动画都是淡入系，观感必然雷同 —— 擦除（wipe）、几何（circle-in / box-in / wedge-in）、分块（blinds-h / checkerboard）都是 PowerPoint 原生效果，导出后照样能播',
       })
     }
+  }
+
+  // ④ 出场顺序：先标题、再内容、装饰不抢跑
+  //
+  // 放在 deck 级而不是 lintSlide 里，是因为 lintSlide 的结果会跟在**每一次**
+  // 元素改动后面返回给 agent。手工搭页时元素和动画是分两步加的，
+  // 中间那一刻必然「有元素没挂动画」——在那里报警等于每加一个元素就催一次，
+  // 白烧步数还催不出正确结果。lintDeck 是收尾时才跑的，那时候页面已经成型。
+  for (const [i, slide] of slides.entries()) {
+    issues.push(...lintSlideAnimationOrder(slide, i))
   }
 
   return issues

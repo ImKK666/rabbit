@@ -19,6 +19,21 @@
  * 每个版式带自己的出场编排（封面用几何、列表用依次、时间轴先画轴线再出节点）。
  * 这是「同一份 deck 里动画有变化」最省力的实现 —— 不同版式天然给出不同动画，
  * agent 不需要额外动脑，也就不会每页都套一个 fade-up。
+ *
+ * ### R-39 · 出场顺序的三条硬规矩
+ *
+ * 编排不只是「挑个好看的效果」，它决定观众**先看到什么、后看到什么**。三条：
+ *
+ * 1. **每个元素都必须挂动画。** 漏挂不是「这个元素不动」，是「它在所有动画之前
+ *    就已经在画布上」—— 见 `views/Screen/ScreenElement.vue` 的 `needWaitAnimation`：
+ *    查不到动画的元素一律 `visible`。一页里漏挂几个文本，观感就是
+ *    「内容直接就在那儿了，然后动画才开始播」。
+ * 2. **标题领跑。** 标题（含它的 eyebrow / 章节号）不能排在正文层元素后面。
+ * 3. **装饰不单独占步。** 斜块 / 光晕 / 装饰环这类纯装饰跟着它修饰的内容一起出场
+ *    （`meantime`），不许自己占一整步排在标题前面 —— 那就是「装饰先出来，正文后出来」。
+ *
+ * 三条都是机器判据，`lintDeckDesign` 和 `layouts.test.ts` 各查一遍；
+ * 逐版式的实际序列用 `npm run layout-order` 打出来看。
  */
 
 import type {
@@ -209,7 +224,14 @@ class Builder {
     return el
   }
 
-  /** 挂动画。第一条用 click，之后按 trigger 串 */
+  /**
+   * 挂动画。
+   *
+   * `el` 为 null 时静默跳过 —— 版式里大量元素是条件创建的（没有 subtitle 就没有
+   * 那个文本框），调用方不必每处都写 if。代价是**领跑的那条也可能被跳过**，
+   * 于是第一条实际落地的动画未必带着调用方写的 `click`：这里兜底改成 click，
+   * 保证整页时间线永远从一个点击步开始，而不是「进页就自动播一半」。
+   */
   animate(el: PPTElement | null, effect: AnimationEffect, trigger: PPTAnimation['trigger'], duration = 600) {
     if (!el) return
     this.animations.push({
@@ -218,7 +240,7 @@ class Builder {
       effect,
       type: 'in',
       duration,
-      trigger,
+      trigger: this.animations.length === 0 ? 'click' : trigger,
     })
   }
 }
@@ -287,11 +309,13 @@ const LAYOUTS: Record<LayoutPattern, LayoutFn> = {
       )
     }
 
-    // 封面用几何效果开场，和内容页的 fade/slide 拉开距离
-    b.animate(stripe, 'wipe-down', 'click', 700)
+    // 封面用几何效果开场，和内容页的 fade/slide 拉开距离。
+    // 但斜块是装饰，不能自己占一步排在标题前面 —— 和标题同步擦入，
+    // 「几何开场」的观感一点不少，标题却是第一个立住的东西
+    b.animate(title, 'circle-in', 'click', 800)
+    b.animate(eyebrow, 'fade', 'meantime', 400)
+    b.animate(stripe, 'wipe-down', 'meantime', 700)
     b.animate(stripe2, 'wipe-up', 'meantime', 700)
-    b.animate(eyebrow, 'fade', 'auto', 400)
-    b.animate(title, 'circle-in', 'auto', 800)
     b.animate(bar, 'wipe', 'auto', 500)
     b.animate(subtitle, 'fade-up', 'auto', 500)
 
@@ -343,13 +367,15 @@ const LAYOUTS: Record<LayoutPattern, LayoutFn> = {
       )
     }
 
-    b.animate(panel, 'wipe-right', 'click', 700)
+    // 主色块是舞台不是内容 —— 和标题同时铺开。装饰环挪到最后，
+    // 跟着副标题一起点出来（原来它在标题之前，等于让一个圆环抢了封面的第一眼）
+    b.animate(title, 'fade-left', 'click', 600)
+    b.animate(eyebrow, 'fade-left', 'meantime', 400)
+    b.animate(panel, 'wipe-right', 'meantime', 700)
     b.animate(panelAccent, 'wipe-down', 'meantime', 700)
-    b.animate(mark, 'zoom-in', 'auto', 600)
-    b.animate(eyebrow, 'fade-left', 'auto', 400)
-    b.animate(title, 'fade-left', 'auto', 600)
     b.animate(bar, 'wipe', 'auto', 400)
     b.animate(subtitle, 'fade-left', 'auto', 500)
+    b.animate(mark, 'zoom-in', 'meantime', 600)
 
     return { background: { type: 'solid', color: p.background }, slideType: 'cover' }
   },
@@ -383,8 +409,10 @@ const LAYOUTS: Record<LayoutPattern, LayoutFn> = {
       )
     }
 
+    // 章节号是这一页的主角（partNumber 属于标题块），它领跑；
+    // 竖线只是号与题之间的分隔，跟着章节号一起画出来，不单独占一步
     b.animate(num, 'wedge-in', 'click', 800)
-    b.animate(rule, 'wipe-down', 'auto', 500)
+    b.animate(rule, 'wipe-down', 'meantime', 500)
     b.animate(title, 'fade-left', 'auto', 500)
     b.animate(subtitle, 'fade-left', 'auto', 400)
 
@@ -405,9 +433,10 @@ const LAYOUTS: Record<LayoutPattern, LayoutFn> = {
     )
 
     let y = SAFE.top + 52 + SPACING.headingGap
+    let subtitle: PPTElement | null = null
     if (c.subtitle) {
       const h = estimateTextHeight(c.subtitle, TYPE_SCALE.body, SAFE.width - 28)
-      b.text({ left: SAFE.left + 28, top: y, width: SAFE.width - 28, height: h }, c.subtitle, {
+      subtitle = b.text({ left: SAFE.left + 28, top: y, width: SAFE.width - 28, height: h }, c.subtitle, {
         size: TYPE_SCALE.body, color: p.textMuted, textType: 'content',
       })
       y += h + SPACING.paragraphGap
@@ -418,15 +447,18 @@ const LAYOUTS: Record<LayoutPattern, LayoutFn> = {
     const rowH = Math.max(48, (available - rowGap * (items.length - 1)) / items.length)
     const markerSize = Math.min(30, rowH * 0.5)
 
-    b.animate(accentBar, 'wipe-down', 'click', 400)
-    b.animate(title, 'fade-left', 'meantime', 500)
+    b.animate(title, 'fade-left', 'click', 500)
+    b.animate(accentBar, 'wipe-down', 'meantime', 400)
+    b.animate(subtitle, 'fade-up', 'auto', 400)
 
     items.forEach((item, i) => {
       const top = y + i * (rowH + rowGap)
       const marker = b.shape('ellipse', { left: SAFE.left, top: top + 4, width: markerSize, height: markerSize }, {
         fill: i === 0 ? p.accent : p.primary, name: `序号 ${i + 1}`,
       })
-      b.text({ left: SAFE.left, top: top + 4, width: markerSize, height: markerSize }, String(i + 1), {
+      // 数字压在圆点上，两者必须同一步出场 —— 圆点飞入而数字早就在那儿，
+      // 看着就是「数字浮在半空等圆点来接」
+      const markerNum = b.text({ left: SAFE.left, top: top + 4, width: markerSize, height: markerSize }, String(i + 1), {
         size: TYPE_SCALE.caption, color: p.onPrimary, bold: true, align: 'center',
         lineHeight: LINE_HEIGHT.tight, vAlign: 'middle', textType: 'itemNumber',
       })
@@ -446,6 +478,7 @@ const LAYOUTS: Record<LayoutPattern, LayoutFn> = {
       }
 
       b.animate(marker, 'zoom-in', i === 0 ? 'click' : 'auto', 400)
+      b.animate(markerNum, 'zoom-in', 'meantime', 400)
       b.animate(head, 'fade-left', 'meantime', 400)
       b.animate(body, 'fade-left', 'meantime', 400)
     })
@@ -467,9 +500,10 @@ const LAYOUTS: Record<LayoutPattern, LayoutFn> = {
     })
 
     let y = SAFE.top + 56 + 10 + SPACING.headingGap
+    let subtitle: PPTElement | null = null
     if (c.subtitle) {
       const h = estimateTextHeight(c.subtitle, TYPE_SCALE.body, SAFE.width)
-      b.text({ left: SAFE.left, top: y, width: SAFE.width, height: h }, c.subtitle, {
+      subtitle = b.text({ left: SAFE.left, top: y, width: SAFE.width, height: h }, c.subtitle, {
         size: TYPE_SCALE.body, color: p.textMuted, textType: 'content',
       })
       y += h + SPACING.paragraphGap
@@ -482,6 +516,7 @@ const LAYOUTS: Record<LayoutPattern, LayoutFn> = {
 
     b.animate(title, 'fade-down', 'click', 500)
     b.animate(bar, 'wipe', 'meantime', 400)
+    b.animate(subtitle, 'fade-up', 'auto', 400)
 
     items.forEach((item, i) => {
       const left = SAFE.left + i * (cardW + gap)
@@ -492,7 +527,7 @@ const LAYOUTS: Record<LayoutPattern, LayoutFn> = {
       const tag = b.shape('pill', { left: left + pad, top: y + pad, width: 44, height: 24 }, {
         fill: i === 0 ? p.accent : p.primary, name: `编号 ${i + 1}`,
       })
-      b.text({ left: left + pad, top: y + pad, width: 44, height: 24 }, String(i + 1).padStart(2, '0'), {
+      const tagNum = b.text({ left: left + pad, top: y + pad, width: 44, height: 24 }, String(i + 1).padStart(2, '0'), {
         size: TYPE_SCALE.caption, color: p.onPrimary, bold: true, align: 'center',
         lineHeight: LINE_HEIGHT.tight, vAlign: 'middle', textType: 'itemNumber',
       })
@@ -500,22 +535,28 @@ const LAYOUTS: Record<LayoutPattern, LayoutFn> = {
       const innerW = cardW - pad * 2
       const headTop = y + pad + 24 + SPACING.paragraphGap
       const headH = estimateTextHeight(item.title ?? '', TYPE_SCALE.itemTitle, innerW, LINE_HEIGHT.heading)
-      b.text({ left: left + pad, top: headTop, width: innerW, height: headH }, item.title ?? '', {
+      const head = b.text({ left: left + pad, top: headTop, width: innerW, height: headH }, item.title ?? '', {
         size: TYPE_SCALE.itemTitle, color: p.text, bold: true, lineHeight: LINE_HEIGHT.heading, textType: 'itemTitle',
       })
 
+      let body: PPTElement | null = null
       if (item.body) {
         const bodyTop = headTop + headH + SPACING.paragraphGap / 2
-        b.text(
+        body = b.text(
           { left: left + pad, top: bodyTop, width: innerW, height: Math.max(24, y + cardH - pad - bodyTop) },
           item.body,
           { size: TYPE_SCALE.body, color: p.textMuted, textType: 'item' },
         )
       }
 
-      // 卡片整块出场：底板先来，内容跟上
-      b.animate(card, i === 0 ? 'fade-up' : 'fade-up', i === 0 ? 'click' : 'auto', 500)
+      // 一张卡片是一个整体：底板、编号、标题、正文同一步出场。
+      // 原来只动底板和编号，卡片里的文字从头到尾都在 —— 底板淡入等于
+      // 「一块板子从早就摆好的文字底下升上来」，恰好是最扎眼的那种穿帮
+      b.animate(card, 'fade-up', i === 0 ? 'click' : 'auto', 500)
       b.animate(tag, 'zoom-in', 'meantime', 400)
+      b.animate(tagNum, 'zoom-in', 'meantime', 400)
+      b.animate(head, 'fade-up', 'meantime', 400)
+      b.animate(body, 'fade-up', 'meantime', 400)
     })
 
     return { background: { type: 'solid', color: p.background }, slideType: 'content' }
@@ -538,38 +579,50 @@ const LAYOUTS: Record<LayoutPattern, LayoutFn> = {
     const fills = [mixHex(p.background, p.primary, 0.14), mixHex(p.background, p.accent, 0.14)]
     const heads = [p.primary, p.accent]
 
-    b.animate(title, 'fade-down', 'click', 500)
-
     const divider = b.line([0, 0], [0, colH], CANVAS_WIDTH / 2, y, p.border, 2)
 
-    items.forEach((item, i) => {
+    // 元素先全部建出来再统一编排 —— 这一页的节奏是「两栏一起动」，
+    // 在 forEach 里边建边挂会把左右两栏的动画交叉排进序列，编排读不出来
+    const cols = items.map((item, i) => {
       const left = SAFE.left + i * (colW + gap)
       const panel = b.shape('roundRect', { left, top: y, width: colW, height: colH }, {
         fill: fills[i], outline: { style: 'solid', width: 1, color: p.border }, name: `对比栏 ${i + 1}`,
       })
 
       const headH = 34
-      b.shape('bar', { left: left + pad, top: y + pad + headH + 4, width: 40, height: 8 }, {
+      const underline = b.shape('bar', { left: left + pad, top: y + pad + headH + 4, width: 40, height: 8 }, {
         fill: heads[i], name: `栏 ${i + 1} 下划条`,
       })
-      b.text({ left: left + pad, top: y + pad, width: colW - pad * 2, height: headH }, item.title ?? '', {
+      const head = b.text({ left: left + pad, top: y + pad, width: colW - pad * 2, height: headH }, item.title ?? '', {
         size: TYPE_SCALE.subtitle, color: heads[i], bold: true, lineHeight: LINE_HEIGHT.heading, textType: 'itemTitle',
       })
 
+      let body: PPTElement | null = null
       if (item.body) {
         const bodyTop = y + pad + headH + 8 + SPACING.headingGap
-        b.text(
+        body = b.text(
           { left: left + pad, top: bodyTop, width: colW - pad * 2, height: Math.max(24, y + colH - pad - bodyTop) },
           item.body,
           { size: TYPE_SCALE.body, color: p.text, textType: 'item' },
         )
       }
 
-      // 左右分别从各自的外侧擦入，对比感来自方向本身
-      b.animate(panel, i === 0 ? 'wipe' : 'wipe-right', i === 0 ? 'click' : 'meantime', 600)
+      return { panel, underline, head, body }
     })
 
-    b.animate(divider, 'wipe-down', 'auto', 500)
+    // 三拍：标题 → 两块底板从各自外侧擦入（对比感来自方向本身）→ 两栏文字一起落
+    b.animate(title, 'fade-down', 'click', 500)
+
+    cols.forEach((col, i) => {
+      b.animate(col.panel, i === 0 ? 'wipe' : 'wipe-right', i === 0 ? 'click' : 'meantime', 600)
+    })
+    b.animate(divider, 'wipe-down', 'meantime', 500)
+
+    cols.forEach((col, i) => {
+      b.animate(col.head, 'fade-down', i === 0 ? 'auto' : 'meantime', 400)
+      b.animate(col.underline, 'wipe', 'meantime', 300)
+      b.animate(col.body, 'fade-up', 'meantime', 400)
+    })
 
     return { background: { type: 'solid', color: p.background }, slideType: 'content' }
   },
@@ -621,7 +674,8 @@ const LAYOUTS: Record<LayoutPattern, LayoutFn> = {
         )
         : null
 
-      b.animate(node, 'zoom-in', i === 0 ? 'auto' : 'auto', 350)
+      // 每个节点自成一步（auto 依次接续），标签与正文跟着自己那个节点一起出
+      b.animate(node, 'zoom-in', 'auto', 350)
       b.animate(label, 'fade-down', 'meantime', 350)
       b.animate(body, 'fade-up', 'meantime', 350)
     })
@@ -677,9 +731,11 @@ const LAYOUTS: Record<LayoutPattern, LayoutFn> = {
       )
     }
 
-    b.animate(halo, 'zoom-in', 'click', 800)
+    // 这一页的主角就是那个数字，它必须是第一眼。
+    // 光晕是它的背景，同步张开；eyebrow 是它的小标签，一起来
+    b.animate(value, 'blinds-v', 'click', 800)
     b.animate(eyebrow, 'fade-left', 'meantime', 400)
-    b.animate(value, 'blinds-v', 'auto', 800)
+    b.animate(halo, 'zoom-in', 'meantime', 800)
     b.animate(label, 'fade-up', 'auto', 400)
     b.animate(barEl, 'wipe', 'meantime', 400)
     b.animate(note, 'fade-up', 'auto', 400)
@@ -750,8 +806,9 @@ const LAYOUTS: Record<LayoutPattern, LayoutFn> = {
       )
       : null
 
-    b.animate(ring, 'spin-in', 'click', 800)
-    b.animate(title, 'scale-in', 'auto', 600)
+    // 装饰环绕着标题转起来，不是绕着一页空白转起来
+    b.animate(title, 'scale-in', 'click', 600)
+    b.animate(ring, 'spin-in', 'meantime', 800)
     b.animate(bar, 'wipe', 'auto', 400)
     b.animate(subtitle, 'fade-up', 'auto', 400)
 

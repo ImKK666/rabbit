@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
-import type { PPTElement, SlideTheme } from '@/types/slides'
+import type { PPTElement, PPTAnimation, SlideTheme } from '@/types/slides'
 import { ANIMATION_DEFS } from '@/configs/animation'
+import { groupTriggersIntoSteps, flattenTriggerSteps } from '@/utils/animationSteps'
 import {
   LAYOUT_PATTERNS, LAYOUT_META, buildLayout, validateLayoutContent,
   isLayoutPattern, describeLayouts,
@@ -59,6 +60,26 @@ const CONTENT: Record<LayoutPattern, LayoutContent> = {
   'stat': { stat: { value: '87%', label: '客户续约率', note: '同比提升 12 个百分点' }, eyebrow: '关键指标' },
   'quote': { quote: '最好的界面是没有界面。', source: '—— 某产品负责人' },
   'end': { title: '谢谢', subtitle: 'hello@example.com' },
+}
+
+/**
+ * 只给必填字段的一份内容。
+ *
+ * 版式里大量元素是条件创建的（没有 subtitle 就没有那个文本框），
+ * 而 `Builder.animate` 遇到 null 会静默跳过 —— 于是「谁领跑」这件事在两种输入下
+ * 可能落到不同的元素身上。出场顺序的检查必须两份都跑。
+ */
+const MINIMAL: Record<LayoutPattern, LayoutContent> = {
+  'title-center': { title: '年度产品回顾' },
+  'title-split': { title: '重新定义协作' },
+  'section': { title: '市场表现' },
+  'bullets': { title: '三个核心结论', items: [{ title: '甲' }, { title: '乙' }] },
+  'cards': { title: '产品能力', items: [{ title: '甲' }, { title: '乙' }] },
+  'compare': { title: '迁移前后', items: [{ title: '甲' }, { title: '乙' }] },
+  'timeline': { title: '演进路线', items: [{ title: '甲' }, { title: '乙' }, { title: '丙' }] },
+  'stat': { stat: { value: '87%' } },
+  'quote': { quote: '少即是多。' },
+  'end': { title: '谢谢' },
 }
 
 const box = (el: PPTElement) =>
@@ -261,6 +282,99 @@ describe('layouts · animation choreography', () => {
     const r = buildLayout('cards', CONTENT.cards, PALETTE, 'x', { animate: false })
     expect(r.animations).toHaveLength(0)
     expect(r.elements.length).toBeGreaterThan(0)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// R-39 · 出场顺序
+//
+// 「一页里先看到什么、后看到什么」由 b.animate 的调用顺序 + trigger 决定，
+// 和效果本身无关。layouts.ts 顶部那三条硬规矩在这里逐版式钉死：
+// 覆盖（不漏挂）· 标题领跑 · 装饰不单独抢跑。
+//
+// 两份内容都要过：给满的和只给必填的。条件元素缺席时领跑的会换人，
+// 修 bug 那次正是「只给必填」的 stat 暴露出装饰单独占一步。
+// ---------------------------------------------------------------------------
+
+describe('layouts · 出场顺序', () => {
+  /** 标题块：eyebrow / 章节号总是紧贴标题，互相之间谁先谁后都算合理 */
+  const TITLE_BLOCK = new Set(['title', 'header', 'partNumber'])
+
+  const textTypeOf = (el: PPTElement) => (el.type === 'text' ? el.textType ?? '' : null)
+
+  /** 元素 id → 它第一次被看到的「格」序号；没挂动画的不在表里 */
+  const cellIndex = (elements: PPTElement[], animations: PPTAnimation[]) => {
+    const cells = flattenTriggerSteps(groupTriggersIntoSteps(animations.map(a => a.trigger)))
+    const at = new Map<string, number>()
+    cells.forEach((cell, i) => {
+      for (const idx of cell) if (!at.has(animations[idx].elId)) at.set(animations[idx].elId, i)
+    })
+    return { cells, at }
+  }
+
+  const cases = LAYOUT_PATTERNS.flatMap(p => [
+    { pattern: p, variant: '内容给满', content: CONTENT[p] },
+    { pattern: p, variant: '只给必填', content: MINIMAL[p] },
+  ])
+
+  // A · 覆盖。漏挂不是「这个元素不动」，是「它在第一次点击之前就已经在画布上」——
+  // views/Screen/ScreenElement.vue 的 needWaitAnimation 查不到动画就一律 visible
+  it.each(cases)('$pattern（$variant）给每一个元素都挂了动画', ({ content, pattern }) => {
+    const { elements, animations } = buildLayout(pattern, content, PALETTE, 't')
+    const { at } = cellIndex(elements, animations)
+    const naked = elements.filter(el => !at.has(el.id))
+    expect(naked.map(el => el.name ?? el.id), pattern).toEqual([])
+  })
+
+  // B · 标题领跑
+  it.each(cases)('$pattern（$variant）标题不排在正文之后', ({ content, pattern }) => {
+    const { elements, animations } = buildLayout(pattern, content, PALETTE, 't')
+    const { at } = cellIndex(elements, animations)
+
+    const title = elements.find(el => textTypeOf(el) === 'title')
+    if (!title) return // quote 这类没有标题元素的版式
+
+    const titleCell = at.get(title.id)!
+    const bodies = elements.filter(el => {
+      const t = textTypeOf(el)
+      return t !== null && !TITLE_BLOCK.has(t) && el.id !== title.id
+    })
+    for (const el of bodies) {
+      expect(at.get(el.id), `${pattern}: ${el.name ?? el.id} 比标题先出场`).toBeGreaterThanOrEqual(titleCell)
+    }
+  })
+
+  // C · 装饰不抢跑
+  it.each(cases)('$pattern（$variant）标题之前没有纯装饰的一格', ({ content, pattern }) => {
+    const { elements, animations } = buildLayout(pattern, content, PALETTE, 't')
+    const { cells, at } = cellIndex(elements, animations)
+    const byId = new Map(elements.map(el => [el.id, el]))
+
+    const title = elements.find(el => textTypeOf(el) === 'title')
+    if (!title) return
+
+    for (let i = 0; i < at.get(title.id)!; i++) {
+      const inCell = cells[i].map(idx => byId.get(animations[idx].elId)!)
+      expect(
+        inCell.some(el => el.type === 'text'),
+        `${pattern}: 第 ${i + 1} 格只有 ${inCell.map(el => el.name ?? el.id).join('、')} 在动，标题还没出来`,
+      ).toBe(true)
+    }
+  })
+
+  // 时间线永远从一个点击步开始 —— 否则进页就自动播掉半页，演讲者没法控制节奏
+  it.each(cases)('$pattern（$variant）第一条动画是 click', ({ content, pattern }) => {
+    const { animations } = buildLayout(pattern, content, PALETTE, 't')
+    expect(animations[0].trigger, pattern).toBe('click')
+    expect(groupTriggersIntoSteps(animations.map(a => a.trigger))[0].waitsForClick).toBe(true)
+  })
+
+  // 挂 null 会被静默跳过，领跑的那条也可能被跳过 —— 兜底逻辑必须真的兜住
+  it('缺了领跑元素时，第一条实际落地的动画仍然是 click', () => {
+    // stat 不给 eyebrow / label / note，只剩数字、光晕、强调条
+    const { animations } = buildLayout('stat', { stat: { value: '1' } }, PALETTE, 't')
+    expect(animations[0].trigger).toBe('click')
+    expect(animations.filter(a => a.trigger === 'click')).toHaveLength(1)
   })
 })
 
