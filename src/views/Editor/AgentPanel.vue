@@ -76,16 +76,14 @@
               <div class="entry-content" v-html="formatContent(entry.content)"></div>
             </div>
 
-            <!-- 思考过程：正在想的时候摊开、想完了收起来，点标题可以再翻开 -->
-            <div class="log-entry reasoning-entry" v-else-if="entry.type === 'reasoning'">
-              <div class="reasoning-header" @click="toggleExpand(idx)">
-                <span class="reasoning-icon" :class="{ live: !entry.done }">✦</span>
-                <span class="reasoning-title">{{ entry.done ? '思考完成' : '正在思考…' }}</span>
-                <span class="reasoning-chars">{{ entry.content.length }} 字</span>
-                <span class="expand-arrow" :class="{ open: isReasoningOpen(entry, idx) }">▸</span>
-              </div>
-              <div class="reasoning-body" v-if="isReasoningOpen(entry, idx)">{{ entry.content }}</div>
-            </div>
+            <!-- 思考过程：正在想的时候摊开、想完了收起来，点标题可以再翻开。
+                 抽成子组件是因为它自己是个滚动容器，要拿到自己那个 DOM 元素 -->
+            <AgentReasoningEntry
+              v-else-if="entry.type === 'reasoning'"
+              :entry="entry"
+              :open="isReasoningOpen(entry, idx)"
+              @toggle="toggleExpand(idx)"
+            />
 
             <!-- 工具调用 -->
             <div class="log-entry tool-entry" v-else-if="entry.type === 'tool'">
@@ -157,11 +155,13 @@
 </template>
 
 <script lang="ts" setup>
-import { ref, reactive, computed, watch, nextTick } from 'vue'
+import { ref, reactive, computed, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useMainStore, useAgentStore } from '@/store'
+import { useStickToBottom } from '@/hooks/useStickToBottom'
 import Button from '@/components/Button.vue'
 import TextArea from '@/components/TextArea.vue'
+import AgentReasoningEntry from './AgentReasoningEntry.vue'
 
 const props = defineProps<{
   deckId: number | null
@@ -330,11 +330,20 @@ const summarizeArgs = (args: Record<string, unknown>): string => {
   return parts.join(', ')
 }
 
-watch(log, () => {
-  nextTick(() => {
-    if (bodyRef.value) bodyRef.value.scrollTop = bodyRef.value.scrollHeight
-  })
-}, { deep: true })
+/**
+ * 外层面板的贴底跟随。
+ *
+ * 原来这里是一行**无条件**的 `scrollTop = scrollHeight`，
+ * 每条日志变化都执行 —— 而 reasoning 增量是几个字符一条、每秒几十条，
+ * 于是用户往上滚会立刻被拽回来，表现是「一滚就回弹」。
+ *
+ * 换成贴底判断之后：滚上去就不再打扰，滚回底部又自动跟随。
+ * 思考块自己那条滚动条由 `AgentReasoningEntry` 各管各的（scroll 事件不冒泡）。
+ *
+ * `deep` 还是要开：reasoning 是往**已有条目**里追加正文，不是 push 新条目，
+ * 不开的话日志长度没变，watch 不会触发。
+ */
+useStickToBottom(bodyRef, log, { deep: true })
 </script>
 
 <style lang="scss" scoped>
@@ -590,54 +599,10 @@ watch(log, () => {
   }
 }
 
-// 思考过程。刻意做得比工具调用更淡 —— 它是过程信息，
-// 不该和「agent 到底改了什么」抢注意力
-.reasoning-entry {
-  background: #faf8ff;
-  border: 1px solid #e9e2f5;
-  overflow: hidden;
-}
-.reasoning-header {
-  padding: 6px 8px;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  cursor: pointer;
-  font-size: 11px;
-
-  &:hover { background: #f3eeff; }
-}
-.reasoning-icon {
-  font-size: 11px;
-  color: #8b6fd4;
-
-  // 只在真的还在想的时候闪，想完了停住 —— 一个不停跳的图标比转圈更烦
-  &.live { animation: rb-reasoning-pulse 1.2s ease-in-out infinite; }
-}
-@keyframes rb-reasoning-pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: .35; }
-}
-.reasoning-title {
-  font-weight: 600;
-  color: #6b5b95;
-  flex-shrink: 0;
-}
-.reasoning-chars {
-  color: #a99cc4;
-  flex: 1;
-}
-.reasoning-body {
-  border-top: 1px solid #e9e2f5;
-  padding: 6px 8px;
-  max-height: 220px;
-  overflow-y: auto;
-  font-size: 11px;
-  line-height: 1.6;
-  color: #6d6a75;
-  white-space: pre-wrap;
-  word-break: break-word;
-}
+// 思考过程的样式全部搬去了 `AgentReasoningEntry.vue`。
+// 不是留一份在这里更保险 —— scoped CSS 只给子组件的**根元素**打父作用域标记，
+// header / body 这些内部节点拿不到，留在这里等于两份样式一份失效、
+// 改的时候永远猜不准该改哪份。
 
 // 工具调用
 .tool-entry {
