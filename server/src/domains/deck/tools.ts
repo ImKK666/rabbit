@@ -372,11 +372,13 @@ ${describeLayouts()}
       animate: z.boolean().optional().describe('是否生成出场动画，默认 true。每个版式的编排各不相同'),
       style: z.enum(['business', 'tech', 'academic', 'vivid']).optional()
         .describe('配色风格。**整份文稿只选一个，每页都传同一个** —— 选哪个是内容决策（学术汇报和产品发布会本来就该长得不一样），具体色值由代码定'),
+      typography: z.enum(['classic', 'scholarly', 'editorial', 'minimal', 'impact', 'warm']).optional()
+        .describe('字体配对。**整份文稿只选一个，每页都传同一个**，规则和 style 完全一样 —— 选哪套字是内容决策（讲书法的稿子和讲芯片的稿子不该用同一套字），display 配哪个 body、每个字体的字宽表由代码定。不传就是 classic'),
       primaryColor: z.string().optional().describe('覆盖本页主色，如 #2f6feb'),
       accentColor: z.string().optional().describe('覆盖本页强调色'),
       backgroundColor: z.string().optional().describe('覆盖本页背景色'),
     }),
-    execute: async ({ slideId, pattern, content, animate, style, primaryColor, accentColor, backgroundColor }) => {
+    execute: async ({ slideId, pattern, content, animate, style, typography, primaryColor, accentColor, backgroundColor }) => {
       const state = accessor.get()
       const paletteOverride = {
         ...(primaryColor ? { primary: primaryColor } : {}),
@@ -385,7 +387,7 @@ ${describeLayouts()}
       }
       return applyMutation(accessor, applyLayoutToSlide(
         state.slides, slideId, state.theme, pattern, content,
-        { animate, style, paletteOverride: Object.keys(paletteOverride).length ? paletteOverride : undefined },
+        { animate, style, typography, paletteOverride: Object.keys(paletteOverride).length ? paletteOverride : undefined },
       ))
     },
   }),

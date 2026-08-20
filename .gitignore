@@ -50,3 +50,8 @@ refs/
 # 这批不是。
 samples/layout-*.png
 samples/layout-text-overflow.json
+
+# char-width.ts.txt 是 `npm run char-width` 顺手吐的源码片段，内容就是
+# design.ts 里那张表，贴完就没用了。同一份数据入库的是 char-width.json ——
+# typography.test.ts 拿它当基准比对源码，那份不能忽略。
+samples/char-width.ts.txt

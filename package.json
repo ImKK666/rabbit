@@ -21,7 +21,8 @@
     "layout-shoot": "node scripts/shoot-layout-sheet.mjs",
     "layout-text": "node scripts/measure-layout-text.mjs",
     "shapes": "vite-node scripts/build-shape-sheet.ts",
-    "render-probe": "node scripts/render-probe.mjs"
+    "render-probe": "node scripts/render-probe.mjs",
+    "char-width": "node scripts/measure-char-width.mjs"
   },
   "homepage": "https://github.com/ImKK666/rabbit",
   "dependencies": {

@@ -341,10 +341,30 @@ describe('layouts · 出场顺序', () => {
   // A · 覆盖。漏挂不是「这个元素不动」，是「它在第一次点击之前就已经在画布上」——
   // views/Screen/ScreenElement.vue 的 needWaitAnimation 查不到动画就一律 visible
   it.each(cases)('$pattern（$variant）给每一个元素都挂了动画', ({ content, pattern }) => {
-    const { elements, animations } = buildLayout(pattern, content, PALETTE, 't')
+    const { elements, animations, signatureIds } = buildLayout(pattern, content, PALETTE, 't')
     const { at } = cellIndex(elements, animations)
-    const naked = elements.filter(el => !at.has(el.id))
+    // signature（配色风格的记号）**刻意**不挂动画：它该在第一次点击之前
+    // 就已经在画布上，而不是跟内容一起飞进来。豁免按 id，不按名字 ——
+    // 见 layouts.ts 的 Builder.signatureIds
+    const exempt = new Set(signatureIds)
+    const naked = elements.filter(el => !at.has(el.id) && !exempt.has(el.id))
     expect(naked.map(el => el.name ?? el.id), pattern).toEqual([])
+  })
+
+  // signature 的豁免不能变成一张万能通行证：它必须真的画在版心之外，
+  // 否则「不挂动画」就会变成「一块压着正文、还提前显形的色块」
+  it.each(cases)('$pattern（$variant）signature 全部落在版心之外', ({ content, pattern }) => {
+    const { elements, signatureIds } = buildLayout(pattern, content, PALETTE, 't')
+    const byId = new Map(elements.map(el => [el.id, el]))
+    for (const id of signatureIds) {
+      const el = byId.get(id)!
+      if (!('left' in el) || !('top' in el)) continue
+      const outside = el.left + el.width <= SAFE.left
+        || el.left >= SAFE.right
+        || el.top + el.height <= SAFE.top
+        || el.top >= SAFE.bottom
+      expect(outside, `${pattern}: ${el.name ?? id} 伸进了版心`).toBe(true)
+    }
   })
 
   // B · 标题领跑

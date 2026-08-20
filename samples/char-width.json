@@ -1,0 +1,146 @@
+[
+  {
+    "font": "__fallback__",
+    "loaded": true,
+    "widths": {
+      "cjk": 1,
+      "cjkPunct": 0.8214285714285714,
+      "upper": 0.6068827311197916,
+      "digit": 0.57680859375,
+      "lower": 0.4529733009708738,
+      "asciiPunct": 0.3404296875,
+      "space": 0.205078125
+    },
+    "digitSpread": 0.173828125,
+    "orphanPunct": 0.38392857142857145,
+    "probeWidth": 5071.875
+  },
+  {
+    "font": "SourceHanSans",
+    "loaded": true,
+    "widths": {
+      "cjk": 0.9999983258928572,
+      "cjkPunct": 0.8214271763392856,
+      "upper": 0.6205436197916666,
+      "digit": 0.5549999999999999,
+      "lower": 0.5106162773058253,
+      "asciiPunct": 0.38855078125000003,
+      "space": 0.223984375
+    },
+    "digitSpread": 0,
+    "orphanPunct": 0.9134319196428571,
+    "probeWidth": 5204.40625
+  },
+  {
+    "font": "SourceHanSerif",
+    "loaded": true,
+    "widths": {
+      "cjk": 0.9999983258928572,
+      "cjkPunct": 0.8214271763392856,
+      "upper": 0.6720463053385416,
+      "digit": 0.54830078125,
+      "lower": 0.5347151850728156,
+      "asciiPunct": 0.38960742187499997,
+      "space": 0.2520703125000001
+    },
+    "digitSpread": 0.09101562499999999,
+    "orphanPunct": 0.8167131696428571,
+    "probeWidth": 5325.03125
+  },
+  {
+    "font": "AlibabaPuHuiTi",
+    "loaded": true,
+    "widths": {
+      "cjk": 0.984,
+      "cjkPunct": 0.9840011160714285,
+      "upper": 0.6035107421875,
+      "digit": 0.575,
+      "lower": 0.5217574332524272,
+      "asciiPunct": 0.40790039062499994,
+      "space": 0.2569921875000001
+    },
+    "digitSpread": 0,
+    "orphanPunct": 0.6048604910714286,
+    "probeWidth": 5209.203125
+  },
+  {
+    "font": "MiSans",
+    "loaded": true,
+    "widths": {
+      "cjk": 1,
+      "cjkPunct": 1,
+      "upper": 0.6380940755208333,
+      "digit": 0.561703125,
+      "lower": 0.49781553398058254,
+      "asciiPunct": 0.364,
+      "space": 0.29000000000000015
+    },
+    "digitSpread": 0.231015625,
+    "orphanPunct": 0.5371428571428571,
+    "probeWidth": 5272.8125
+  },
+  {
+    "font": "DeYiHei",
+    "loaded": true,
+    "widths": {
+      "cjk": 0.8,
+      "cjkPunct": 0.7999999999999999,
+      "upper": 0.46386474609375,
+      "digit": 0.42380078125000004,
+      "lower": 0.38551463895631066,
+      "asciiPunct": 0.32105078125,
+      "space": 0.19000000000000006
+    },
+    "digitSpread": 0.203984375,
+    "orphanPunct": 0.4332868303571429,
+    "probeWidth": 4015.9999999999995
+  },
+  {
+    "font": "LXGWNeoZhiSong",
+    "loaded": true,
+    "widths": {
+      "cjk": 1,
+      "cjkPunct": 0.8258928571428571,
+      "upper": 0.68841552734375,
+      "digit": 0.6181640625,
+      "lower": 0.5119937044902912,
+      "asciiPunct": 0.3646484375,
+      "space": 0.2900390625
+    },
+    "digitSpread": 0,
+    "orphanPunct": 0.5564341517857143,
+    "probeWidth": 5386.921875
+  },
+  {
+    "font": "LXGWWenKai",
+    "loaded": true,
+    "widths": {
+      "cjk": 1,
+      "cjkPunct": 1,
+      "upper": 0.6462862141927083,
+      "digit": 0.60009765625,
+      "lower": 0.502635770631068,
+      "asciiPunct": 0.407568359375,
+      "space": 0.3501171875
+    },
+    "digitSpread": 0,
+    "orphanPunct": 0.5357868303571428,
+    "probeWidth": 5203.71875
+  },
+  {
+    "font": "LXGWNeoXiHei",
+    "loaded": true,
+    "widths": {
+      "cjk": 1,
+      "cjkPunct": 0.8258928571428571,
+      "upper": 0.6463167317708333,
+      "digit": 0.6298828125,
+      "lower": 0.5061013349514563,
+      "asciiPunct": 0.38708593750000003,
+      "space": 0.2700390625
+    },
+    "digitSpread": 0,
+    "orphanPunct": 0.55015625,
+    "probeWidth": 5365.4375
+  }
+]

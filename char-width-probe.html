@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<!--
+  逐字体字宽探针（开发工具）—— 见 scripts/char-width-probe.ts 头注释。
+
+  放在仓库根目录是因为 vite dev server 按根目录解析 HTML 入口。
+  **不会进生产构建**：`vite build` 未配 rollupOptions.input，只用 index.html 一个入口。
+-->
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Rabbit · 字宽探针</title>
+    <style>
+      body {
+        margin: 0;
+        padding: 24px 32px 60px;
+        background: #eceef2;
+        font: 13px/1.7 ui-monospace, SFMono-Regular, Menlo, monospace;
+        color: #1a1d24;
+      }
+      h1 { font-size: 18px; margin: 0 0 4px; font-family: system-ui, sans-serif; }
+      p.lead { margin: 0 0 20px; color: #5b6472; font-family: system-ui, sans-serif; max-width: 68ch; }
+      #out { white-space: pre; background: #fff; padding: 16px; border-radius: 6px; overflow-x: auto; }
+    </style>
+  </head>
+  <body>
+    <h1>逐字体字宽探针</h1>
+    <p class="lead">
+      每一类字符给一个频率加权的样本串，量总宽除以字符数得到 em。
+      第一行 <code>__fallback__</code> 是 <code>$textElementFont</code> 系统栈 ——
+      它是量法自证的参照：量出来必须和 <code>design.ts</code> 现有的 CHAR_WIDTH 对得上。
+    </p>
+    <div id="out">量测中…（8 个字体约 28MB，首次要等几秒）</div>
+    <script type="module" src="/scripts/char-width-probe.ts"></script>
+  </body>
+</html>

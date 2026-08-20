@@ -833,6 +833,19 @@ export interface Slide {
    * PPTist 本体不读它，导出也不带它，纯粹是编辑期元数据。
    */
   layout?: string
+  /**
+   * R-53: 本页 applyLayout 时选的配色风格与字体配对
+   *（`server/src/domains/deck/design.ts` 的 `PaletteStyle` / `TypographyPair`）。
+   *
+   * 和 `layout` 同一性质的编辑期元数据，写入方也是 applyLayout。
+   * **存在的理由只有一个：让 lint 看得见它们。** prompt 里写着
+   * 「整份文稿只选一个，每页都传同一个」，而在这两个字段落盘之前，
+   * 这句话没有任何东西在验 —— agent 每页换一个配色，没人会知道。
+   *
+   * PPTist 本体不读，导出也不带。
+   */
+  paletteStyle?: string
+  typography?: string
 }
 
 /**
