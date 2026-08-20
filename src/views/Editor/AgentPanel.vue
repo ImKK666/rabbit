@@ -201,6 +201,13 @@ const expanded = ref(true)
 const promptText = ref('')
 const bodyRef = ref<HTMLElement>()
 const expandedEntries = reactive(new Set<number>())
+/**
+ * 思考组的手动开关。**必须和 expandedEntries 声明在一起、且在下面那个
+ * `immediate: true` 的 watch 之前** —— 那个 watch 在 setup 期间就会跑，
+ * 声明晚一步就是暂时性死区，组件直接挂掉、整页白屏。
+ * 实测撞过一次；`vue-tsc` 查不出来，单测也覆盖不到。
+ */
+const expandedGroups = reactive(new Set<number>())
 const convListOpen = ref(false)
 
 const activeTitle = computed(() => {
@@ -344,7 +351,6 @@ const isGroupLive = (start: number) =>
  * 和思考小块同一套规矩：**正在进行的摊开，结束了收起来**。
  * expandedGroups 当手动开关用，按一下就是把默认翻过来。
  */
-const expandedGroups = reactive(new Set<number>())
 const isGroupOpen = (start: number) =>
   isGroupLive(start) ? !expandedGroups.has(start) : expandedGroups.has(start)
 
