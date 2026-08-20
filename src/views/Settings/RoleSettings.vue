@@ -27,11 +27,10 @@ import { ref, reactive, computed, onMounted } from 'vue'
 import { adminApi } from '@/services'
 import Select from '@/components/Select.vue'
 
+// R-51：四个角色合成一个。这一维保留是因为第二个域（research）
+// 接进来时要按域配不同的模型，见 server/src/db/schema.ts 的 AgentRole
 const ROLES = [
-  { key: 'planner', name: '规划者', desc: '分析用户意图，制定执行计划' },
-  { key: 'generator', name: '生成者', desc: '生成和修改演示文稿内容' },
-  { key: 'reviewer', name: '审查者', desc: '校验排版和内容质量' },
-  { key: 'editor', name: '编辑者', desc: '处理局部元素的调整' },
+  { key: 'deck', name: '演示文稿', desc: '生成、改造、局部调整演示文稿' },
 ]
 
 interface ModelConfig {
@@ -41,9 +40,7 @@ interface ModelConfig {
 }
 
 const models = ref<ModelConfig[]>([])
-const defaults = reactive<Record<string, number | string>>({
-  planner: '', generator: '', reviewer: '', editor: '',
-})
+const defaults = reactive<Record<string, number | string>>({ deck: '' })
 
 const modelOptions = computed(() =>
   models.value.filter(m => m.enabled).map(m => ({ label: m.displayName, value: m.id }))
@@ -68,7 +65,9 @@ const handleSetDefault = async (role: string, modelConfigId: number) => {
   try {
     await adminApi.setRoleDefault(role, modelConfigId)
   }
-  catch (err: any) { alert(err?.response?.data?.error || '设置失败') }
+  catch (err: any) {
+    alert(err?.response?.data?.error || '设置失败') 
+  }
 }
 
 onMounted(load)

@@ -3,40 +3,50 @@
  *
  * 从 `agent/orchestrator.ts` 整体搬过来（A4b，见 docs/11-agent-roadmap.md）。
  * 搬的理由是分层：这些代码全部是 deck 专属的 —— 剧本、deck 持久化、
- * 会话与消息落库、角色循环 —— 放在装配层里，`domains/deck/` 反而没有 deck 的编排。
+ * 会话与消息落库 —— 放在装配层里，`domains/deck/` 反而没有 deck 的编排。
  *
  * 留在装配层的只有两样：**任务注册表实例**（跨域共享）和**占坑 / 注销**。
  * 那是「同一份 deck 同时只跑一个任务」这条并发约束，与域无关。
  *
- * ── 为什么没有顺手抽一个泛型的 runTask 骨架 ──
- * 抽骨架要先知道「第二个域会共用什么」，而 research 域还不存在，
- * 现在抽等于照着想象划接缝。08-expressiveness 第九节的教训是
- * 别为想象中的需求建抽象。等 research 落地、能看见真正共用的部分再抽。
+ * ── R-50：从「四角色直线剧本」换成「一个 agent 的单轮循环」 ──
+ * 见 docs/12-single-agent.md。原来这里是
+ *   有选中元素 → Editor；否则 Planner → Generator → Reviewer →（不过）Generator 修正
+ * 三到四次冷启动，三个角色对同一份 deck 各读一次，prompt cache 一个 token 都命不中。
+ *
+ * 现在是一次 `runTurn`：输入是**完整的消息历史**，输出原样追加回同一份历史。
+ * 这就是「一问一答带上下文」的全部机制，两个参照项目
+ * （Claude Code 的 `queryLoop`、BitFun 的 round 循环）收敛到的是同一个形状。
+ *
+ * **这一版仍然用 generator 那份 prompt，一个字没改。** 刻意的：
+ * 先只换编排，才验得出「少了 Planner / Reviewer 之后质量掉没掉」——
+ * 和 prompt 改写混在一起就查不出是谁的锅了。合并 prompt 是下一步（阶段 C）。
  *
  * ── 会话为什么留在 deck 域 ──
  * `conversations.deckId` 是指向 `decks` 的硬外键，会话在**表结构层面**就绑死了 deck。
  * 真正解耦要一次数据迁移（加 `workspace_kind`，默认 `'deck'`），
  * 而在第二个域真的需要会话之前，那次迁移是纯粹的风险。
- * 迁移发生时改的是 schema 和这里的查询，`runtime/` 不受影响 —— 判据 2 仍然成立。
  */
 
-import { streamText, type LanguageModel } from 'ai'
+import { streamText, type LanguageModel, type CoreMessage } from 'ai'
 import { eq, and, desc } from 'drizzle-orm'
 import type { ServerWebSocket } from 'bun'
 import type { Slide, SlideTheme } from '@/types/slides'
 import { db } from '@server/db'
-import { decks, conversations, messages } from '@server/db/schema'
-import type { AgentRole } from '@server/db/schema'
+import { decks, conversations, messages, type AgentRole } from '@server/db/schema'
 import type { WsUserData, ServerMessage } from '@server/ws/handler'
 // 域 → runtime 是允许的方向（反过来不行，由 runtime/__tests__/boundary.test.ts 守）
 import { resolveMaxSteps } from '@server/runtime/budget'
+import { makeConversationTitle } from '@server/runtime/history'
 import {
-  toHistoryTurns,
-  makeConversationTitle,
-  serializeToolCall,
-  type HistoryTurn,
-} from '@server/runtime/history'
+  toModelMessages,
+  serializeBlocks,
+  type ModelMessage,
+  type StoredRow,
+  type AssistantBlock,
+  type ToolResultBlock,
+} from '@server/runtime/turnMemory'
 import { resolveModelForRole, type ResolvedModel } from '@server/runtime/llm'
+import { createReasoningRelay } from '@server/runtime/reasoningRelay'
 import { imageCapabilityAvailable } from '@server/runtime/assetConfig'
 import { createAgentTools, type DeckState } from './tools'
 import { createAssetTools, type AssetTools } from './assetTools'
@@ -52,27 +62,35 @@ const DEFAULT_THEME: SlideTheme = {
   outline: { width: 2, color: '#525252', style: 'solid' },
 }
 
-const ROLE_LABELS: Record<AgentRole, string> = {
-  planner: 'Planner 规划者',
-  generator: 'Generator 生成者',
-  reviewer: 'Reviewer 审查者',
-  editor: 'Editor 编辑者',
-}
+/** 这个域唯一的 agent */
+const AGENT_ROLE: AgentRole = 'deck'
+const AGENT_LABEL = 'Agent'
 
 /**
- * 步数上限触顶后最多再续几轮。
+ * 触顶之后的收口提示。**抄 BitFun 的 `FINALIZE_AFTER_MAX_ROUNDS_REMINDER`**
+ * （`execution_engine.rs:534`）。
  *
- * 默认上限已经调到实际碰不到的量级（见 budget.ts），所以这个循环正常情况下
- * 一轮都不会跑 —— 它是给「有人把 AGENT_MAX_STEPS 调回小数字」和
- * 「真的遇到超长任务」兜底的。
+ * 原来的做法是「带着当前进度续作，最多 3 轮，每轮不传 history」。
+ * 那个做法有两个前提，这一版都没了：
+ *   - 「续作不传 history」靠的是「要接着做的信息全在 deck 里」。
+ *     一问一答之后 history 就是真的历史，清零重来等于把对话删了
+ *   - 512 步还没做完，绝大多数情况是**陷在重试里**，不是任务真有那么大。
+ *     让它再跑 3×512 步只是把钱烧得更久
  *
- * 不设成无限：截断反复发生通常意味着 agent 陷在重试里，
- * 让它无限续下去只是把钱烧得更久。
+ * 所以改成：最后跑一轮**不给任何工具**的，把话说完再停。
+ * 用户看到的是一个交代得清楚的半成品，而不是一句「达到上限」然后没有下文；
+ * 想接着做，再发一句「接着做完」就是新的一轮 —— 而这一轮**看得见上一轮的全部历史**。
  */
-const MAX_CONTINUATIONS = 3
-
-interface StepToolCall { toolCallId: string, toolName: string, args: Record<string, unknown> }
-interface StepToolResult { toolCallId: string, result: unknown }
+const FINALIZE_PROMPT = [
+  '本轮已经达到步数上限，不能再调用任何工具了（调了也会失败）。',
+  '',
+  '现在只做一件事：**给用户一个最终回答**。',
+  '- 说清楚已经做完了什么（第几页、用了什么版式）',
+  '- 说清楚还差什么、为什么差',
+  '- 不要重新规划，也不要说「我将要……」——你已经不能动手了',
+  '',
+  '用户想接着做的话，会再发一句话，那时你看得到这一轮的全部记录。',
+].join('\n')
 
 const send = (ws: ServerWebSocket<WsUserData>, msg: ServerMessage) => {
   ws.send(JSON.stringify(msg))
@@ -81,14 +99,16 @@ const send = (ws: ServerWebSocket<WsUserData>, msg: ServerMessage) => {
 /**
  * 角色循环拿到的下行通道。
  *
- * `runRole` 原来直接收 `ws`，但它对 ws 的用法**只有发消息**一种；
- * 换成通道之后角色循环不再知道 WebSocket 的存在，
- * 取消回收与落库这两件事也就有了唯一的入口 —— 想绕过它们得先改签名。
+ * `runTurn` 对 ws 的用法**只有发消息**一种；换成通道之后它不再知道
+ * WebSocket 的存在，取消回收与落库这两件事也就有了唯一的入口。
  *
  * 只取 `emit` / `commit` 两个能力：`drain` / `stats` 是收尾时才用的，
- * 给角色循环看见只会多出「谁该负责排干」的歧义。
+ * 给循环看见只会多出「谁该负责排干」的歧义。
  */
 type TaskChannel = Pick<DeckChannel, 'emit' | 'commit'>
+
+interface StepToolCall { toolCallId: string, toolName: string, args: Record<string, unknown> }
+interface StepToolResult { toolCallId: string, result: unknown }
 
 const loadDeckState = async (deckId: number, userId: number): Promise<{ deckRow: typeof decks.$inferSelect, state: DeckState } | null> => {
   const row = await db.select().from(decks)
@@ -123,6 +143,68 @@ const saveMessage = async (
 }
 
 /**
+ * 落一条**模型消息**。
+ *
+ * `blocksJson` 存的是模型视角的完整 content 数组，直接来自
+ * `streamText` 每一步的 `response.messages` —— 也就是 SDK 内部
+ * `toResponseMessages` 的产物，一个字节都不重新拼。
+ *
+ * **这是判据 1「从库里还原的消息与 `response.messages` 逐块相等」
+ * 之所以结构上成立、而不是靠我逐个字段维护的原因。** 自己拼一遍
+ * 迟早会和 SDK 的形状漂开，而漂开时没有任何东西会报错。
+ *
+ * `content` 列仍然只装给人看的那一份（面板渲染、会话标题、分叉锚点都读它），
+ * 语义没变。
+ */
+const saveModelMessage = async (
+  conversationId: number,
+  msg: CoreMessage,
+  modelConfigId: number,
+) => {
+  if (msg.role !== 'assistant' && msg.role !== 'tool') return
+  const blocks = Array.isArray(msg.content) ? msg.content : [{ type: 'text', text: msg.content }]
+  if (blocks.length === 0) return
+
+  await db.insert(messages).values({
+    conversationId,
+    role: msg.role,
+    content: humanSummary(msg.role, blocks as AssistantBlock[] | ToolResultBlock[]),
+    blocksJson: serializeBlocks(blocks as AssistantBlock[] | ToolResultBlock[]),
+    modelConfigId,
+  })
+}
+
+/**
+ * 给人看的那一份。面板重开会话时读的是这一列。
+ *
+ * 工具调用的**参数在 assistant 消息里，结果在 tool 消息里** ——
+ * 它们本来就是两条模型消息，面板要显示成一条就得自己配对（见前端 `hydrateLog`）。
+ * 这里各存各的，不在存储层提前合并：合并了就和 `blocksJson` 对不上，
+ * 而对得上正是这一版的全部意义。
+ */
+const humanSummary = (
+  role: 'assistant' | 'tool',
+  blocks: AssistantBlock[] | ToolResultBlock[],
+): string => {
+  if (role === 'tool') {
+    return JSON.stringify((blocks as ToolResultBlock[]).map(b => ({
+      tool: b.toolName,
+      result: typeof b.result === 'string' ? b.result : JSON.stringify(b.result),
+    })))
+  }
+  const text = (blocks as AssistantBlock[])
+    .filter((b): b is Extract<AssistantBlock, { type: 'text' }> => b.type === 'text')
+    .map(b => b.text)
+    .join('')
+  if (text) return text
+  const calls = (blocks as AssistantBlock[]).filter(b => b.type === 'tool-call')
+  return JSON.stringify(calls.map(c => ({
+    tool: (c as { toolName: string }).toolName,
+    args: (c as { args: unknown }).args,
+  })))
+}
+
+/**
  * 收尾动作的统一包装：**失败只记日志，绝不向上抛**。
  *
  * 这条是实测撞出来的。任务跑着的时候演示文稿被删掉（另一个标签页、
@@ -131,12 +213,9 @@ const saveMessage = async (
  * `runAgentTask` 是 fire-and-forget 调的（`ws/handler.ts`），
  * 未捕获的 rejection 直接把**整个后端进程**带走，所有用户的所有任务一起死。
  *
- * 触发面不止「删 deck」：磁盘满、库锁超时，任何让写库失败的东西都算。
- *
  * **只有收尾动作能这么吞。** 主路径上的写库失败必须往上抛
  * （见 `runtime/commit.ts` ③：吞掉的话工具会回一句 ok，
- * agent 不会重试，那次修改从此谁也不知道丢了）。收尾不一样 ——
- * 它记的是日志和时间戳，丢了不影响任何人手里的数据。
+ * agent 不会重试，那次修改从此谁也不知道丢了）。
  */
 const settle = async (what: string, run: () => Promise<unknown>) => {
   try {
@@ -186,25 +265,38 @@ const touchConversation = async (conversationId: number) => {
     .where(eq(conversations.id, conversationId))
 }
 
-/** 带进 LLM 的历史条数上限 */
-const HISTORY_LIMIT = 24
+/**
+ * 从库里取多少行。
+ *
+ * 一行现在是**一条模型消息**（不再是「一条给人看的日志」），一轮任务
+ * 动辄产生上百条，所以旧的 24 条上限在这个单位下没有意义了。
+ *
+ * 真正的裁剪由 `toModelMessages` 的字符预算做，而且它**按整轮丢**；
+ * 这里的 400 只是别把一条几年的会话整个读进内存的兜底。
+ * 取的是最后 400 条，可能从半轮中间切开 —— `dropLeadingNonUser`
+ * 和配对修复会把切口处理干净。
+ */
+const ROW_LIMIT = 400
 
-/** 取本 deck 的对话历史，作为 agent 的记忆带进下一轮 */
-const loadHistory = async (conversationId: number): Promise<HistoryTurn[]> => {
+const loadRows = async (conversationId: number): Promise<StoredRow[]> => {
   const rows = await db.select().from(messages)
     .where(eq(messages.conversationId, conversationId))
     .orderBy(desc(messages.id))
-    .limit(HISTORY_LIMIT)
+    .limit(ROW_LIMIT)
     .all()
 
-  return toHistoryTurns(rows.reverse())
+  return rows.reverse().map(r => ({
+    role: r.role,
+    content: r.content,
+    blocksJson: r.blocksJson,
+    modelConfigId: r.modelConfigId,
+  }))
 }
 
 /**
  * 给模型调用的异常补上「是哪个角色、哪个 provider、哪个模型、哪个 baseUrl」。
  *
- * 上游 SDK 对 404 只抛一句 "Not Found"，落到用户界面上完全无从排查
- * （04-changes.md 待确认里那条 Reviewer "Not Found" 就是这么来的）。
+ * 上游 SDK 对 404 只抛一句 "Not Found"，落到用户界面上完全无从排查。
  */
 const withModelContext = async <T>(
   role: AgentRole,
@@ -227,10 +319,13 @@ const withModelContext = async <T>(
 }
 
 /**
- * 把选中元素的完整数据直接写进 prompt。
+ * 把选中元素的完整数据写成一条**本轮附加消息**。
  *
  * 之前只传 id，Editor 必须先 findElements / getSlide 才知道自己在改什么 ——
  * 一次局部微调白白多两轮 LLM 往返。
+ *
+ * **不落库**：这是选中那一刻的快照，下一轮它就过期了。
+ * 存进历史的话，agent 下次会拿着一份旧坐标去「改」一个已经被移动过的元素。
  */
 const describeSelection = (state: DeckState, selectedElementIds: string[]): string => {
   const lines: string[] = []
@@ -244,140 +339,160 @@ const describeSelection = (state: DeckState, selectedElementIds: string[]): stri
     const index = state.slides.indexOf(slide)
     lines.push(`- 位于第 ${index + 1} 页（slideId=${slide.id}）：\n${JSON.stringify(el, null, 2)}`)
   }
-  return `用户在画布上选中了以下元素，这是它们此刻的完整数据（不必再查）：\n${lines.join('\n')}`
+  return `（本轮附加信息，不属于对话历史）用户在画布上选中了以下元素，`
+    + `这是它们**此刻**的完整数据，直接用，不必再查：\n${lines.join('\n')}`
 }
 
-const runRole = async (
-  role: AgentRole,
-  userId: number,
-  prompt: string,
-  state: DeckState,
-  channel: TaskChannel,
-  signal: AbortSignal,
-  history: HistoryTurn[] = [],
-  conversationId?: number,
+interface TurnInput {
+  userId: number
+  conversationId: number
+  state: DeckState
+  channel: TaskChannel
+  signal: AbortSignal
+  assetTools: AssetTools | null
+  /** 本轮附加、不落库的消息（选中元素快照 / 收口提示） */
+  extra?: string
+  /** 收口轮：不给任何工具，只让它把话说完 */
+  toolless?: boolean
+}
+
+interface TurnResult {
+  text: string
+  state: DeckState
+  truncated: boolean
+}
+
+/**
+ * 跑一轮。
+ *
+ * 输入是**库里的完整历史**（含刚存进去的这句用户输入），
+ * 输出的每一条模型消息原样追加回同一份历史 —— 下一轮它们就是上下文。
+ */
+const runTurn = async ({
+  userId, conversationId, state, channel, signal, assetTools, extra, toolless,
+}: TurnInput): Promise<TurnResult> => {
+  channel.emit({ type: 'agent.status', status: 'thinking', message: `${AGENT_LABEL} 正在思考...` })
+
   /**
-   * 图片工具。整份任务只建一次（在 `runDeckTask` 里），因为它要拿 deckId 和通道。
-   * **`null` 表示这次不给** —— 没配对象存储 / 两个取图开关都关着时，
-   * 整组工具不进模型的工具表，而不是留一个会回「未配置」的工具浪费步数。
+   * 思考回传器，**一轮一个**。
+   *
+   * 「思考中调用工具」在 OpenAI wire 格式的 provider 上全靠它：
+   * `@ai-sdk/openai-compatible` 的 converter 会把思考块丢掉，
+   * 模型于是每一步都在重新推导。它在 fetch 那一层按 toolCallId 把思考补回去。
+   * 理由和实测见 `runtime/reasoningRelay.ts` 的头注释。
+   *
+   * 不做成全局的：键是 toolCallId，跨任务共用一张表只会无限长，
+   * 而一轮之内的那几十条正好够用。
    */
-  assetTools: AssetTools | null = null,
-): Promise<{ text: string, state: DeckState, truncated: boolean }> => {
-  const label = ROLE_LABELS[role]
-  channel.emit({ type: 'agent.status', status: 'thinking', message: `${label} 正在思考...` })
-  channel.emit({ type: 'agent.text', role, content: `--- ${label} 开始工作 ---` })
+  const relay = createReasoningRelay()
 
   let resolved: ResolvedModel
   try {
-    resolved = await resolveModelForRole(role, userId)
+    resolved = await resolveModelForRole(AGENT_ROLE, userId, relay)
     const { model: m } = resolved
-    console.log(`[agent] ${role} → model resolved: ${typeof m === 'string' ? m : m.modelId}`)
+    console.log(`[agent] model resolved: ${typeof m === 'string' ? m : m.modelId} (config #${resolved.configId})`)
   }
   catch (err) {
-    const msg = err instanceof Error ? err.message : '模型解析失败'
-    console.error(`[agent] ${role} model resolution failed:`, msg)
+    console.error('[agent] model resolution failed:', err instanceof Error ? err.message : err)
     throw err
   }
 
+  // 历史必须在拿到 configId **之后**读 —— 剥不剥思考块取决于它是不是同一个配置
+  const history = toModelMessages(await loadRows(conversationId), {
+    modelConfigId: resolved.configId,
+  })
+  // 先从还原出来的历史里学一遍 —— 上一轮那些思考也要跟着回传，
+  // 否则「接着做完」这种续问又回到从零推导
+  relay.learn(history)
+
+  const messagesForModel: ModelMessage[] = extra
+    ? [...history, { role: 'user', content: extra }]
+    : history
+
   const accessor = {
     get: () => state,
-    set: (newState: DeckState) => { state = newState },
-    // 每一次成功的 mutation 都在这里落库 + 推画布。
-    // 原来只推画布，库要等剧本最后那一次 saveDeckState —— 中途失败就是
-    // 「画布有、库里没有」，刷新即丢。现在两件事合成一次，不可能再错开
+    set: (newState: DeckState) => {
+      state = newState 
+    },
+    // 每一次成功的 mutation 都在这里落库 + 推画布。合成一次之后
+    // 不可能再出现「画布有、库里没有」，刷新即丢
     onChange: () => channel.commit(state),
   }
   // deck 工具和图片工具分开建、在这里合并 —— **`tools.ts` 绝不能 import
   // `assetTools.ts`**：后者经 `db/index.ts` 拉 `bun:sqlite`，
   // 一旦让 tools.ts 依赖它，kernel / toolCommit / toolGroups 那几个测试
-  // 会全部在 vitest 里加载失败。合并放在这里，因为 pipeline 本来就碰库
+  // 会全部在 vitest 里加载失败
   const allTools = { ...createAgentTools(accessor), ...(assetTools ?? {}) }
-  const tools = getToolSubset(role, allTools, { assets: !!assetTools })
-  const system = getSystemPrompt(role)
+  const tools = toolless ? undefined : getToolSubset(AGENT_ROLE, allTools, { assets: !!assetTools })
+  const system = getSystemPrompt(AGENT_ROLE)
+  const maxSteps = toolless ? 1 : resolveMaxSteps(AGENT_ROLE)
 
-  const maxSteps = resolveMaxSteps(role)
-  console.log(`[agent] ${role} → calling streamText (maxSteps=${maxSteps}, history=${history.length})...`)
+  console.log(`[agent] streamText maxSteps=${maxSteps} history=${messagesForModel.length} toolless=${!!toolless}`)
 
   // 思考块是否处于「打开」状态 —— 只有真收到过 reasoning 才需要在步末发收拢信号。
   // 不开 reasoning 的模型一条都不会发，前端也就不会画出一个空思考块
   let reasoningOpen = false
 
   const { model, providerOptions } = resolved
-  const result = await withModelContext(role, model, async () => {
+  const result = await withModelContext(AGENT_ROLE, model, async () => {
     const stream = streamText({
       model,
-      // 让模型把思考带回来。哪个 provider 需要什么参数见 reasoning.ts；
-      // 不需要的 provider 这里是空对象，等于没传
+      // 让模型把思考带回来。哪个 provider 需要什么参数见 reasoning.ts
       providerOptions,
       system,
-      messages: [...history, { role: 'user', content: prompt }],
+      messages: messagesForModel as CoreMessage[],
       tools,
       maxSteps,
       abortSignal: signal,
-      onStepFinish: async ({ text, toolCalls, toolResults }) => {
+      onStepFinish: async (step) => {
         if (reasoningOpen) {
-          channel.emit({ type: 'agent.reasoning.done', role })
+          channel.emit({ type: 'agent.reasoning.done', role: AGENT_ROLE })
           reasoningOpen = false
         }
 
-        if (text) {
-          channel.emit({ type: 'agent.text', role, content: text })
+        if (step.text) {
+          channel.emit({ type: 'agent.text', role: AGENT_ROLE, content: step.text })
         }
 
-        // tools 是 Partial<AgentTools>（角色只拿工具子集），
-        // SDK 因此把这两个数组的元素推断成 never —— 在这里收窄回可用形状
-        const calls = (toolCalls ?? []) as unknown as StepToolCall[]
-        const results = (toolResults ?? []) as unknown as StepToolResult[]
+        // tools 是 `Partial<DeckTools>`（角色只拿工具子集），SDK 因此把这两个
+        // 数组的元素推断成 `never` —— 在这里收窄回可用形状
+        const calls = (step.toolCalls ?? []) as unknown as StepToolCall[]
+        const results = (step.toolResults ?? []) as unknown as StepToolResult[]
 
         for (const tc of calls) {
-          const toolResult = results.find(tr => tr.toolCallId === tc.toolCallId)
-          let resultStr: string | undefined
-          if (toolResult) {
-            try {
-              const parsed = typeof toolResult.result === 'string'
-                ? JSON.parse(toolResult.result)
-                : toolResult.result
-              resultStr = JSON.stringify(parsed, null, 2)
-            }
-            catch {
-              resultStr = String(toolResult.result)
-            }
-          }
-
+          const hit = results.find(tr => tr.toolCallId === tc.toolCallId)
           channel.emit({
             type: 'agent.tool',
             tool: tc.toolName,
             args: tc.args,
-            result: resultStr,
+            result: hit === undefined
+              ? undefined
+              : typeof hit.result === 'string' ? hit.result : JSON.stringify(hit.result, null, 2),
           })
+        }
 
-          // 落库，重开演示文稿时能还原完整的工具流。
-          // 不落的话历史里只剩对话文本，看不出 agent 到底动了什么。
-          if (conversationId !== undefined) {
-            await saveMessage(conversationId, 'tool', serializeToolCall({
-              tool: tc.toolName,
-              args: tc.args,
-              result: resultStr,
-            }))
-          }
+        // 这一步的思考要在**下一步的请求发出去之前**记下来 ——
+        // onStepFinish 正好在两次请求之间，是唯一的时机
+        relay.learn(step.response.messages as unknown as { role: string, content: unknown }[])
+
+        // **这一步产生的模型消息原样落库。** 不自己拼 block，见 saveModelMessage 的说明。
+        // 落库失败不能吞（吞了就是「画布有、历史没有」），交给外层的 catch
+        for (const m of step.response.messages) {
+          await saveModelMessage(conversationId, m as CoreMessage, resolved.configId)
         }
       },
     })
 
     // **必须把流读干**。text / steps / finishReason 都是 promise，但它们只在流
     // 跑完后才 settle —— 光 await 它们不会驱动流，整个 agent 会永久挂起，
-    // 表现就是「XX 开始工作」之后再无下文，没有任何报错。
+    // 表现就是「开始工作」之后再无下文，没有任何报错。
     //
     // 用 for-await 而不是 consumeStream()：后者会把错误**吞掉**再返回，
     // 之后那三个 promise 就再也不 settle 了 —— 换来的是同一种挂起，只是更难查。
-    // 实测坏 API key：for-await 1 秒抛出 AI_APICallError，consumeStream 静静挂死。
-    //
-    // 思考增量也在这里转发。原来挂 onChunk 也能收到，但流总要读一遍，
-    // 读的时候顺手发比多挂一个回调更好懂。
     for await (const part of stream.fullStream) {
       if (part.type === 'reasoning') {
         reasoningOpen = true
-        channel.emit({ type: 'agent.reasoning', role, delta: part.textDelta })
+        channel.emit({ type: 'agent.reasoning', role: AGENT_ROLE, delta: part.textDelta })
       }
       else if (part.type === 'error') throw part.error
     }
@@ -388,90 +503,18 @@ const runRole = async (
     return { text, steps, finishReason }
   })
 
+  // 一轮一行，**只为了「这件事到底有没有发生」看得见**。
+  // 思考回传坏掉的表现不是报错，是模型悄悄变笨 —— 没有这行日志，
+  // 它哪天不工作了没有任何人会发现（`reasoningRelay.ts` 头注释里那条教训）
+  console.log(`[agent] 本轮回传了 ${relay.size()} 段思考（0 表示这个 provider 不需要或没生效）`)
+
   // 步数耗尽是静默的：SDK 直接返回，agent 以为自己做完了。
-  // 不提示的话，用户看到的就是「莫名其妙做了一半」。
-  const truncated = result.steps.length >= maxSteps && result.finishReason === 'tool-calls'
-  if (truncated) {
-    console.warn(`[agent] ${role} truncated at maxSteps=${maxSteps}`)
-    channel.emit({
-      type: 'agent.text',
-      role,
-      content: `⚠ ${label} 达到步数上限（${maxSteps} 步），未做完 —— 带着当前进度继续`,
-    })
-  }
+  // 不提示的话，用户看到的就是「莫名其妙做了一半」
+  const truncated = !toolless
+    && result.steps.length >= maxSteps
+    && result.finishReason === 'tool-calls'
 
   return { text: result.text, state, truncated }
-}
-
-/**
- * 跑一个写角色，**直到它自己停下来**。
- *
- * 原来编排器拿到 `truncated` 只发一条警告就往下走了 —— Generator 做到一半，
- * Reviewer 就开始审一份没做完的稿子，然后理所当然地报一堆「缺这缺那」。
- * 截断不是完成，是「还没做完」，该做的是接着做。
- *
- * 续作**不传 history**：要接着做的信息全在 deck 里，agent 自己 getDeck 就看得到。
- * 把上一轮几十条工具调用再塞回去，只会让新一轮从一个已经很满的上下文起步 ——
- * 而清零重来正是「任务长度不受单轮上下文限制」的原因。
- */
-const runRoleToCompletion = async (
-  role: AgentRole,
-  userId: number,
-  prompt: string,
-  state: DeckState,
-  channel: TaskChannel,
-  signal: AbortSignal,
-  history: HistoryTurn[],
-  conversationId: number,
-  originalRequest: string,
-  /**
-   * 落库时的标签，如 `Generator` / `Generator 修正`。传 undefined 则原样存文本。
-   * **必须和原来的字符串一致** —— history.ts 的 toHistoryTurns 是按
-   * `[Planner]` / `[Reviewer]` 前缀过滤的，标签一改，过滤就漏。
-   */
-  tag?: string,
-  assetTools: AssetTools | null = null,
-): Promise<{ text: string, state: DeckState }> => {
-  const save = (text: string, suffix = '') =>
-    saveMessage(conversationId, 'assistant', tag ? `[${tag}${suffix}] ${text}` : text)
-
-  let result = await runRole(role, userId, prompt, state, channel, signal, history, conversationId, assetTools)
-  await save(result.text)
-
-  for (let round = 1; result.truncated && round <= MAX_CONTINUATIONS; round++) {
-    if (signal.aborted) break
-
-    channel.emit({
-      type: 'agent.status',
-      status: 'thinking',
-      message: `${ROLE_LABELS[role]} 还没做完，继续第 ${round} 轮…`,
-    })
-
-    const contPrompt = [
-      '你上一轮因为触到步数上限被中断，任务**还没做完**。改动已经保存下来了。',
-      '',
-      '先 getDeck 看清楚做到哪一步了，然后**接着往下做**：',
-      '- 不要从头重来，也不要重复已经建好的页',
-      '- 缺哪几页就补哪几页，该精修的再精修',
-      '- 全部做完再跑一次 lintDeck',
-      '',
-      `用户的原始需求：${originalRequest}`,
-    ].join('\n')
-
-    result = await runRole(role, userId, contPrompt, result.state, channel, signal, [], conversationId, assetTools)
-    await save(result.text, ` 续作 ${round}`)
-  }
-
-  if (result.truncated) {
-    channel.emit({
-      type: 'agent.text',
-      role,
-      content: `⚠ 续作 ${MAX_CONTINUATIONS} 轮后仍未做完，先交付当前进度。`
-        + '再发一句「接着做完」可以继续，或把需求拆小一点。',
-    })
-  }
-
-  return { text: result.text, state: result.state }
 }
 
 export interface DeckTaskInput {
@@ -491,10 +534,7 @@ export interface DeckTaskInput {
 }
 
 /**
- * deck 域的编排剧本。
- *
- * 有选中元素 → Editor 直接处理
- * 否则       → Planner → Generator → Reviewer（不过则 Generator 再修一轮）
+ * deck 域的编排剧本 —— 一次用户输入 = 一轮。
  *
  * 占坑 / 注销由装配层（`agent/orchestrator.ts`）负责，这里进来时已经持有坑位。
  */
@@ -517,8 +557,7 @@ export const runDeckTask = async ({
     return
   }
 
-  // 图片工具整份任务只建一次：它要 deckId（票据落库）和通道（发进度叙事）。
-  // 每个角色各建一次也能跑，但那样票据的来源上下文会散在四处
+  // 图片工具整份任务只建一次：它要 deckId（票据落库）和通道（发进度叙事）
   const assetTools = await imageCapabilityAvailable()
     ? createAssetTools({ userId, deckId, emit: msg => channel.emit(msg) })
     : null
@@ -530,74 +569,47 @@ export const runDeckTask = async ({
   // 前端据此把新建的会话挂进列表，也用来纠正对不上的 conversationId
   channel.emit({ type: 'agent.conversation', id: conv.id, title: conv.title })
 
-  // 先读历史再存当前这条，否则当前 prompt 会重复出现在 messages 里
-  const history = await loadHistory(conv.id)
+  // **先存用户这句，再读历史。** 和旧版相反：旧版的 history 是另一份东西，
+  // 当轮 prompt 要单独拼在后面；现在用户这句本来就是历史的最后一条，
+  // 分开处理只会制造「存的和送的不一致」
   await saveMessage(conv.id, 'user', prompt)
 
   let { state } = loaded
 
   try {
-    if (selectedElementIds?.length) {
-      const editorPrompt = `${describeSelection(state, selectedElementIds)}\n\n用户的要求：${prompt}`
-      const result = await runRoleToCompletion(
-        'editor', userId, editorPrompt, state, channel, signal, history, conv.id, prompt,
-        undefined, assetTools,
-      ) // 无 tag：Editor 的产物原样落库，和改动前一致
+    const selection = selectedElementIds?.length
+      ? describeSelection(state, selectedElementIds)
+      : undefined
+
+    let result = await runTurn({
+      userId, conversationId: conv.id, state, channel, signal,
+      assetTools, extra: selection,
+    })
+    state = result.state
+
+    // 触顶不是失败，是「这一轮不能再动手了」。跑一轮不给工具的把话说完，
+    // 而不是续作 3×512 步 —— 理由见 FINALIZE_PROMPT
+    if (result.truncated && !signal.aborted) {
+      channel.emit({
+        type: 'agent.status',
+        status: 'thinking',
+        message: `${AGENT_LABEL} 达到步数上限，正在收尾…`,
+      })
+      result = await runTurn({
+        userId, conversationId: conv.id, state: result.state, channel, signal,
+        assetTools, extra: FINALIZE_PROMPT, toolless: true,
+      })
       state = result.state
-    }
-    else {
-      const planResult = await runRole('planner', userId, prompt, state, channel, signal, history, conv.id)
-      await saveMessage(conv.id, 'assistant', `[Planner] ${planResult.text}`)
-
-      const genPrompt = `按照以下计划执行：\n${planResult.text}\n\n用户原始需求：${prompt}`
-      // 做完才轮到 Reviewer —— 拿一份没做完的稿子去审，报出来的全是「缺这缺那」，
-      // 既浪费一轮 Reviewer，又会把 Generator 的修正轮引去补它本来就要补的东西
-      const genResult = await runRoleToCompletion(
-        'generator', userId, genPrompt, state, channel, signal, history, conv.id, prompt, 'Generator',
-        assetTools,
-      )
-      state = genResult.state
-
-      try {
-        // Reviewer 不给历史：它的职责是拿当前 deck 对照本轮需求，
-        // 喂历史只会让它翻出上几轮已经解决的问题
-        const reviewPrompt = `请审查 Generator 刚才对演示文稿所做的修改。用户的原始需求是：${prompt}`
-        const reviewResult = await runRole('reviewer', userId, reviewPrompt, state, channel, signal, [], conv.id)
-        await saveMessage(conv.id, 'assistant', `[Reviewer] ${reviewResult.text}`)
-
-        let reviewPassed = true
-        try {
-          const parsed = JSON.parse(reviewResult.text)
-          if (parsed.passed === false && parsed.issues?.length) {
-            reviewPassed = false
-          }
-        }
-        catch {
-          // Reviewer 输出不是 JSON，当做通过
-        }
-
-        if (!reviewPassed) {
-          channel.emit({ type: 'agent.status', status: 'thinking', message: 'Reviewer 发现问题，Generator 正在修正...' })
-          const fixPrompt = `Reviewer 发现了以下问题，请修正：\n${reviewResult.text}`
-          // 修正轮同样要跑到自己停 —— 修到一半就交付，和没修一样
-          const fixResult = await runRoleToCompletion(
-            'generator', userId, fixPrompt, state, channel, signal, [], conv.id, prompt, 'Generator 修正',
-            assetTools,
-          )
-          state = fixResult.state
-        }
-      }
-      catch (reviewErr) {
-        const msg = reviewErr instanceof Error ? reviewErr.message : '审查阶段出错'
-        channel.emit({ type: 'agent.text', role: 'reviewer', content: `⚠ 审查跳过: ${msg}` })
-        // 同上：这也是错误处理路径，再抛一次就逃到没人接的地方去了
-        await settle('落库审查跳过', () => saveMessage(conv.id, 'system', `Reviewer 跳过: ${msg}`))
-      }
+      channel.emit({
+        type: 'agent.text',
+        role: AGENT_ROLE,
+        content: '⚠ 本轮达到步数上限，已按当前进度收尾。再发一句「接着做完」可以继续。',
+      })
     }
 
     // 收尾再提交一次。绝大多数时候这和最后一次 mutation 提交的内容相同，
-    // 但 state 是从各个角色的返回值接回来的，最后统一提交一次才敢说
-    // 「剧本返回时库里就是最终态」——而且它和中途每一次走的是同一条路径
+    // 但 state 是从返回值接回来的，最后统一提交一次才敢说
+    // 「剧本返回时库里就是最终态」—— 而且它和中途每一次走的是同一条路径
     await channel.commit(state)
     channel.emit({ type: 'agent.status', status: 'done', message: '任务完成' })
   }
@@ -618,8 +630,7 @@ export const runDeckTask = async ({
   }
   finally {
     // 排队中的提交必须全部落地才算收尾 —— 否则「任务结束了」和
-    // 「库里是最终态」之间还留着一个窗口，而那正是这一轮要关掉的东西。
-    // drain 自己承诺永不 reject，但包一层是为了将来换实现时这条不会悄悄破
+    // 「库里是最终态」之间还留着一个窗口，而那正是这一轮要关掉的东西
     await settle('排干在途提交', () => channel.drain())
 
     // 无论成败都刷新时间戳，会话列表按「最近活动」排序才准
@@ -631,4 +642,3 @@ export const runDeckTask = async ({
     }
   }
 }
-

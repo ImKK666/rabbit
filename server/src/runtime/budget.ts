@@ -28,8 +28,8 @@
  *
  * ## 想调回去
  *
- *   AGENT_MAX_STEPS=60                 # 一次管住所有角色
- *   AGENT_MAX_STEPS_GENERATOR=200      # 只改某个角色，优先级更高
+ *   AGENT_MAX_STEPS=60       # 一次管住所有 agent
+ *   AGENT_MAX_STEPS_DECK=200 # 只改某一个，优先级更高
  *
  * 非法值（负数 / 非数字 / 0）一律忽略并回退到默认，**不报错** ——
  * 一个打错的环境变量不该让整个 agent 起不来。
@@ -39,20 +39,19 @@ import type { AgentRole } from '@server/db/schema'
 
 /**
  * 默认上限。数量级的依据（每步实测约 2k token，按 1M 上下文倒推）：
- *   generator 512 —— 一份 14 页的稿子实测 80~120 步，留四倍余量后
- *                    正好落在上下文真正吃紧的位置
- *   editor    256 —— 单次编辑意图比整份生成短，但改一组元素也能几十步
- *   planner    64 —— 只读 + 出计划，实测 2~4 步，给足纯粹因为不要钱
- *   reviewer   64 —— 只读 + 通读全稿，页数多时 getSlide 会线性增长
+ * 一份 14 页的稿子实测 80~120 步，留四倍余量后正好落在上下文真正吃紧的位置。
+ *
+ * **R-51 之前这里有四行**（generator 512 / editor 256 / planner 64 / reviewer 64），
+ * 四个角色各一份预算。合并成一个 agent 之后取原来 generator 那档 ——
+ * 局部微调用不到 512 步，但它**本来就不会跑满**：真正的收口是
+ * 「模型自己做完了」，上限只是护栏。给局部调整单设一档小的，
+ * 反而会让「一次微调顺手把整页重排了」这种正常操作撞上限。
  */
 export const DEFAULT_ROLE_MAX_STEPS: Record<AgentRole, number> = {
-  planner: 64,
-  generator: 512,
-  reviewer: 64,
-  editor: 256,
+  deck: 512,
 }
 
-/** 环境变量名：`AGENT_MAX_STEPS_GENERATOR` 这种单角色覆盖，比全局的优先 */
+/** 环境变量名：`AGENT_MAX_STEPS_DECK` 这种单 agent 覆盖，比全局的优先 */
 const roleEnvKey = (role: AgentRole): string => `AGENT_MAX_STEPS_${role.toUpperCase()}`
 
 export const resolveMaxSteps = (

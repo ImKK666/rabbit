@@ -20,6 +20,7 @@ import {
   type AgentRole,
 } from '@server/db/schema'
 import { normalizeBaseUrl } from './baseUrl'
+import { needsReasoningRelay, relayFetch, type ReasoningRelay } from './reasoningRelay'
 import {
   REASONING_TAG,
   needsReasoningTagExtraction,
@@ -31,11 +32,29 @@ import {
 export interface ResolvedModel {
   model: LanguageModel
   providerOptions: ReasoningProviderOptions
+  /**
+   * 本次用的模型配置 id。
+   *
+   * 带出来只为一件事：**Anthropic 的 thinking signature 绑在生成它的 API key 上**。
+   * 落库时记下是哪个配置产的，读回来时对不上就把思考块剥掉，
+   * 否则管理员换一次 provider 或 key，下一次请求就会因为一个失效的 signature 直接 400。
+   * 判据与负对照见 `runtime/__tests__/turnMemory.test.ts` 的「判据 3」一组。
+   */
+  configId: number
 }
 
 export const resolveModelForRole = async (
   role: AgentRole,
   userId: number,
+  /**
+   * 思考回传器。给了的话，OpenAI wire 格式的 provider（deepseek / openai）
+   * 会挂一层 fetch，把被 converter 丢掉的 `reasoning_content` 补回请求体 ——
+   * 那是「思考中调用工具」在这些 provider 上能不能成立的唯一一环，
+   * 见 `reasoningRelay.ts` 的头注释。
+   *
+   * **不给也能跑**，只是模型每一步都得重新推导。
+   */
+  relay?: ReasoningRelay,
 ): Promise<ResolvedModel> => {
   const pref = await db.select()
     .from(userRolePreferences)
@@ -83,7 +102,14 @@ export const resolveModelForRole = async (
   }
   console.log(`[llm] ${role} → provider="${provider.name}" type=${provider.providerType} model="${config.modelName}" baseUrl="${baseUrl}"`)
 
-  const base = createModel(provider.providerType, baseUrl, provider.apiKey, config.modelName)
+  // 只给需要的那几家挂 —— anthropic 的 converter 本来就带思考，
+  // 再补一次是错的；google 的 wire 格式根本不是这套
+  const patchedFetch = relay && needsReasoningRelay(provider.providerType)
+    ? relayFetch(relay)
+    : undefined
+  if (patchedFetch) console.log(`[llm] ${provider.providerType} 挂上思考回传`)
+
+  const base = createModel(provider.providerType, baseUrl, provider.apiKey, config.modelName, patchedFetch)
 
   // `<think>` 提取是纯文本解析，不改请求参数 —— 模型不吐这个标签就什么都不会发生
   const model = needsReasoningTagExtraction(provider.providerType)
@@ -96,6 +122,7 @@ export const resolveModelForRole = async (
       __rabbitDescribe: `provider="${provider.name}" type=${provider.providerType} model="${config.modelName}" baseUrl="${baseUrl}"`,
     }),
     providerOptions: reasoningProviderOptions(provider.providerType),
+    configId: config.id,
   }
 }
 
@@ -104,17 +131,18 @@ const createModel = (
   baseUrl: string,
   apiKey: string,
   modelName: string,
+  patchedFetch?: typeof fetch,
 ): LanguageModel => {
   switch (providerType) {
     case 'openai': {
-      const provider = createOpenAI({ baseURL: baseUrl, apiKey })
+      const provider = createOpenAI({ baseURL: baseUrl, apiKey, fetch: patchedFetch })
       return provider(modelName)
     }
     // DeepSeek 的端点是 OpenAI 兼容的，配成 'openai' 也能跑 —— 但思考会丢：
     // reasoning_content 不在 @ai-sdk/openai 的 SSE schema 里，解析时直接被剥掉。
     // 这个 provider 认得它，想看思考过程就必须选这一项
     case 'deepseek': {
-      const provider = createDeepSeek({ baseURL: baseUrl, apiKey })
+      const provider = createDeepSeek({ baseURL: baseUrl, apiKey, fetch: patchedFetch })
       return provider(modelName)
     }
     case 'anthropic': {

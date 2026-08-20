@@ -166,7 +166,24 @@ export const assetSearchCache = sqliteTable('asset_search_cache', {
   fetchedAt: integer('fetched_at', { mode: 'timestamp' }).notNull(),
 })
 
-export type AgentRole = 'planner' | 'generator' | 'reviewer' | 'editor'
+/**
+ * Agent 的种类。
+ *
+ * **R-51 之前这里是 `'planner' | 'generator' | 'reviewer' | 'editor'` 四个值**，
+ * 对应四个角色各跑一次模型。合并成一个 agent 之后只剩 `'deck'`。
+ * 实测代价与合并理由见 docs/12-single-agent.md。
+ *
+ * **这一维刻意保留，没有把 role 这个字段整个删掉。** `role_defaults` 和
+ * `user_role_preferences` 两张表按它分行 —— 删掉等于「一个用户只能配一个模型」，
+ * 而第二个域（research）接进来时马上就要按域配不同的模型。
+ * 现在它只有一个值，不代表它是多余的。
+ *
+ * **列表和类型是同一份。** 原来 `z.enum(['planner','generator','reviewer','editor'])`
+ * 在 `routes/admin.ts` 和 `routes/user.ts` 里各硬抄了一份，
+ * 加一个角色要改三处、漏一处不会有任何东西报错。现在两边都从这里取。
+ */
+export const AGENT_ROLES = ['deck'] as const
+export type AgentRole = typeof AGENT_ROLES[number]
 
 export const roleDefaults = sqliteTable('role_defaults', {
   id: integer('id').primaryKey({ autoIncrement: true }),
@@ -211,6 +228,31 @@ export const messages = sqliteTable('messages', {
   id: integer('id').primaryKey({ autoIncrement: true }),
   conversationId: integer('conversation_id').notNull().references(() => conversations.id),
   role: text('role', { enum: ['user', 'assistant', 'system', 'tool'] }).notNull(),
+  /**
+   * 给人看的那一份 —— 面板渲染、会话标题、分叉锚点都读它。
+   * **这一列的语义没变**，加 `blocksJson` 时刻意没动它：
+   * 改它等于同时改渲染、标题、分叉三件事。
+   */
   content: text('content').notNull(),
+  /**
+   * 给模型看的那一份：这条消息的完整 content 数组
+   * （`runtime/turnMemory.ts` 的 `AssistantBlock[]` / `ToolResultBlock[]`）。
+   *
+   * **可空**。老会话没有这一列，读回来时退回纯文本路径，
+   * 所以这次迁移不需要回填 —— 回填一份猜出来的 blocks 比没有更糟。
+   */
+  blocksJson: text('blocks_json'),
+  /**
+   * 产出这条消息的模型配置。
+   *
+   * 存它只为一件事：**Anthropic 的 thinking signature 绑在生成它的 API key 上**，
+   * 管理员换一次 provider 或 key，库里的旧 signature 会让下一次请求直接 400。
+   * 对不上就把思考块剥掉，见 `turnMemory.ts` 的 `stripForeignReasoning`。
+   *
+   * **刻意不加外键**：模型配置被删掉时这条历史仍然有效
+   *（只是从此按「对不上」处理），加了外键反而会让删配置被历史挡住 ——
+   * 和 `conversations.forkedFromId` 是同一个理由。
+   */
+  modelConfigId: integer('model_config_id'),
   createdAt: integer('created_at', { mode: 'timestamp' }).notNull().$defaultFn(() => new Date()),
 })

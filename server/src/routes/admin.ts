@@ -6,6 +6,7 @@ import { getJwtPayload } from '@server/auth/jwt'
 import { db } from '@server/db'
 import {
   users, modelProviders, modelConfigs, roleDefaults, storageConfigs, assetSources,
+  AGENT_ROLES,
   type AgentRole,
 } from '@server/db/schema'
 import { createObjectStore, resolvePublicBase } from '@server/runtime/objectStore'
@@ -173,7 +174,7 @@ admin.delete('/models/:id', async (c) => {
 // --- Role defaults ---
 
 const roleDefaultSchema = z.object({
-  role: z.enum(['planner', 'generator', 'reviewer', 'editor'] as const),
+  role: z.enum(AGENT_ROLES),
   modelConfigId: z.number().int().positive(),
 })
 
