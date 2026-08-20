@@ -56,6 +56,19 @@
 
         <div class="log-entries" v-else-if="log.length">
           <template v-for="(entry, idx) in log" :key="idx">
+            <!-- 思考过程的组头。**只在一组的第一条前面出一次**，
+                 收起时下面那些小块整体藏掉，只剩这一行摘要 -->
+            <div
+              class="process-header"
+              :class="{ open: isGroupOpen(idx), live: isGroupLive(idx) }"
+              v-if="groupStartOf[idx] === idx"
+              @click="toggleGroup(idx)"
+            >
+              <span class="process-icon">✦</span>
+              <span class="process-summary">{{ groupSummary(idx) }}</span>
+              <span class="expand-arrow" :class="{ open: isGroupOpen(idx) }">▸</span>
+            </div>
+
             <!-- 用户输入 -->
             <div class="log-entry user-msg" v-if="entry.type === 'text' && entry.role === 'user'">
               <div class="entry-label">
@@ -79,14 +92,18 @@
             <!-- 思考过程：正在想的时候摊开、想完了收起来，点标题可以再翻开。
                  抽成子组件是因为它自己是个滚动容器，要拿到自己那个 DOM 元素 -->
             <AgentReasoningEntry
-              v-else-if="entry.type === 'reasoning'"
+              v-else-if="entry.type === 'reasoning' && isGroupOpen(groupStartOf[idx])"
+              class="in-group"
               :entry="entry"
               :open="isReasoningOpen(entry, idx)"
               @toggle="toggleExpand(idx)"
             />
 
             <!-- 工具调用 -->
-            <div class="log-entry tool-entry" v-else-if="entry.type === 'tool'">
+            <div
+              class="log-entry tool-entry in-group"
+              v-else-if="entry.type === 'tool' && isGroupOpen(groupStartOf[idx])"
+            >
               <div class="tool-header" @click="toggleExpand(idx)">
                 <span class="tool-icon">⚙</span>
                 <span class="tool-name">{{ entry.tool }}</span>
@@ -106,7 +123,11 @@
             </div>
 
             <!-- 图片资产：生图要 15 秒，这条是那段时间里唯一的动静 -->
-            <div class="log-entry asset-entry" :class="entry.state" v-else-if="entry.type === 'asset'">
+            <div
+              class="log-entry asset-entry in-group"
+              :class="entry.state"
+              v-else-if="entry.type === 'asset' && isGroupOpen(groupStartOf[idx])"
+            >
               <span class="asset-icon">{{ entry.state === 'pending' ? '◌' : entry.state === 'ready' ? '▣' : '⊘' }}</span>
               <span class="asset-label">{{ entry.kind === 'generate' ? '生成图片' : '搜索图片' }}</span>
               <span class="asset-prompt" v-tooltip="entry.prompt">{{ entry.prompt }}</span>
@@ -157,6 +178,7 @@
 <script lang="ts" setup>
 import { ref, reactive, computed, watch } from 'vue'
 import { storeToRefs } from 'pinia'
+import { groupStartOf as groupStarts, groupStats, summarizeGroup } from '@/utils/agentLogGroups'
 import { useMainStore, useAgentStore } from '@/store'
 import { useStickToBottom } from '@/hooks/useStickToBottom'
 import Button from '@/components/Button.vue'
@@ -190,6 +212,7 @@ const activeTitle = computed(() => {
 // 少了这个 watch，agent store 是全局单例，新建的项目会显示上一个项目的对话。
 watch(() => props.deckId, (deckId) => {
   expandedEntries.clear()
+  expandedGroups.clear()
   convListOpen.value = false
   if (deckId === null) agentStore.reset()
   else agentStore.openDeck(deckId)
@@ -198,6 +221,7 @@ watch(() => props.deckId, (deckId) => {
 const handleSwitch = async (id: number) => {
   convListOpen.value = false
   expandedEntries.clear()
+  expandedGroups.clear()
   try {
     await agentStore.switchConversation(id)
   }
@@ -209,6 +233,7 @@ const handleSwitch = async (id: number) => {
 const handleNewConv = () => {
   convListOpen.value = false
   expandedEntries.clear()
+  expandedGroups.clear()
   agentStore.startNewConversation()
 }
 
@@ -228,6 +253,7 @@ const handleDeleteConv = async (conv: { id: number, title: string }) => {
   try {
     await agentStore.deleteConversation(conv.id)
     expandedEntries.clear()
+  expandedGroups.clear()
   }
   catch {
     alert('删除失败')
@@ -239,6 +265,7 @@ const handleFork = async (messageId: number) => {
   try {
     await agentStore.forkFrom(messageId)
     expandedEntries.clear()
+  expandedGroups.clear()
   }
   catch {
     alert('分叉失败')
@@ -251,6 +278,7 @@ const handleClear = async () => {
   try {
     await agentStore.clearHistory()
     expandedEntries.clear()
+  expandedGroups.clear()
   }
   catch {
     alert('清空失败')
@@ -274,6 +302,7 @@ const canSend = computed(() => promptText.value.trim() && !isRunning.value && pr
 const handleSend = () => {
   if (!canSend.value || !props.deckId) return
   expandedEntries.clear()
+  expandedGroups.clear()
   const selectedIds = activeElementIdList.value.length ? [...activeElementIdList.value] : undefined
   agentStore.submitTask(props.deckId, promptText.value.trim(), selectedIds)
   promptText.value = ''
@@ -298,6 +327,33 @@ const toggleExpand = (idx: number) => {
  */
 const isReasoningOpen = (entry: { done: boolean }, idx: number) =>
   entry.done ? expandedEntries.has(idx) : !expandedEntries.has(idx)
+
+/* ── 思考过程分组 ────────────────────────────────────────────────
+ *
+ * 分组规则本身是纯函数，在 `@/utils/agentLogGroups`（那里测得到）。
+ * 这里只留**跟界面状态有关**的两件事：这组还在不在长、用户手动开合过没有。
+ */
+const groupStartOf = computed(() => groupStarts(log.value))
+const stats = computed(() => groupStats(log.value))
+
+/** 这一组是不是「还在长」的那一组 —— 正在跑，且它就贴着日志末尾 */
+const isGroupLive = (start: number) =>
+  isRunning.value && stats.value.get(start)?.end === log.value.length - 1
+
+/**
+ * 和思考小块同一套规矩：**正在进行的摊开，结束了收起来**。
+ * expandedGroups 当手动开关用，按一下就是把默认翻过来。
+ */
+const expandedGroups = reactive(new Set<number>())
+const isGroupOpen = (start: number) =>
+  isGroupLive(start) ? !expandedGroups.has(start) : expandedGroups.has(start)
+
+const toggleGroup = (start: number) => {
+  if (expandedGroups.has(start)) expandedGroups.delete(start)
+  else expandedGroups.add(start)
+}
+
+const groupSummary = (start: number) => summarizeGroup(stats.value.get(start))
 
 /**
  * R-51 之后只有一个 agent，标签固定是「Agent」。
@@ -611,6 +667,55 @@ useStickToBottom(bodyRef, log, { deep: true })
 // 改的时候永远猜不准该改哪份。
 
 // 工具调用
+// 思考过程的组头。
+//
+// 一次任务在面板上是「想 → 调工具 → 想 → 调工具 → 说一句话」，
+// 前面一长串是过程、最后那句才是结果。回看时想找的几乎总是结果，
+// 而过程能占掉整屏 —— 所以过程整体收成这一行，点开才展开。
+//
+// 视觉上刻意比工具调用更轻（无边框、灰字）：它是**目录**不是内容，
+// 抢眼了反而把真正要看的那句话压下去。
+.process-header {
+  padding: 5px 8px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  font-size: 11px;
+  color: #8a8a8a;
+  border-radius: 6px;
+  user-select: none;
+
+  &:hover { background: #f2f2f2; }
+
+  // 还在想的时候把标题也点亮一点，和下方摊开的内容呼应
+  &.live {
+    color: $themeColor;
+    .process-icon { opacity: 1; }
+  }
+}
+.process-icon {
+  font-size: 11px;
+  opacity: .6;
+  flex-shrink: 0;
+}
+.process-summary {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+// 组内的小块整体缩进，让「这些属于上面那一行」一眼看得出来。
+// 左边那条竖线是**唯一**的从属关系提示 —— 只靠缩进的话，
+// 滚动到中间时看不出自己在不在组里
+.in-group {
+  margin-left: 10px;
+  border-left: 2px solid #ececec;
+  padding-left: 8px;
+  border-radius: 0 6px 6px 0;
+}
+
 .tool-entry {
   background: #f0f0f0;
   border: 1px solid #e0e0e0;

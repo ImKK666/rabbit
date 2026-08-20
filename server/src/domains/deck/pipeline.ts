@@ -515,6 +515,10 @@ const runTurn = async ({
     // 之后那三个 promise 就再也不 settle 了 —— 换来的是同一种挂起，只是更难查。
     for await (const part of stream.fullStream) {
       if (part.type === 'reasoning') {
+        // **空增量直接丢掉。** deepseek 在最后一条消息上会发一个空的 reasoning
+        // 分片，转发出去前端就会画出一个「思考完成 0 字」的空壳
+        // —— 一个什么都没有的块比没有块更让人以为出了问题
+        if (!part.textDelta) continue
         reasoningOpen = true
         channel.emit({ type: 'agent.reasoning', role: AGENT_ROLE, delta: part.textDelta })
       }

@@ -177,7 +177,10 @@ export const useAgentStore = defineStore('agent', {
           if (last?.type === 'reasoning' && !last.done && last.role === msg.role) {
             last.content += msg.delta
           }
-          else {
+          // **不为空增量新开一个块。** 后端已经挡了一道（deepseek 会在最后
+          // 发一个空 reasoning 分片），这里是第二道 —— 老的后端还连着的时候
+          // 也不该在面板上画出「思考完成 0 字」这种空壳
+          else if (msg.delta.trim()) {
             this.log.push({ type: 'reasoning', role: msg.role, content: msg.delta, done: false })
           }
           break
