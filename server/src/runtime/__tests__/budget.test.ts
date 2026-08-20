@@ -11,44 +11,33 @@ import { describe, it, expect } from 'vitest'
 import { resolveMaxSteps, DEFAULT_ROLE_MAX_STEPS } from '../budget'
 
 describe('默认值', () => {
-  it('四个角色都有默认上限', () => {
-    expect(Object.keys(DEFAULT_ROLE_MAX_STEPS).sort()).toEqual(
-      ['editor', 'generator', 'planner', 'reviewer'],
-    )
+  it('每个 agent 都有默认上限', () => {
+    expect(Object.keys(DEFAULT_ROLE_MAX_STEPS).sort()).toEqual(['deck'])
   })
 
   it('没有环境变量时用默认', () => {
-    expect(resolveMaxSteps('generator', {})).toBe(DEFAULT_ROLE_MAX_STEPS.generator)
-    expect(resolveMaxSteps('planner', {})).toBe(DEFAULT_ROLE_MAX_STEPS.planner)
+    expect(resolveMaxSteps('deck', {})).toBe(DEFAULT_ROLE_MAX_STEPS.deck)
   })
 
   // 旧上限 60 实测只做出 10 页。数量级本身要有余量，
   // 否则又会退回「实测不够就抬一点」的循环
-  it('generator 的默认远高于旧的 60', () => {
-    expect(DEFAULT_ROLE_MAX_STEPS.generator).toBeGreaterThanOrEqual(256)
-  })
-
-  it('写角色的预算高于只读角色', () => {
-    expect(DEFAULT_ROLE_MAX_STEPS.generator).toBeGreaterThan(DEFAULT_ROLE_MAX_STEPS.planner)
-    expect(DEFAULT_ROLE_MAX_STEPS.editor).toBeGreaterThan(DEFAULT_ROLE_MAX_STEPS.reviewer)
+  it('默认远高于旧的 60', () => {
+    expect(DEFAULT_ROLE_MAX_STEPS.deck).toBeGreaterThanOrEqual(256)
   })
 })
 
 describe('环境变量覆盖', () => {
-  it('AGENT_MAX_STEPS 管住所有角色', () => {
-    const env = { AGENT_MAX_STEPS: '60' }
-    expect(resolveMaxSteps('generator', env)).toBe(60)
-    expect(resolveMaxSteps('reviewer', env)).toBe(60)
+  it('AGENT_MAX_STEPS 管住所有 agent', () => {
+    expect(resolveMaxSteps('deck', { AGENT_MAX_STEPS: '60' })).toBe(60)
   })
 
-  it('单角色覆盖优先于全局', () => {
-    const env = { AGENT_MAX_STEPS: '60', AGENT_MAX_STEPS_GENERATOR: '200' }
-    expect(resolveMaxSteps('generator', env)).toBe(200)
-    expect(resolveMaxSteps('editor', env)).toBe(60)
+  it('单 agent 覆盖优先于全局', () => {
+    const env = { AGENT_MAX_STEPS: '60', AGENT_MAX_STEPS_DECK: '200' }
+    expect(resolveMaxSteps('deck', env)).toBe(200)
   })
 
   it('小数向下取整', () => {
-    expect(resolveMaxSteps('generator', { AGENT_MAX_STEPS: '2.7' })).toBe(2)
+    expect(resolveMaxSteps('deck', { AGENT_MAX_STEPS: '2.7' })).toBe(2)
   })
 
   it.each([
@@ -60,12 +49,12 @@ describe('环境变量覆盖', () => {
     ['Infinity', '无穷 —— SDK 拿到会一直转'],
     ['NaN', 'NaN'],
   ])('非法值 %s 回退到默认（%s）', (raw) => {
-    expect(resolveMaxSteps('generator', { AGENT_MAX_STEPS: raw }))
-      .toBe(DEFAULT_ROLE_MAX_STEPS.generator)
+    expect(resolveMaxSteps('deck', { AGENT_MAX_STEPS: raw }))
+      .toBe(DEFAULT_ROLE_MAX_STEPS.deck)
   })
 
-  it('单角色值非法时退到全局，而不是直接退到默认', () => {
-    const env = { AGENT_MAX_STEPS: '80', AGENT_MAX_STEPS_GENERATOR: 'oops' }
-    expect(resolveMaxSteps('generator', env)).toBe(80)
+  it('单 agent 值非法时退到全局，而不是直接退到默认', () => {
+    const env = { AGENT_MAX_STEPS: '80', AGENT_MAX_STEPS_DECK: 'oops' }
+    expect(resolveMaxSteps('deck', env)).toBe(80)
   })
 })

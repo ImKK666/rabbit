@@ -186,10 +186,15 @@ conversation.post('/:id/fork', zValidator('json', forkSchema), async (c) => {
     forkedFromId: source.id,
   }).returning().get()
 
+  // **两个新列必须一起复制。** 漏掉的话分叉出来的会话在 `content` 上看着是全的
+  // （面板照常渲染），但 agent 那边的历史会退化成纯文本 —— 工具调用和思考全丢，
+  // 而且没有任何东西会报错。这正是加 `blocksJson` 时最容易漏的一处。
   await db.insert(messages).values(rows.map(m => ({
     conversationId: forked.id,
     role: m.role,
     content: m.content,
+    blocksJson: m.blocksJson,
+    modelConfigId: m.modelConfigId,
     createdAt: m.createdAt,
   })))
 

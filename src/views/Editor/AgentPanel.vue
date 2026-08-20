@@ -299,8 +299,14 @@ const toggleExpand = (idx: number) => {
 const isReasoningOpen = (entry: { done: boolean }, idx: number) =>
   entry.done ? expandedEntries.has(idx) : !expandedEntries.has(idx)
 
+/**
+ * R-51 之后只有一个 agent，标签固定是「Agent」。
+ * 四个旧名字留着**只为老会话** —— 迁移不回填历史消息，
+ * 重开一条 R-51 之前的会话时，那些行仍然带着 `[Generator]` 之类的前缀。
+ */
 const roleLabel = (role: string): string => {
   const labels: Record<string, string> = {
+    deck: 'Agent',
     planner: 'Planner',
     generator: 'Generator',
     reviewer: 'Reviewer',

@@ -59,13 +59,13 @@ describe('c) LLM 自选的范围', () => {
   })
 
   it('ANIMATION_GUIDE 把 45 个全点了名 —— 没进 prompt 等于模型不知道它存在', () => {
-    const prompt = getSystemPrompt('generator')
+    const prompt = getSystemPrompt('deck')
     const missing = VOCAB.filter(v => !prompt.includes(v))
     expect(missing).toEqual([])
   })
 
   it('ANIMATION_GUIDE 里没有词表外的名字（改名时最容易漏的地方）', () => {
-    const prompt = getSystemPrompt('generator')
+    const prompt = getSystemPrompt('deck')
     const start = prompt.indexOf('效果按**性格**分')
     const end = prompt.indexOf('**整份文稿至少用到 3 种')
     expect(start, '性格清单的锚点变了，这条断言要跟着改').toBeGreaterThan(-1)
@@ -76,8 +76,12 @@ describe('c) LLM 自选的范围', () => {
     expect(unknown).toEqual([])
   })
 
-  it('editor 角色也拿得到这份清单', () => {
-    expect(getSystemPrompt('editor')).toContain('blinds-h')
+  it('局部调整那条路径也拿得到这份清单', () => {
+    // R-51 之前这条验的是「editor 那份 prompt 里也有动画词表」。
+    // 四份合成一份之后不存在「另一份 prompt 漏了」的可能，
+    // 但这条保留：它守的是「合并时没有把 ANIMATION_GUIDE 漏掉」
+    expect(getSystemPrompt('deck')).toContain('blinds-h')
+    expect(getSystemPrompt('deck')).toContain('选中了以下元素')
   })
 })
 

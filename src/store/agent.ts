@@ -404,10 +404,121 @@ interface StoredMessage {
   id: number
   role: 'user' | 'assistant' | 'system' | 'tool'
   content: string
+  /**
+   * 模型视角的完整 content 数组（后端 `runtime/turnMemory.ts` 的形状）。
+   * 老会话没有这一列，那些行走下面的 `toLogEntry` 文本路径。
+   */
+  blocksJson?: string | null
 }
 
-const hydrateLog = (msgs: StoredMessage[]): AgentLogEntry[] =>
-  msgs.map(toLogEntry).filter((e): e is AgentLogEntry => e !== null)
+/** 后端存下来的一块内容。只列面板用得上的字段，其余原样忽略 */
+type StoredBlock =
+  | { type: 'reasoning', text: string }
+  | { type: 'redacted-reasoning', data: string }
+  | { type: 'text', text: string }
+  | { type: 'tool-call', toolCallId: string, toolName: string, args: Record<string, unknown> }
+  | { type: 'tool-result', toolCallId: string, toolName: string, result: unknown }
+
+const parseBlocks = (json: string | null | undefined): StoredBlock[] | null => {
+  if (!json) return null
+  try {
+    const parsed = JSON.parse(json)
+    return Array.isArray(parsed) ? parsed as StoredBlock[] : null
+  }
+  catch {
+    return null
+  }
+}
+
+const stringifyResult = (result: unknown): string =>
+  typeof result === 'string' ? result : JSON.stringify(result, null, 2)
+
+/**
+ * 库里的消息 → 面板日志。
+ *
+ * 一次工具调用在存储里是**两条消息**：参数在 assistant 的 `tool-call` 块里，
+ * 结果在紧跟着的 tool 消息里。面板要显示成一条，所以这里跨行配对。
+ *
+ * 存储不提前合并这两样，是因为它必须逐块等于模型看到的东西
+ * （后端 `saveModelMessage` 的说明）—— 合并了就对不上，而对得上正是那一版的全部意义。
+ * **代价就是这里要配一次对**，这笔账划算：错在这里只是面板显示不好看，
+ * 错在那边是下一轮请求 400。
+ */
+export const hydrateLog = (msgs: StoredMessage[]): AgentLogEntry[] => {
+  const out: AgentLogEntry[] = []
+  /** 已经看到参数、还在等结果的工具调用 */
+  let pending: { toolCallId: string, tool: string, args: Record<string, unknown>, messageId: number }[] = []
+
+  /** 没等到结果的（任务被取消 / 进程退出），照样显示出来，只是没有 result */
+  const flushPending = () => {
+    for (const p of pending) {
+      out.push({ type: 'tool', tool: p.tool, args: p.args, messageId: p.messageId })
+    }
+    pending = []
+  }
+
+  for (const msg of msgs) {
+    const blocks = parseBlocks(msg.blocksJson)
+
+    // 没有 blocks 的是这一版之前的老数据，按原来的方式还原
+    if (!blocks) {
+      flushPending()
+      const entry = toLogEntry(msg)
+      if (entry) out.push(entry)
+      continue
+    }
+
+    if (msg.role === 'assistant') {
+      flushPending()
+      for (const b of blocks) {
+        if (b.type === 'reasoning') {
+          // 历史里的思考一律是收起状态 —— 它是过程，回看时不该占屏
+          out.push({ type: 'reasoning', role: 'deck', content: b.text, done: true })
+        }
+        else if (b.type === 'text' && b.text) {
+          out.push({ type: 'text', role: 'deck', content: b.text, messageId: msg.id })
+        }
+        else if (b.type === 'tool-call') {
+          pending.push({
+            toolCallId: b.toolCallId,
+            tool: b.toolName,
+            args: b.args ?? {},
+            messageId: msg.id,
+          })
+        }
+        // redacted-reasoning 是 provider 加密的，看不懂也没法显示，跳过
+      }
+      continue
+    }
+
+    if (msg.role === 'tool') {
+      for (const p of pending) {
+        const hit = blocks.find(
+          (b): b is Extract<StoredBlock, { type: 'tool-result' }> =>
+            b.type === 'tool-result' && b.toolCallId === p.toolCallId,
+        )
+        out.push({
+          type: 'tool',
+          tool: p.tool,
+          args: p.args,
+          result: hit ? stringifyResult(hit.result) : undefined,
+          // 锚点用 tool 行的 id：从这条分叉时，发起调用的 assistant 也要留下
+          messageId: msg.id,
+        })
+      }
+      pending = []
+      continue
+    }
+
+    // user / system 行没有 blocks 的概念，走文本路径
+    flushPending()
+    const entry = toLogEntry(msg)
+    if (entry) out.push(entry)
+  }
+
+  flushPending()
+  return out
+}
 
 /**
  * DB 里的一条消息 → 面板日志条目。

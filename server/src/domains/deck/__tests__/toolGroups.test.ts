@@ -90,30 +90,34 @@ describe('工具总集', () => {
   })
 })
 
-describe('角色配额', () => {
+describe('判据 7 · 单 agent 的配额与合并前的 generator 逐键相等', () => {
   const tools = makeTools()
   const withAssets = { assets: true }
 
-  it('planner 只拿 5 个只读工具 —— 给了图片能力也不变', () => {
-    expect(Object.keys(getToolSubset('planner', tools, withAssets)).sort()).toEqual(READONLY_TOOL_NAMES)
+  /**
+   * R-51 把四个角色合成一个。**唯一要守住的是配额没变** ——
+   * 合并前 generator 拿全部 25 个，合并后也必须是这 25 个，一个不多一个不少。
+   *
+   * `ALL_TOOL_NAMES` 是本文件顶上**独立抄的一份**，不从 `DECK_TOOL_GROUPS` 反推：
+   * 从新数据反推的期望值，在数据本身写错时也会绿。
+   */
+  it('deck agent 拿全部 25 个', () => {
+    expect(Object.keys(getToolSubset('deck', tools, withAssets)).sort()).toEqual(ALL_TOOL_NAMES)
   })
 
-  it('reviewer 只拿 5 个只读工具 —— 给了图片能力也不变', () => {
-    expect(Object.keys(getToolSubset('reviewer', tools, withAssets)).sort()).toEqual(READONLY_TOOL_NAMES)
-  })
-
-  it('generator 拿全部 25 个', () => {
-    expect(Object.keys(getToolSubset('generator', tools, withAssets)).sort()).toEqual(ALL_TOOL_NAMES)
-  })
-
-  it('editor 拿全部 25 个', () => {
-    expect(Object.keys(getToolSubset('editor', tools, withAssets)).sort()).toEqual(ALL_TOOL_NAMES)
+  /**
+   * 只读那一档随 planner / reviewer 一起没了。这条留着是因为
+   * `READONLY_TOOL_NAMES` 仍然是「read 组」的独立期望值 ——
+   * 第二个域进来时大概率又要一个只读 agent，那时这份清单还在。
+   */
+  it('read 组仍然正好是那 5 个只读工具', () => {
+    expect([...DECK_TOOL_GROUPS.read].sort()).toEqual(READONLY_TOOL_NAMES)
   })
 
   it('挑出来的是同一个工具对象，不是拷贝', () => {
     // 装配只做引用挑选。如果哪天变成结构化克隆，
     // tool() 闭包捕获的 accessor 会静默失效 —— 那是查起来很痛的一类 bug
-    expect(getToolSubset('planner', tools, withAssets).getDeck).toBe(tools.getDeck)
+    expect(getToolSubset('deck', tools, withAssets).getDeck).toBe(tools.getDeck)
   })
 })
 
@@ -125,26 +129,21 @@ describe('图片能力关着时整组不注册', () => {
    */
   const tools = makeTools()
 
-  it('generator 拿到的正好是原来那 23 个', () => {
-    expect(Object.keys(getToolSubset('generator', tools, { assets: false })).sort())
+  it('拿到的正好是原来那 23 个', () => {
+    expect(Object.keys(getToolSubset('deck', tools, { assets: false })).sort())
       .toEqual([...DECK_TOOL_NAMES].sort())
   })
 
   it('默认（不传 assets）就是不给 —— 忘了传不会把图片工具漏出去', () => {
-    const names = Object.keys(getToolSubset('editor', tools))
+    const names = Object.keys(getToolSubset('deck', tools))
     for (const n of IMAGE_TOOL_NAMES) expect(names).not.toContain(n)
   })
 
   it('deckRoleGroups 只摘掉 asset 一组，别的组一个不少', () => {
-    expect(deckRoleGroups('generator', { assets: false }))
-      .toEqual(DECK_ROLE_TOOL_GROUPS.generator.filter(g => g !== 'asset'))
-    expect(deckRoleGroups('generator', { assets: true }))
-      .toEqual(DECK_ROLE_TOOL_GROUPS.generator)
-  })
-
-  it('对只读角色是空操作 —— 它们本来就没有 asset 组', () => {
-    expect(deckRoleGroups('planner', { assets: false })).toEqual(['read'])
-    expect(deckRoleGroups('planner', { assets: true })).toEqual(['read'])
+    expect(deckRoleGroups('deck', { assets: false }))
+      .toEqual(DECK_ROLE_TOOL_GROUPS.deck.filter(g => g !== 'asset'))
+    expect(deckRoleGroups('deck', { assets: true }))
+      .toEqual(DECK_ROLE_TOOL_GROUPS.deck)
   })
 })
 
@@ -178,10 +177,9 @@ describe('分组完整性', () => {
     }
   })
 
-  it('四个角色都有配额 —— 新增角色不许漏配', () => {
+  it('每个 agent 都有配额 —— 新增 agent 不许漏配', () => {
     // Record<AgentRole, …> 在编译期已经保证了，这条防的是
     // 有人为了绕过编译错误写成 Partial 或加 index signature
-    expect(Object.keys(DECK_ROLE_TOOL_GROUPS).sort())
-      .toEqual(['editor', 'generator', 'planner', 'reviewer'])
+    expect(Object.keys(DECK_ROLE_TOOL_GROUPS).sort()).toEqual(['deck'])
   })
 })

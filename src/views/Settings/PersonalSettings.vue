@@ -62,22 +62,17 @@ import Select from '@/components/Select.vue'
 
 const authStore = useAuthStore()
 
+// R-51：四个角色合成一个。这一维保留是因为第二个域（research）
+// 接进来时要按域配不同的模型，见 server/src/db/schema.ts 的 AgentRole
 const ROLES = [
-  { key: 'planner', name: '规划者', desc: '分析用户意图，制定执行计划' },
-  { key: 'generator', name: '生成者', desc: '生成和修改演示文稿内容' },
-  { key: 'reviewer', name: '审查者', desc: '校验排版和内容质量' },
-  { key: 'editor', name: '编辑者', desc: '处理局部元素的调整' },
+  { key: 'deck', name: '演示文稿', desc: '生成、改造、局部调整演示文稿' },
 ]
 
 interface Model { id: number; displayName: string }
 
 const models = ref<Model[]>([])
-const preferences = reactive<Record<string, string | number>>({
-  planner: '', generator: '', reviewer: '', editor: '',
-})
-const globalDefaults = reactive<Record<string, string>>({
-  planner: '', generator: '', reviewer: '', editor: '',
-})
+const preferences = reactive<Record<string, string | number>>({ deck: '' })
+const globalDefaults = reactive<Record<string, string>>({ deck: '' })
 
 const modelOptionsWithDefault = computed(() => [
   { label: '使用默认', value: '' as string | number },
@@ -116,7 +111,9 @@ const handleSetPref = async (role: string, value: string | number) => {
   try {
     await userApi.setPreference(role, Number(value))
   }
-  catch (err: any) { alert(err?.response?.data?.error || '设置失败') }
+  catch (err: any) {
+    alert(err?.response?.data?.error || '设置失败') 
+  }
 }
 
 const oldPassword = ref('')
@@ -127,8 +124,12 @@ const pwdOk = ref(false)
 
 const handleChangePassword = async () => {
   pwdMsg.value = ''
-  if (newPassword.value.length < 6) { pwdMsg.value = '新密码至少 6 位'; pwdOk.value = false; return }
-  if (newPassword.value !== confirmPassword.value) { pwdMsg.value = '两次密码不一致'; pwdOk.value = false; return }
+  if (newPassword.value.length < 6) {
+    pwdMsg.value = '新密码至少 6 位'; pwdOk.value = false; return 
+  }
+  if (newPassword.value !== confirmPassword.value) {
+    pwdMsg.value = '两次密码不一致'; pwdOk.value = false; return 
+  }
   try {
     await userApi.changePassword(oldPassword.value, newPassword.value)
     pwdMsg.value = '密码已修改'

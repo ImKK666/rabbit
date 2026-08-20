@@ -59,27 +59,25 @@ export const DECK_TOOL_GROUPS = {
 
 export type DeckToolGroup = keyof typeof DECK_TOOL_GROUPS
 
-/** 全部写能力 —— generator / editor 两个写角色共用，避免两处各抄一份组名 */
+/** 全部能力。单独抽出来是为了下面那张表和判据都指向同一份组名 */
 const ALL_DECK_GROUPS = [
   'read', 'slide', 'element', 'layout', 'theme', 'animation', 'asset',
 ] as const satisfies readonly DeckToolGroup[]
 
 /**
- * 角色 → 工具组。
+ * agent → 工具组。
  *
- * 与拆层前的 `getToolSubset` switch **行为完全一致**：
- * planner / reviewer 拿那 5 个只读工具，generator / editor 拿全集。
- * A3 只把规则从控制流搬成数据，不改配额 —— 改配额是另一件事，要单独验。
+ * **R-51 之前这里有四行**：planner / reviewer 只拿那 5 个只读工具，
+ * generator / editor 拿全集。合并成一个 agent 之后只剩一行，
+ * 配额**与原来的 generator 逐键相等** —— 判据 7 在 `toolGroups.test.ts` 里
+ * 把那 25 个键独立抄了一份当期望，不从这张表反推。
  *
- * Planner 和 Reviewer 只给只读，是第六轮定下的：
- * 它们的职责是判断不是动手，给了写工具只会让它们绕过 Generator 自己改，
- * 而它们的 prompt 里没有任何设计规范。
+ * 只读那一档没了，因为「只判断不动手」的角色没了。
+ * 这一层本身保留：它表达的是「谁有资格用什么」，
+ * 而第二个域接进来时马上要用到这个表达力（见 `toolRegistry.ts` 头注释）。
  */
 export const DECK_ROLE_TOOL_GROUPS: Record<AgentRole, readonly DeckToolGroup[]> = {
-  planner: ['read'],
-  reviewer: ['read'],
-  generator: ALL_DECK_GROUPS,
-  editor: ALL_DECK_GROUPS,
+  deck: ALL_DECK_GROUPS,
 }
 
 /**

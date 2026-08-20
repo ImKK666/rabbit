@@ -10,12 +10,11 @@ import {
   modelConfigs,
   roleDefaults,
   userRolePreferences,
+  AGENT_ROLES,
   type AgentRole,
 } from '@server/db/schema'
 
 const user = new Hono()
-
-const AGENT_ROLES: AgentRole[] = ['planner', 'generator', 'reviewer', 'editor']
 
 user.get('/models', async (c) => {
   const models = await db.select({
@@ -57,7 +56,7 @@ user.get('/preferences', async (c) => {
 })
 
 const prefSchema = z.object({
-  role: z.enum(['planner', 'generator', 'reviewer', 'editor']),
+  role: z.enum(AGENT_ROLES),
   modelConfigId: z.number().int().positive(),
 })
 

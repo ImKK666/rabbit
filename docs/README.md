@@ -20,6 +20,7 @@
 | [09-powerpoint-verify.md](./09-powerpoint-verify.md) | 45 个动画 + 12 转场在真实 PowerPoint 里的人工验证手册 | 要验动画导出是否真的能播 |
 | [10-agent-runtime-study.md](./10-agent-runtime-study.md) | **BitFun 与 Claude Code 的 runtime / 交互规则研究** —— 阻塞式提问、权限闸门、取消语义、单一权威写者、上下文压缩 | 要动 agent 编排或交互 |
 | [11-agent-roadmap.md](./11-agent-roadmap.md) | **通用 agent 化路线** —— 目标架构、A~D 分期、机器可判的验收判据、四笔隐藏成本 | 要规划 agent 的下一步 |
+| [12-single-agent.md](./12-single-agent.md) | **四角色 → 单 agent 一问一答** —— 三次冷启动的实测代价、历史被压扁成文本的后果、思考块跨工具/跨轮保留、11 号 §四 的修正 | 要动 agent 编排或对话形状 |
 | [upstream/](./upstream/) | 上游 PPTist 自带文档，其中 [`AI_PPT_SCHEMA.md`](./upstream/AI_PPT_SCHEMA.md) 是面向 AI 生成的元素级契约 | 要产出符合底座 schema 的数据 |
 
 ## 一页速览

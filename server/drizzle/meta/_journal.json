@@ -36,6 +36,20 @@
       "when": 1787137727518,
       "tag": "0004_parallel_bloodstrike",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1787182591914,
+      "tag": "0005_far_blob",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1787183964606,
+      "tag": "0006_merge_agent_roles",
+      "breakpoints": true
     }
   ]
 }
