@@ -503,6 +503,11 @@ const runTurn = async ({
     return { text, steps, finishReason }
   })
 
+  // 一轮一行，**只为了「这件事到底有没有发生」看得见**。
+  // 思考回传坏掉的表现不是报错，是模型悄悄变笨 —— 没有这行日志，
+  // 它哪天不工作了没有任何人会发现（`reasoningRelay.ts` 头注释里那条教训）
+  console.log(`[agent] 本轮回传了 ${relay.size()} 段思考（0 表示这个 provider 不需要或没生效）`)
+
   // 步数耗尽是静默的：SDK 直接返回，agent 以为自己做完了。
   // 不提示的话，用户看到的就是「莫名其妙做了一半」
   const truncated = !toolless
