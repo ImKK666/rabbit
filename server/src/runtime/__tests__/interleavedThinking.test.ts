@@ -153,3 +153,54 @@ describe('判据 9 · 第二步的请求里带着第一步的思考', () => {
     })
   })
 })
+
+/**
+ * 落库不许重复 —— 上线过一次的真 bug
+ *
+ * `step.response.messages` **是累积的，不是这一步的**：
+ * SDK 里那行是 `messages: [...recordedResponse.messages, ...stepMessages]`。
+ * 照单全存的话，第一步的消息会被存 N 次（N = 总步数）——
+ * 实时看着完全正常，**重开会话才发现 3 次工具调用变成了 8 次**。
+ *
+ * 更值得记的是：**当时那条「调用数 == 结果数」的不变式没抓住它。**
+ * 整段重复时两边一起翻倍，等式照样成立。
+ * 判据对不敏感的错误是看不见的 —— 所以这里直接盯「累积」这个性质本身。
+ */
+describe('落库不许重复', () => {
+  beforeEach(() => { prompts.length = 0 })
+
+  it('response.messages 是累积的 —— 这就是那个坑，先把它钉住', async () => {
+    const stream = await run()
+    const steps = await stream.steps
+    // 第二步那份包含第一步那份，且更长
+    expect(steps[1].response.messages.length).toBeGreaterThan(steps[0].response.messages.length)
+    expect(steps[1].response.messages.slice(0, steps[0].response.messages.length))
+      .toEqual(steps[0].response.messages)
+  })
+
+  it('按 pipeline 的做法（只落新增的）走一遍，结果与最后一步的全量逐条相等', async () => {
+    const stream = await run()
+    const steps = await stream.steps
+
+    // 复刻 pipeline.ts 的 savedCount 逻辑
+    const persisted: unknown[] = []
+    let savedCount = 0
+    for (const step of steps) {
+      const all = step.response.messages
+      persisted.push(...all.slice(savedCount))
+      savedCount = all.length
+    }
+
+    expect(persisted).toEqual(steps.at(-1)!.response.messages)
+  })
+
+  it('照单全存会重复 —— 这条是负对照，证明上面那条真的在管事', async () => {
+    const stream = await run()
+    const steps = await stream.steps
+
+    const naive: unknown[] = []
+    for (const step of steps) naive.push(...step.response.messages)
+
+    expect(naive.length).toBeGreaterThan(steps.at(-1)!.response.messages.length)
+  })
+})

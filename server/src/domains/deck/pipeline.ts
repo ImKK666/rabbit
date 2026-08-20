@@ -162,7 +162,8 @@ const saveModelMessage = async (
   modelConfigId: number,
 ) => {
   if (msg.role !== 'assistant' && msg.role !== 'tool') return
-  const blocks = Array.isArray(msg.content) ? msg.content : [{ type: 'text', text: msg.content }]
+  const raw = Array.isArray(msg.content) ? msg.content : [{ type: 'text', text: msg.content }]
+  const blocks = dropEmptyReasoning(raw as AssistantBlock[])
   if (blocks.length === 0) return
 
   await db.insert(messages).values({
@@ -173,6 +174,25 @@ const saveModelMessage = async (
     modelConfigId,
   })
 }
+
+/**
+ * 丢掉**空的思考块**。
+ *
+ * deepseek 在最后一条消息上会发一个空的 reasoning 分片。实时流那边已经挡了
+ * （不转发空增量），但**落库这条路是另一条** —— 上一版只补了前者，
+ * 于是实时看着正常、重开会话又冒出一个「思考完成 0 字」的空壳。
+ * **两条路都要挡，各挡各的。**
+ *
+ * 判据是「文本为空 **且** 没有 signature」，不是单看文本：
+ * Anthropic 的空文本思考块可能带着 signature（验签用），
+ * 那种丢了下一次请求会 400。宁可留一个看不见的块，也不能丢一个验签凭据。
+ */
+const dropEmptyReasoning = (blocks: AssistantBlock[]): AssistantBlock[] =>
+  blocks.filter((b) => {
+    if (b.type !== 'reasoning') return true
+    const r = b as { text?: string, signature?: string }
+    return !!r.text?.trim() || !!r.signature
+  })
 
 /**
  * 给人看的那一份。面板重开会话时读的是这一列。
@@ -457,6 +477,20 @@ const runTurn = async ({
   // 不开 reasoning 的模型一条都不会发，前端也就不会画出一个空思考块
   let reasoningOpen = false
 
+  /**
+   * 已经落库的模型消息条数。
+   *
+   * **`step.response.messages` 是累积的，不是这一步的** ——
+   * SDK 里那行是 `messages: [...recordedResponse.messages, ...stepMessages]`。
+   * 照单全存的话，第一步的消息会被存 N 次（N = 总步数），
+   * 重开会话时历史里全是重复的工具调用。
+   *
+   * 这个 bug 上线过一次，而且**当时那条「调用数 == 结果数」的不变式没抓住它** ——
+   * 整段重复时两边一起翻倍，等式照样成立。判据对不敏感的错误是看不见的，
+   * 现在由 `interleavedThinking.test.ts` 的「不许重复」一组盯着。
+   */
+  let savedCount = 0
+
   const { model, providerOptions } = resolved
   const result = await withModelContext(AGENT_ROLE, model, async () => {
     const stream = streamText({
@@ -496,14 +530,17 @@ const runTurn = async ({
         }
 
         // 这一步的思考要在**下一步的请求发出去之前**记下来 ——
-        // onStepFinish 正好在两次请求之间，是唯一的时机
-        relay.learn(step.response.messages as unknown as { role: string, content: unknown }[])
+        // onStepFinish 正好在两次请求之间，是唯一的时机。
+        // 这里喂全量没关系：learn 往 Map 里写，重复写是幂等的
+        const all = step.response.messages
+        relay.learn(all as unknown as { role: string, content: unknown }[])
 
-        // **这一步产生的模型消息原样落库。** 不自己拼 block，见 saveModelMessage 的说明。
+        // **只落这一步新增的那几条。** all 是累积的，见 savedCount 的说明。
         // 落库失败不能吞（吞了就是「画布有、历史没有」），交给外层的 catch
-        for (const m of step.response.messages) {
+        for (const m of all.slice(savedCount)) {
           await saveModelMessage(conversationId, m as CoreMessage, resolved.configId)
         }
+        savedCount = all.length
       },
     })
 

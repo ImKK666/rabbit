@@ -338,9 +338,30 @@ generator 是四个里唯一有全工具的，它的模型配置最接近新 age
 ```
 
 第二轮那句是整件事的判据：**旧版本答不上来**，因为工具调用在它的历史里根本不存在，
-它必须重新 `getDeck` 才知道刚才加了什么。库里落下 14 行，形状是
-`reasoning+tool-call+tool-call` / `tool-result+tool-result` 这样的模型消息，
-8 个调用配 8 个结果，7 个思考块。
+它必须重新 `getDeck` 才知道刚才加了什么。库里的行就是模型消息序列：
+
+```
+user → assistant[reasoning + tool-call ×2] → tool[tool-result ×2]
+     → assistant[reasoning + tool-call]     → tool[tool-result]
+     → assistant[text]
+```
+
+> **这段证据最初是错的，记一笔 —— 这是本轮最值得记的一次判据失效。**
+>
+> 第一次跑出来是 14 行、「8 个调用配 8 个结果」，我当时把它当成通过了。
+> 实际上那是重复：`step.response.messages` **是累积的而不是这一步的**
+>（SDK 里是 `[...recordedResponse.messages, ...stepMessages]`），
+> 每步照单全存 → 第一步的消息被存了 N 次。用户重开会话，
+> 3 次工具调用显示成 8 次，才暴露出来。
+>
+> **要命的是当时那条「调用数 == 结果数」的不变式没抓住它**：
+> 整段重复时两边一起翻倍，等式照样成立。
+> **一条对某类错误不敏感的判据，和没有判据是一样的** ——
+> 而它绿着，反而让人以为这块被守住了。
+>
+> 现在盯的是「累积」这个性质本身（`interleavedThinking.test.ts`
+> 的「落库不许重复」一组，含负对照：照单全存必须比最后一步的全量更长），
+> 外加端到端数一次「实时看到几次工具调用 == 库里存了几个 tool-call」。
 
 **合并 prompt 之后又跑了一次（阶段 C）**，同样是真模型、真库、跑完即删：
 
