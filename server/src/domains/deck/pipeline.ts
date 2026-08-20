@@ -294,7 +294,20 @@ const loadRows = async (conversationId: number): Promise<StoredRow[]> => {
 }
 
 /**
- * 给模型调用的异常补上「是哪个角色、哪个 provider、哪个模型、哪个 baseUrl」。
+ * 连接类故障 —— 和「配置错了」是两回事，给用户看的话术也该不一样。
+ *
+ * 实测撞到过 `ECONNRESET`（deepseek 在流到一半时把 socket 关了）。
+ * 它长得像代码崩了（一大段堆栈），实际上重发一次就好 ——
+ * 而且**现在重发是廉价的**：历史都在库里，说一句「接着做」就能续上，
+ * 不像以前要从头再来。同样的代码、同样的 prompt 连跑八次零复现，
+ * 所以它是网络抖动，不是我们这边的状态问题。
+ */
+const isConnectionError = (raw: string): boolean =>
+  /ECONNRESET|socket connection was closed|ETIMEDOUT|ECONNREFUSED|EPIPE|fetch failed|network|The operation was aborted due to timeout/i
+    .test(raw)
+
+/**
+ * 给模型调用的异常补上「是哪个 agent、哪个 provider、哪个模型、哪个 baseUrl」。
  *
  * 上游 SDK 对 404 只抛一句 "Not Found"，落到用户界面上完全无从排查。
  */
@@ -311,6 +324,17 @@ const withModelContext = async <T>(
     const desc = (model as { __rabbitDescribe?: string }).__rabbitDescribe
       ?? `model="${typeof model === 'string' ? model : model.modelId}"`
     const raw = err instanceof Error ? err.message : String(err)
+
+    // 网络掉线不是配置问题，别让用户去查 baseUrl 和模型名 ——
+    // 已经做完的部分都落库了，接着说一句就能续
+    if (isConnectionError(raw)) {
+      throw new Error(
+        `与模型的连接中断了（${raw.split('\n')[0].slice(0, 80)}）。\n`
+        + '已经做完的部分都保存下来了 —— 再发一句「接着做」就能从这里续上。',
+        { cause: err },
+      )
+    }
+
     const hint = /not found|404/i.test(raw)
       ? '\n提示：404 通常是模型名不在该 provider 上，或 baseUrl 少了/多了版本段（如 /v1）。'
       : ''
