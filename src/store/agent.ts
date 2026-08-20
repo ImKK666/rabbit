@@ -152,7 +152,21 @@ export const useAgentStore = defineStore('agent', {
         case 'agent.status':
           this.status = msg.status
           this.statusMessage = msg.message || ''
-          this.log.push({ type: 'status', status: msg.status, message: msg.message || '' })
+          /**
+           * **只有终止状态进日志。**
+           *
+           * `thinking` / `tool_call` 是**进度**不是**记录**：它们在跑的时候
+           * 由底部那条带动画的进度条显示（读的就是 statusMessage），
+           * 跑完之后还留在日志里就纯是噪声 —— 一条「Agent 正在思考...」
+           * 挂在已经写完的回答上面，只会让人以为它还在转。
+           *
+           * 唯一一条有信息量的 thinking（「达到步数上限，正在收尾…」）
+           * 不会因此丢掉：收尾轮结束后 pipeline 会补一条 `agent.text`
+           * 把同一件事写成永久记录。
+           */
+          if (msg.status === 'done' || msg.status === 'error') {
+            this.log.push({ type: 'status', status: msg.status, message: msg.message || '' })
+          }
           // 终止事件上把所有权还回来 —— 每次任务恰好收到一条 done 或 error
           // （取消的回执由后端 ws/handler 当场发，正常收尾和出错各一条），
           // 所以这里转移一次、且只转移一次
