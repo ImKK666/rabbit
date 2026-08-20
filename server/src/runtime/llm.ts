@@ -43,6 +43,59 @@ export interface ResolvedModel {
   configId: number
 }
 
+/**
+ * 这个角色现在能不能用。**不抛异常** —— 返回结果 + 原因。
+ *
+ * 给「可选能力」用：视觉复核没配模型时，那个工具**整个不注册**，
+ * 而不是留在工具表里回一句「未配置」。R-32 的教训原文：
+ * 「一个永远返回『未接入』的工具只会白白消耗步数预算」。
+ *
+ * `supportsVision`（**能读图**）单独带出来，是因为视觉复核对模型有硬要求：
+ * 它要看一张截图。配了一个没有视觉的模型（比如现在实际在用的 deepseek）
+ * 比没配更糟 —— 请求会发出去、会返回一段一本正经的胡话，
+ * 而**没有任何东西会报错**。
+ *
+ * **注意不是 `supportsImages`**，那个是「能出图」（生图模型选择器筛的那个）。
+ * 两件事拆开的理由见 `db/schema.ts` 上那两段注释：复用一个字段会让
+ * 一个只会看图的模型出现在「生图用哪个模型」的下拉里。
+ */
+export interface RoleModelInfo {
+  ok: boolean
+  supportsVision: boolean
+  /** `ok: false` 时说清楚缺什么，好让日志能直接告诉管理员去配哪一项 */
+  reason?: string
+}
+
+export const inspectRoleModel = async (
+  role: AgentRole,
+  userId: number,
+): Promise<RoleModelInfo> => {
+  const miss = (reason: string): RoleModelInfo => ({ ok: false, supportsVision: false, reason })
+  try {
+    const pref = await db.select().from(userRolePreferences)
+      .where(and(eq(userRolePreferences.userId, userId), eq(userRolePreferences.role, role)))
+      .get()
+
+    let configId = pref?.modelConfigId
+    if (!configId) {
+      const def = await db.select().from(roleDefaults)
+        .where(eq(roleDefaults.role, role)).get()
+      configId = def?.modelConfigId
+    }
+    if (!configId) return miss(`角色 "${role}" 还没有配置模型`)
+
+    const config = await db.select().from(modelConfigs)
+      .where(and(eq(modelConfigs.id, configId), eq(modelConfigs.enabled, true)))
+      .get()
+    if (!config) return miss(`模型配置 #${configId} 不存在或已禁用`)
+
+    return { ok: true, supportsVision: config.supportsVision }
+  }
+  catch (err) {
+    return miss(err instanceof Error ? err.message : String(err))
+  }
+}
+
 export const resolveModelForRole = async (
   role: AgentRole,
   userId: number,

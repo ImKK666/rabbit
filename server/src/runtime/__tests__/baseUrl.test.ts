@@ -7,6 +7,7 @@
 
 import { describe, it, expect } from 'vitest'
 import { normalizeBaseUrl } from '../baseUrl'
+import { googleImageEndpoint } from '../imageGenerate'
 
 describe('normalizeBaseUrl · openai（SDK 会拼 /chat/completions）', () => {
   it('裸域名补上 /v1', () => {
@@ -67,6 +68,47 @@ describe('normalizeBaseUrl · google（SDK 会拼 /models/xxx）', () => {
   it('已有版本段不动', () => {
     expect(normalizeBaseUrl('google', 'https://generativelanguage.googleapis.com/v1beta'))
       .toBe('https://generativelanguage.googleapis.com/v1beta')
+  })
+
+  /**
+   * R-52 实测撞出来的 bug，**它一直在，只是没人撞到**。
+   *
+   * 库里配的中转是 `https://g.92.run/v` —— 路径非空，上一版按
+   * 「已有路径的一律不动」原样交给 SDK，于是它 POST 到
+   * `…/v/models/gemini-3.7-flash:generateContent`，少了 `/v1beta`，**每次都 404**。
+   *
+   * 没被发现是因为：deck agent 配的是 deepseek，而生图那条路
+   * **没走 SDK**（`imageGenerate.googleImageEndpoint` 自己拼 URL，规则正好是对的）。
+   * 直到把一个 google 模型配成 agent 角色才暴露。
+   *
+   * 两处对同一件事有两套判断，迟早会像这次一样一边能用一边 404。
+   */
+  it('**路径非空但没有版本段的中转，也要补 /v1beta**', () => {
+    expect(normalizeBaseUrl('google', 'https://g.92.run/v'))
+      .toBe('https://g.92.run/v/v1beta')
+  })
+
+  it('中转已经带了 /v1beta 就不再加', () => {
+    expect(normalizeBaseUrl('google', 'https://g.92.run/v/v1beta'))
+      .toBe('https://g.92.run/v/v1beta')
+  })
+
+  it('已有别的版本段（/v1）也不动 —— 不猜别人的版本', () => {
+    expect(normalizeBaseUrl('google', 'https://proxy.example.com/v1'))
+      .toBe('https://proxy.example.com/v1')
+  })
+
+  it('和 googleImageEndpoint 用同一条规则 —— 两处不许有两套判断', () => {
+    // 这条是把「规则一致」本身变成判据。不一致的表现就是这次撞到的：
+    // 生图那条路能用、agent 那条路 404，而两边看着都「配得对」
+    for (const raw of [
+      'https://g.92.run/v',
+      'https://g.92.run/v/v1beta',
+      'https://generativelanguage.googleapis.com',
+    ]) {
+      expect(`${normalizeBaseUrl('google', raw)}/models/m:generateContent`)
+        .toBe(googleImageEndpoint(raw, 'm'))
+    }
   })
 })
 

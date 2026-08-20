@@ -12,7 +12,13 @@ import { resolveMaxSteps, DEFAULT_ROLE_MAX_STEPS } from '../budget'
 
 describe('默认值', () => {
   it('每个 agent 都有默认上限', () => {
-    expect(Object.keys(DEFAULT_ROLE_MAX_STEPS).sort()).toEqual(['deck'])
+    expect(Object.keys(DEFAULT_ROLE_MAX_STEPS).sort()).toEqual(['deck', 'reflect'])
+  })
+
+  it('视觉复核只跑一步 —— 它没有任何工具，没有第二步可走', () => {
+    // 写成 1 而不是随便给个大数，是让「它不该有多步」这件事在代码里有个位置：
+    // 哪天有人给它加了工具，这个 1 会立刻把问题暴露出来
+    expect(DEFAULT_ROLE_MAX_STEPS.reflect).toBe(1)
   })
 
   it('没有环境变量时用默认', () => {

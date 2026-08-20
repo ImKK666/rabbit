@@ -148,7 +148,7 @@ export const adminApi = {
   listModels() {
     return api.get(`${SERVER_URL}/admin/models`)
   },
-  createModel(data: { providerId: number, modelName: string, displayName: string, supportsImages?: boolean, enabled?: boolean }) {
+  createModel(data: { providerId: number, modelName: string, displayName: string, supportsImages?: boolean, supportsVision?: boolean, enabled?: boolean }) {
     return api.post(`${SERVER_URL}/admin/models`, data)
   },
   updateModel(id: number, data: Record<string, unknown>) {

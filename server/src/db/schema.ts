@@ -23,7 +23,30 @@ export const modelConfigs = sqliteTable('model_configs', {
   providerId: integer('provider_id').notNull().references(() => modelProviders.id),
   modelName: text('model_name').notNull(),
   displayName: text('display_name').notNull(),
+  /**
+   * **能出图**（图片作为输出）。生图模型选择器筛的就是它
+   * （`AssetSettings.vue` 的 `imageModelOptions`）。
+   *
+   * 名字里的 images 有历史包袱：它建的时候只有生图一个用途。
+   * R-52 加视觉复核时差点复用它 —— 那会让一个只会**看**图的模型
+   * 出现在「生图用哪个模型」的下拉里，而它一张图也生不出来。
+   * 两件事拆开，见下面的 `supportsVision`。
+   */
   supportsImages: integer('supports_images', { mode: 'boolean' }).notNull().default(false),
+  /**
+   * **能读图**（图片作为输入）。R-52 加的。
+   *
+   * 渲染后反思的视觉复核要把一张截图发给模型看，这是硬要求：
+   * 配一个没有视觉的模型比不配更糟 —— 请求发得出去、会返回一段
+   * 一本正经的胡话，**而没有任何东西会报错**。
+   *
+   * 和 `supportsImages` 是两个独立维度，四种组合都真实存在：
+   *   deepseek-v4-pro        出✗ 读✗
+   *   gemini-3.7-flash       出✗ 读✓   ← 视觉复核要的是这一档
+   *   gemini-3.1-flash-image 出✓ 读✓
+   *   （只出不读的纯生图模型）出✓ 读✗
+   */
+  supportsVision: integer('supports_vision', { mode: 'boolean' }).notNull().default(false),
   enabled: integer('enabled', { mode: 'boolean' }).notNull().default(true),
   /**
    * 每分钟最多调用几次。**null = 不限**。
@@ -182,7 +205,21 @@ export const assetSearchCache = sqliteTable('asset_search_cache', {
  * 在 `routes/admin.ts` 和 `routes/user.ts` 里各硬抄了一份，
  * 加一个角色要改三处、漏一处不会有任何东西报错。现在两边都从这里取。
  */
-export const AGENT_ROLES = ['deck'] as const
+/**
+ * **R-52 加了第二个值 `reflect`（渲染后反思的视觉复核）。**
+ *
+ * 它不是「第二个干活的 agent」，而是**这一维终于被用起来了**：
+ * 视觉复核要看一张渲染出来的截图，而实际在用的 deepseek 没有视觉能力 ——
+ * 用 deck agent 那个模型根本看不了图。所以它必须能单独配一个模型。
+ *
+ * 加进这个列表之后，管理员的角色默认和用户的模型偏好两个设置页
+ * **自动多出一档**（两处的 `z.enum` 都从这里取）。
+ *
+ * 注意分工：**几何测量那部分不过模型**（declared vs actual 差几像素是纯计算，
+ * 一过模型就从「每次结果一样」变成「每次不一样」，判据就没了）。
+ * 这个角色只负责「看一眼这页丑不丑」，见 docs/13 §三。
+ */
+export const AGENT_ROLES = ['deck', 'reflect'] as const
 export type AgentRole = typeof AGENT_ROLES[number]
 
 export const roleDefaults = sqliteTable('role_defaults', {

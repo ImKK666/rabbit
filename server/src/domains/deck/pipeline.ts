@@ -50,6 +50,7 @@ import { createReasoningRelay } from '@server/runtime/reasoningRelay'
 import { imageCapabilityAvailable } from '@server/runtime/assetConfig'
 import { createAgentTools, type DeckState } from './tools'
 import { createAssetTools, type AssetTools } from './assetTools'
+import { createReflectTools, reflectVisualAvailable } from './reflectTool'
 import { getSystemPrompt, getToolSubset } from './roles'
 import { createDeckChannel, type DeckChannel } from './channel'
 
@@ -394,6 +395,8 @@ interface TurnInput {
   channel: TaskChannel
   signal: AbortSignal
   assetTools: AssetTools | null
+  /** 这一轮要不要给视觉复核那一档（几何测量那一档永远给） */
+  visual: boolean
   /** 本轮附加、不落库的消息（选中元素快照 / 收口提示） */
   extra?: string
   /** 收口轮：不给任何工具，只让它把话说完 */
@@ -413,7 +416,7 @@ interface TurnResult {
  * 输出的每一条模型消息原样追加回同一份历史 —— 下一轮它们就是上下文。
  */
 const runTurn = async ({
-  userId, conversationId, state, channel, signal, assetTools, extra, toolless,
+  userId, conversationId, state, channel, signal, assetTools, visual, extra, toolless,
 }: TurnInput): Promise<TurnResult> => {
   channel.emit({ type: 'agent.status', status: 'thinking', message: `${AGENT_LABEL} 正在思考...` })
 
@@ -466,7 +469,22 @@ const runTurn = async ({
   // `assetTools.ts`**：后者经 `db/index.ts` 拉 `bun:sqlite`，
   // 一旦让 tools.ts 依赖它，kernel / toolCommit / toolGroups 那几个测试
   // 会全部在 vitest 里加载失败
-  const allTools = { ...createAgentTools(accessor), ...(assetTools ?? {}) }
+  /**
+   * 渲染后反思工具**建在这一轮里**，不是整份任务建一次。
+   *
+   * 因为它要读「此刻的 deck」，而此刻的 deck 只有 `accessor` 知道 ——
+   * `state` 在 runTurn 里是个局部绑定，工具每改一次就重新赋值一次。
+   * 在 `runDeckTask` 那层建的话，闭包捕获的是**开跑那一刻**的 state，
+   * agent 辛苦排完 14 页，量到的却是一份空稿子，而且不会有任何东西报错。
+   */
+  const reflect = createReflectTools({
+    userId,
+    getSlides: () => accessor.get().slides,
+    emit: msg => channel.emit(msg),
+    signal,
+  }, { visual })
+
+  const allTools = { ...createAgentTools(accessor), ...(assetTools ?? {}), ...reflect.tools }
   const tools = toolless ? undefined : getToolSubset(AGENT_ROLE, allTools, { assets: !!assetTools })
   const system = getSystemPrompt(AGENT_ROLE)
   const maxSteps = toolless ? 1 : resolveMaxSteps(AGENT_ROLE)
@@ -630,6 +648,14 @@ export const runDeckTask = async ({
     console.log(`[agent] deck:${deckId} 图片能力未装配（对象存储或取图开关未就绪），本次不给图片工具`)
   }
 
+  /**
+   * 视觉复核这一档要不要装配。**整份任务只探一次**（它读库）。
+   *
+   * 几何测量那一档不需要任何配置，永远装配 —— 所以这里探的只是「要不要额外
+   * 叫一个视觉模型看图」，而不是「有没有反思能力」。
+   */
+  const visual = await reflectVisualAvailable(userId)
+
   const conv = await resolveConversation(userId, deckId, conversationId, prompt)
   // 前端据此把新建的会话挂进列表，也用来纠正对不上的 conversationId
   channel.emit({ type: 'agent.conversation', id: conv.id, title: conv.title })
@@ -648,7 +674,7 @@ export const runDeckTask = async ({
 
     let result = await runTurn({
       userId, conversationId: conv.id, state, channel, signal,
-      assetTools, extra: selection,
+      assetTools, visual, extra: selection,
     })
     state = result.state
 
@@ -662,7 +688,7 @@ export const runDeckTask = async ({
       })
       result = await runTurn({
         userId, conversationId: conv.id, state: result.state, channel, signal,
-        assetTools, extra: FINALIZE_PROMPT, toolless: true,
+        assetTools, visual, extra: FINALIZE_PROMPT, toolless: true,
       })
       state = result.state
       channel.emit({

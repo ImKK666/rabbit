@@ -51,6 +51,23 @@ const CANCEL_POLICY: Record<ServerMessage['type'], 'survives' | 'reclaimable'> =
   'agent.ask': 'reclaimable',
   'error': 'reclaimable',
 
+  // 输入去向回执。分类成「可回收」不是因为它不重要，是因为**它根本不从这条闸门走** ——
+  // 排队 / 拒绝 / 开跑都发生在剧本之外（`orchestrator` 占坑那一刻），
+  // 那时连 channel 都还没建。取消回执同理，由 `ws/handler.ts` 当场回。
+  //
+  // 之所以还要在这里写一行：这张表是 `Record<ServerMessage['type'], …>`，
+  // 少一个键编译就不过 —— 而那正是它存在的意义（见头注释）。
+  'agent.input': 'reclaimable',
+
+  // 要前端量一次渲染。可回收 —— 取消之后没必要再让前端去渲染 20 页。
+  //
+  // **但光回收还不够**：回收掉的话前端永远不会回答，后端那次等待就只能
+  // 耗到超时。所以取消时还要主动把在等的那些作废
+  //（`reflectTool.ts` 里挂在 signal 上的 `cancelAll`）。
+  // 这是「回收一条消息」和「叫醒等它的人」两件事，漏掉后者只是慢，不是错 ——
+  // 但慢到超时那几秒会让取消看起来没生效
+  'agent.render.request': 'reclaimable',
+
   // 图片能力（D1 工具层，第十八轮接上）。
   //
   // 上一版这里写着「真接上之后 asset.ready 会改元素的 src —— 那时它就是权威状态了，

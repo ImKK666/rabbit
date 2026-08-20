@@ -16,6 +16,14 @@ export type ClientMessage =
    */
   | { type: 'agent.cancel', deckId: number }
   | { type: 'agent.confirm', value: boolean }
+  /** 渲染测量的回答。`requestId` 必须原样带回去，后端按它找回是哪一次在等 */
+  | {
+    type: 'agent.render.result'
+    requestId: string
+    measurements: { slideId: string, elementId: string, actualHeight: number }[]
+    shots?: { slideId: string, dataUrl: string }[]
+    error?: string
+  }
 
 export type ServerMessage =
   | { type: 'agent.status', status: 'thinking' | 'tool_call' | 'done' | 'error', message?: string }
@@ -28,6 +36,31 @@ export type ServerMessage =
   /** 本次任务落在哪条会话上 —— 新建时前端据此挂进列表 */
   | { type: 'agent.conversation', id: number, title: string }
   | { type: 'agent.ask', question: string }
+  /**
+   * 这一句用户输入的去向。**三种状态一条消息**。
+   *
+   * 有它之前，工作区忙的时候后端回的是一条泛泛的 `error`，而前端在
+   * `submitTask` 里**发出请求时就已经把用户那句 push 进日志了** ——
+   * 于是那句话留在面板上像是被受理了，后面跟一条红字。
+   *
+   * 三种状态都按 FIFO 作用在「最早那条未确认的用户消息」上：
+   * 同一句话可以连发两次（「继续」「继续」），按文本配对会配错，
+   * 而 WebSocket 保序，按顺序配天然是对的。
+   */
+  | {
+    type: 'agent.input'
+    deckId: number
+    state: 'queued' | 'started' | 'rejected'
+    /** `queued` 时排在第几位，1 表示下一个就是它 */
+    position?: number
+    /** `rejected` 时的原因 */
+    reason?: string
+  }
+  /**
+   * 后端要我们量一次真实渲染。**这是唯一一条后端会挂起等回答的下行消息** ——
+   * 不回答的话它会耗到超时（20 秒）才继续，所以出错也要回一条带 error 的。
+   */
+  | { type: 'agent.render.request', requestId: string, slideIds: string[], wantShots: boolean }
   | { type: 'agent.deck', slidesJson: string, version: number }
   /**
    * 图片资产的进度叙事。**这三条不改画布** —— 后端的图片工具是同步等图的，

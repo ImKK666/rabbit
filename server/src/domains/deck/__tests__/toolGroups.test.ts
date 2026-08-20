@@ -18,6 +18,7 @@ import { DECK_TOOL_GROUPS, DECK_ROLE_TOOL_GROUPS, deckRoleGroups } from '../tool
 // 类型可以照常 import：`import type` 编译期就抹掉了，运行时不产生依赖
 import { ASSET_TOOL_NAMES } from '../assetResults'
 import type { AssetTools } from '../assetTools'
+import type { ReflectTools } from '../reflectTool'
 
 const makeDeckTools = () => {
   let state: DeckState = { slides: [], theme: undefined as never, version: 0 }
@@ -39,18 +40,24 @@ const makeDeckTools = () => {
  * 里一行编译期断言钉死和真实工具键一致，所以占位不会和现实脱节。
  */
 const makeTools = () => {
-  const stub = Object.fromEntries(ASSET_TOOL_NAMES.map(n => [n, {}]))
+  const stub = Object.fromEntries(
+    [...ASSET_TOOL_NAMES, ...REFLECT_TOOL_NAMES].map(n => [n, {}]),
+  )
   // 占位物在运行时不是真工具，但这一组只读 `Object.keys` 和对象同一性，够用
-  return { ...makeDeckTools(), ...stub } as ReturnType<typeof makeDeckTools> & AssetTools
+  return { ...makeDeckTools(), ...stub } as
+    ReturnType<typeof makeDeckTools> & AssetTools & ReflectTools
 }
 
 /**
- * 全部 25 个键，独立抄录一份。
+ * 全部 26 个键，独立抄录一份。
  *
  * 前 23 个是拆层前 `createAgentTools` 的原样，**一个字都没改** ——
  * 判据 8「角色配额与拆层前逐键等价」靠的就是它没被动过。
- * 后 2 个是第十八轮 D1 工具层加的，单独列出来，这样「原有配额有没有被动过」
- * 仍然一眼看得出来。
+ * 后面几个按加入的轮次分组列，这样「原有配额有没有被动过」仍然一眼看得出来。
+ *
+ * **R-52 加第 26 个（`reflectRender`）时，这一组先红了四条** ——
+ * 那正是这份清单存在的意义：加工具是一次真实的配额变更，
+ * 必须有人来这里动手改，而不是让期望值跟着数据自动漂。
  */
 const DECK_TOOL_NAMES = [
   'getDeck', 'getSlide', 'findElements', 'lintDeck', 'getDesignTokens',
@@ -64,7 +71,10 @@ const DECK_TOOL_NAMES = [
 /** 第十八轮加的两个。独立抄，不从 ASSET_TOOL_NAMES 反推 */
 const IMAGE_TOOL_NAMES = ['searchImage', 'generateImage']
 
-const ALL_TOOL_NAMES = [...DECK_TOOL_NAMES, ...IMAGE_TOOL_NAMES].sort()
+/** R-52 加的一个：渲染后反思 */
+const REFLECT_TOOL_NAMES = ['reflectRender']
+
+const ALL_TOOL_NAMES = [...DECK_TOOL_NAMES, ...IMAGE_TOOL_NAMES, ...REFLECT_TOOL_NAMES].sort()
 
 /** 拆层前 planner / reviewer 那个 switch 分支里硬列的 5 个 */
 const READONLY_TOOL_NAMES = [
@@ -72,11 +82,11 @@ const READONLY_TOOL_NAMES = [
 ].sort()
 
 describe('工具总集', () => {
-  it('是 25 个（23 个 deck + 2 个图片），键名与实现一致', () => {
+  it('是 26 个（23 个 deck + 2 个图片 + 1 个反思），键名与实现一致', () => {
     // 这条同时是上面几份硬编码清单的锚：工具增删时这里先红，
     // 提醒去更新清单，而不是让清单悄悄和现实脱节
     expect(Object.keys(makeTools()).sort()).toEqual(ALL_TOOL_NAMES)
-    expect(ALL_TOOL_NAMES).toHaveLength(25)
+    expect(ALL_TOOL_NAMES).toHaveLength(26)
   })
 
   it('原有 23 个 deck 工具一个没少、一个没改名', () => {
@@ -101,7 +111,7 @@ describe('判据 7 · 单 agent 的配额与合并前的 generator 逐键相等'
    * `ALL_TOOL_NAMES` 是本文件顶上**独立抄的一份**，不从 `DECK_TOOL_GROUPS` 反推：
    * 从新数据反推的期望值，在数据本身写错时也会绿。
    */
-  it('deck agent 拿全部 25 个', () => {
+  it('deck agent 拿全部 26 个', () => {
     expect(Object.keys(getToolSubset('deck', tools, withAssets)).sort()).toEqual(ALL_TOOL_NAMES)
   })
 
@@ -129,9 +139,9 @@ describe('图片能力关着时整组不注册', () => {
    */
   const tools = makeTools()
 
-  it('拿到的正好是原来那 23 个', () => {
+  it('拿到的正好是 23 个 deck 工具 + 反思工具 —— 只摘掉图片那一组', () => {
     expect(Object.keys(getToolSubset('deck', tools, { assets: false })).sort())
-      .toEqual([...DECK_TOOL_NAMES].sort())
+      .toEqual([...DECK_TOOL_NAMES, ...REFLECT_TOOL_NAMES].sort())
   })
 
   it('默认（不传 assets）就是不给 —— 忘了传不会把图片工具漏出去', () => {
@@ -180,6 +190,15 @@ describe('分组完整性', () => {
   it('每个 agent 都有配额 —— 新增 agent 不许漏配', () => {
     // Record<AgentRole, …> 在编译期已经保证了，这条防的是
     // 有人为了绕过编译错误写成 Partial 或加 index signature
-    expect(Object.keys(DECK_ROLE_TOOL_GROUPS).sort()).toEqual(['deck'])
+    expect(Object.keys(DECK_ROLE_TOOL_GROUPS).sort()).toEqual(['deck', 'reflect'])
+  })
+
+  it('reflect 角色一个工具都不给 —— 它只出意见，不动手', () => {
+    // 给它工具就等于放它进来改 deck，那时就有两个写者了（B 期「单一权威写者」）
+    expect(DECK_ROLE_TOOL_GROUPS.reflect).toEqual([])
+  })
+
+  it('render 组就是那个反思工具', () => {
+    expect([...DECK_TOOL_GROUPS.render]).toEqual(REFLECT_TOOL_NAMES)
   })
 })

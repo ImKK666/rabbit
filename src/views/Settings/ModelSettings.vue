@@ -22,6 +22,7 @@
         <span class="col-id">模型 ID</span>
         <span class="col-name">显示名</span>
         <span class="col-img">生图</span>
+        <span class="col-img">读图</span>
         <span class="col-rate">每分钟上限</span>
       </div>
       <div class="table-row" v-for="m in filteredModels" :key="m.id">
@@ -35,8 +36,18 @@
             @blur="(e: Event) => handleRename(m.id, (e.target as HTMLInputElement)?.value)"
           />
         </span>
+        <!--
+          「生图」和「读图」是**两个独立维度**，四种组合都真实存在：
+            deepseek-v4-pro        生✗ 读✗
+            gemini-3.7-flash       生✗ 读✓   ← 渲染后反思的视觉复核要这一档
+            gemini-3.1-flash-image 生✓ 读✓
+          合成一个开关的话，一个只会看图的模型会跑进「生图用哪个模型」的下拉里
+        -->
         <span class="col-img">
           <Switch :value="m.supportsImages" @update:value="v => handleImages(m.id, v)" />
+        </span>
+        <span class="col-img">
+          <Switch :value="m.supportsVision" @update:value="v => handleVision(m.id, v)" />
         </span>
         <span class="col-rate">
           <!--
@@ -73,6 +84,7 @@ interface ModelConfig {
   modelName: string
   displayName: string
   supportsImages: boolean
+  supportsVision: boolean
   enabled: boolean
   rateLimitPerMin: number | null
 }
@@ -170,6 +182,13 @@ const handleImages = async (id: number, val: boolean) => {
   await adminApi.updateModel(id, { supportsImages: val })
   const m = models.value.find(m => m.id === id)
   if (m) m.supportsImages = val
+}
+
+/** 能读图 —— 渲染后反思的视觉复核靠它筛模型（`reflect` 角色） */
+const handleVision = async (id: number, val: boolean) => {
+  await adminApi.updateModel(id, { supportsVision: val })
+  const m = models.value.find(x => x.id === id)
+  if (m) m.supportsVision = val
 }
 
 onMounted(load)

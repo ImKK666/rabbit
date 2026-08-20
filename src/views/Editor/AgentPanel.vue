@@ -70,9 +70,23 @@
             </div>
 
             <!-- 用户输入 -->
-            <div class="log-entry user-msg" v-if="entry.type === 'text' && entry.role === 'user'">
+            <div
+              class="log-entry user-msg"
+              :class="{ queued: entry.delivery?.state === 'queued', rejected: entry.delivery?.state === 'rejected' }"
+              v-if="entry.type === 'text' && entry.role === 'user'"
+            >
               <div class="entry-label">
                 你
+                <!-- 这句话此刻的去向。没有这个标记的时候面板会撒谎：
+                     发出请求那一刻这条就进日志了，排队和被拒都看不出来 -->
+                <span class="delivery-tag queued" v-if="entry.delivery?.state === 'queued'">
+                  ⏸ 排队中{{ entry.delivery.position > 1 ? `（前面还有 ${entry.delivery.position - 1} 条）` : '' }}
+                </span>
+                <span
+                  class="delivery-tag rejected"
+                  v-else-if="entry.delivery?.state === 'rejected'"
+                  v-tooltip="entry.delivery.reason"
+                >⊘ 未送达</span>
                 <span
                   class="fork-btn"
                   v-if="entry.messageId && !isRunning"
@@ -81,6 +95,9 @@
                 >⑂ 分叉</span>
               </div>
               <div class="entry-content">{{ entry.content }}</div>
+              <div class="delivery-reason" v-if="entry.delivery?.state === 'rejected'">
+                {{ entry.delivery.reason }}
+              </div>
             </div>
 
             <!-- 角色文本输出 -->
@@ -645,6 +662,35 @@ useStickToBottom(bodyRef, log, { deep: true })
     font-size: 12px;
     color: #333;
     line-height: 1.5;
+  }
+
+  // 排队中 / 未送达。**整条压暗**，不只是加一个角标 ——
+  // 这条消息和上面那些已经被处理掉的长得一样的话，
+  // 「它还没被处理」这件事就等于没说
+  &.queued {
+    background: #f2f4f6;
+    .entry-content { color: #7a8894; }
+  }
+  &.rejected {
+    background: #fdf0ef;
+    .entry-content {
+      color: #99807e;
+      text-decoration: line-through;
+    }
+  }
+
+  .delivery-tag {
+    margin-left: 6px;
+    font-weight: 500;
+
+    &.queued { color: #7a8894; }
+    &.rejected { color: #c0392b; }
+  }
+  .delivery-reason {
+    margin-top: 4px;
+    font-size: 11px;
+    color: #c0392b;
+    line-height: 1.4;
   }
 }
 

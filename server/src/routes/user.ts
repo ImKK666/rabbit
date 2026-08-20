@@ -22,6 +22,7 @@ user.get('/models', async (c) => {
     modelName: modelConfigs.modelName,
     displayName: modelConfigs.displayName,
     supportsImages: modelConfigs.supportsImages,
+    supportsVision: modelConfigs.supportsVision,
     providerName: modelProviders.name,
     providerType: modelProviders.providerType,
   })

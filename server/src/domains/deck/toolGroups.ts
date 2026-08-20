@@ -16,9 +16,11 @@ import type { AgentTools } from './tools'
 // 写成值导入会让这个文件（以及 import 它的每一个测试）在 vitest 里加载失败。
 // 类型导入编译期就抹掉了，运行时不产生任何依赖
 import type { AssetTools } from './assetTools'
+// 同上，必须 `import type`：`reflectTool.ts` 经 `runtime/llm.ts` 拉 `bun:sqlite`
+import type { ReflectTools } from './reflectTool'
 
-/** deck 域现在能提供的全部工具。装配时由 `pipeline.ts` 把两组合到一起 */
-export type DeckTools = AgentTools & AssetTools
+/** deck 域现在能提供的全部工具。装配时由 `pipeline.ts` 把三组合到一起 */
+export type DeckTools = AgentTools & AssetTools & ReflectTools
 
 /**
  * 25 个工具分成 7 组。
@@ -55,13 +57,22 @@ export const DECK_TOOL_GROUPS = {
    * 而不是让工具自己在运行时回一句「未配置」。
    */
   asset: ['searchImage', 'generateImage'],
+
+  /**
+   * 渲染后反思（R-52）。
+   *
+   * 单独一组而不是并进 `read`：它和别的只读工具**代价完全不是一个量级** ——
+   * 一次调用要让前端全量渲染一遍（最长等 20 秒），配了视觉模型时还要
+   * 再叫几次模型。哪天需要「便宜的只读 agent」时，这一组要能单独摘掉。
+   */
+  render: ['reflectRender'],
 } as const satisfies ToolGroupMap<DeckTools>
 
 export type DeckToolGroup = keyof typeof DECK_TOOL_GROUPS
 
 /** 全部能力。单独抽出来是为了下面那张表和判据都指向同一份组名 */
 const ALL_DECK_GROUPS = [
-  'read', 'slide', 'element', 'layout', 'theme', 'animation', 'asset',
+  'read', 'slide', 'element', 'layout', 'theme', 'animation', 'asset', 'render',
 ] as const satisfies readonly DeckToolGroup[]
 
 /**
@@ -78,6 +89,16 @@ const ALL_DECK_GROUPS = [
  */
 export const DECK_ROLE_TOOL_GROUPS: Record<AgentRole, readonly DeckToolGroup[]> = {
   deck: ALL_DECK_GROUPS,
+
+  /**
+   * 视觉复核**一个工具都不给**，这是刻意的。
+   *
+   * 它做的事是「看一张渲染出来的截图，说出哪里不对」——一次性的、只出文字的判断。
+   * 给它工具就等于放它进来改 deck，而那时就有两个写者了
+   * （B 期「单一权威写者」防的正是这件事）。改由 deck agent 拿着它的意见去改，
+   * 谁负责动手这件事仍然只有一个答案。
+   */
+  reflect: [],
 }
 
 /**

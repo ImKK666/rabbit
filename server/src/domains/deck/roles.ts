@@ -27,6 +27,8 @@ import { selectToolGroups } from '@server/runtime/toolRegistry'
 import type { AgentTools } from './tools'
 // `AssetTools` 只作类型用 —— 值导入会把 `bun:sqlite` 拖进来，见 toolGroups.ts 的说明
 import type { AssetTools } from './assetTools'
+// 同上，必须 `import type`：`reflectTool.ts` 经 `runtime/llm.ts` 拉 `bun:sqlite`
+import type { ReflectTools } from './reflectTool'
 import { DECK_TOOL_GROUPS, deckRoleGroups, type DeckTools } from './toolGroups'
 import { describeShapeCatalog } from '@/configs/shapeCatalog'
 import { describeLayouts } from './layouts'
@@ -268,8 +270,55 @@ ${ANIMATION_GUIDE}
 - 别每页都用同一个版式、同一个动画 —— lintDeck 会报，而且用户一眼就看出来
 - 别在 applyLayout 之前往页面里加元素（它会清空该页重排）`
 
+/**
+ * ## R-52：视觉复核的 prompt
+ *
+ * 它看的是**一张已经渲染出来的截图**，不是 deck 的 JSON。这是关键区别 ——
+ * JSON 层面的问题（越界、重叠、对比度、相邻页雷同）`lintDeck` 已经全查了，
+ * 而且查得比模型准、每次结果还一样。再叫模型看一遍 JSON 是纯浪费。
+ *
+ * 它要回答的是**只有看图才看得出来的那类问题**，正好是
+ * 12 号文档 §六② 里「丢得起、先丢掉」的那两条：
+ *   - 空洞的套话
+ *   - 该用图表却排成了文字
+ * 外加几何测不出来的观感问题（视觉重心偏、留白不匀、图文抢焦点）。
+ *
+ * **刻意不给它改的能力**（`toolGroups.ts` 里 `reflect: []`）：
+ * 它只出意见，动手的仍然只有 deck agent 一个 —— B 期「单一权威写者」那条不能破。
+ *
+ * **刻意要求它可以说「没问题」。** 一个每次都能挑出三条毛病的复核器是没有信息量的：
+ * 它会逼着 agent 去改本来没问题的地方，越改越差。
+ */
+const REFLECT_AGENT_PROMPT = `你在给一份演示文稿做**渲染后复核**。你看到的是某一页真正渲染出来的样子。
+
+几何问题已经有代码在查了（越界、重叠、对比度、文字溢出、相邻页版式雷同），
+**不要重复报这些**。你要看的是只有看图才看得出来的：
+
+1. **空洞的套话** —— "提升效率"、"赋能业务"、"打造闭环" 这类没有信息量的词。
+   具体到什么程度算好：「响应快」是套话，「响应 200ms」不是。
+2. **该用图表却排成了文字** —— 一堆数字、占比、趋势、时间点被排成了 bullets 或段落。
+3. **视觉问题** —— 视觉重心明显偏一边、留白极不均匀、图片和文字互相抢焦点、
+   某个元素孤零零地悬在那儿。
+
+规则：
+
+- **每条意见必须能落到具体动作上。** 说「第 2 页那三个百分比应该做成 chart」，
+  不要说「建议优化视觉层次」。
+- **没问题就说没问题。** 硬凑毛病会让人去改本来对的地方，越改越差。
+  一页挑不出 1 条真问题是完全正常的。
+- 最多 3 条，按严重程度排。
+- 不要评论配色方案本身 —— 那是整份文稿统一选定的，不该逐页动。
+
+按这个格式回答，不要有别的话：
+
+问题：<一句话说清是什么问题，指明位置>
+建议：<具体改成什么>
+
+（没有问题时只回一行：无）`
+
 const SYSTEM_PROMPTS: Record<AgentRole, string> = {
   deck: DECK_AGENT_PROMPT,
+  reflect: REFLECT_AGENT_PROMPT,
 }
 
 
@@ -287,13 +336,14 @@ export const getSystemPrompt = (role: AgentRole): string => SYSTEM_PROMPTS[role]
  * 返回类型仍是 `Partial<…>`：orchestrator 依赖这个形状，
  * 见那边 toolCalls 强制转换处的注释。
  *
- * `allTools` 收 `AgentTools & Partial<AssetTools>` 而不是 `DeckTools`：
+ * `allTools` 收 `AgentTools & Partial<…>` 而不是 `DeckTools`：
  * 图片能力关着时装配层根本不会建那两个工具，收得比这更严会逼着调用方
  * 造两个假的塞进来 —— 而假工具是会被模型真的调到的。
+ * 反思工具同理（虽然它目前总是装配）。
  */
 export const getToolSubset = (
   role: AgentRole,
-  allTools: AgentTools & Partial<AssetTools>,
+  allTools: AgentTools & Partial<AssetTools> & Partial<ReflectTools>,
   { assets = false }: { assets?: boolean } = {},
 ): RoleToolset =>
   selectToolGroups(allTools, DECK_TOOL_GROUPS, deckRoleGroups(role, { assets }))

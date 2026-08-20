@@ -11,7 +11,7 @@ import userRoutes from '@server/routes/user'
 import conversationRoutes from '@server/routes/conversation'
 import assetRoutes from '@server/routes/assets'
 import { sweepStalePendingAssets } from '@server/domains/deck/assetTools'
-import { authenticateWs, handleWsMessage, type WsUserData } from '@server/ws/handler'
+import { authenticateWs, handleWsMessage, handleWsClose, type WsUserData } from '@server/ws/handler'
 
 const app = new Hono()
 
@@ -92,6 +92,7 @@ const server = Bun.serve<WsUserData>({
     },
     close(ws) {
       console.log(`[ws] disconnected: ${ws.data.username}`)
+      handleWsClose(ws)
     },
   },
 })

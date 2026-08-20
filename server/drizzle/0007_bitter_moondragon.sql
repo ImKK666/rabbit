@@ -1,0 +1,1 @@
+ALTER TABLE `model_configs` ADD `supports_vision` integer DEFAULT false NOT NULL;

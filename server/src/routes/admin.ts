@@ -127,7 +127,10 @@ const modelConfigSchema = z.object({
   providerId: z.number().int().positive(),
   modelName: z.string().min(1),
   displayName: z.string().min(1),
+  /** 能出图（生图模型选择器筛的那个） */
   supportsImages: z.boolean().default(false),
+  /** 能读图（视觉复核要的那个）。两件事是独立维度，见 db/schema.ts */
+  supportsVision: z.boolean().default(false),
   enabled: z.boolean().default(true),
 })
 
@@ -152,6 +155,7 @@ admin.post('/models', zValidator('json', modelConfigSchema), async (c) => {
 const modelPatchSchema = z.object({
   displayName: z.string().min(1).optional(),
   supportsImages: z.boolean().optional(),
+  supportsVision: z.boolean().optional(),
   enabled: z.boolean().optional(),
   /** null = 取消限流；正整数 = 每分钟上限 */
   rateLimitPerMin: z.number().int().positive().nullable().optional(),

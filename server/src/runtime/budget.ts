@@ -49,6 +49,16 @@ import type { AgentRole } from '@server/db/schema'
  */
 export const DEFAULT_ROLE_MAX_STEPS: Record<AgentRole, number> = {
   deck: 512,
+
+  /**
+   * 视觉复核**只跑一步**。
+   *
+   * 它没有任何工具（`toolGroups.ts` 里 `reflect: []`），一次调用就是
+   * 「看一张图 → 说出哪里不对」，没有第二步可走。写成 1 而不是随便给个大数，
+   * 是让「它不该有多步」这件事在代码里有个明确的位置 ——
+   * 哪天有人给它加了工具，这个 1 会立刻把问题暴露出来。
+   */
+  reflect: 1,
 }
 
 /** 环境变量名：`AGENT_MAX_STEPS_DECK` 这种单 agent 覆盖，比全局的优先 */

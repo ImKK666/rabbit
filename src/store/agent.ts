@@ -1,7 +1,23 @@
 import { defineStore } from 'pinia'
 import { send, onMessage, type ServerMessage } from '@/services/websocket'
 import { conversationApi } from '@/services'
+import { measureRenderedSlides } from '@/utils/renderMeasure'
 import { useSlidesStore } from './slides'
+
+/**
+ * 一条用户输入的去向。
+ *
+ * `pending` 是**前端自己造的**，后端没有这个状态：它表示「已经发出去、
+ * 还没收到回执」。存在的理由是配对 —— 每一句输入都会恰好收到一个终局回执
+ * （`started` / `rejected`），前端按 FIFO 作用在最早那条 `pending` 上。
+ *
+ * 按顺序配而不是按文本配：同一句话可以连发两次（「继续」「继续」），
+ * 按文本会配错；WebSocket 保序，按顺序天然是对的。
+ */
+export type DeliveryState =
+  | { state: 'pending' }
+  | { state: 'queued', position: number }
+  | { state: 'rejected', reason: string }
 
 export interface ToolCallRecord {
   tool: string
@@ -21,7 +37,22 @@ export interface TextRecord {
  * 实时流进来的条目在任务结束前拿不到 id（工具调用是流式落库的）。
  */
 export type AgentLogEntry =
-  | { type: 'text', role: string, content: string, messageId?: number }
+  | {
+    type: 'text'
+    role: string
+    content: string
+    messageId?: number
+    /**
+     * 这条用户输入的去向。**只有 `role === 'user'` 的实时条目才有。**
+     *
+     * 不带这个字段的时候面板会撒谎：`submitTask` 在**发出请求时**
+     * 就把用户那句 push 进日志了，工作区忙的话后端只回一条泛泛的 error，
+     * 那句话就留在面板上，看起来像是被受理了。
+     *
+     * `undefined` = 已经在跑或已经跑完（历史里的条目一律是这个）。
+     */
+    delivery?: DeliveryState
+  }
   | { type: 'tool', tool: string, args: Record<string, unknown>, result?: string, messageId?: number }
   | { type: 'status', status: string, message: string }
   /**
@@ -71,6 +102,15 @@ export interface AgentState {
   historyLoading: boolean
   conversations: ConversationMeta[]
   activeConversationId: number | null
+  /**
+   * 这个客户端有几个任务真的在跑。
+   *
+   * 只为一件事存在：**输入被拒时判断要不要收手。** 队列满意味着这份 deck
+   * 上有任务在跑，但**不一定是这个客户端发起的**（另一个标签页也能占着）。
+   * 那种情况下我们收不到任何 `agent.status`，`submitTask` 设的 `thinking`
+   * 会永远转下去，画布也会永远锁着 —— 一把没有任何任务与之对应的锁。
+   */
+  runningTasks: number
 }
 
 export const useAgentStore = defineStore('agent', {
@@ -82,6 +122,7 @@ export const useAgentStore = defineStore('agent', {
     historyLoading: false,
     conversations: [],
     activeConversationId: null,
+    runningTasks: 0,
   }),
 
   getters: {
@@ -103,8 +144,10 @@ export const useAgentStore = defineStore('agent', {
     submitTask(deckId: number, prompt: string, selectedElementIds?: string[]) {
       this.status = 'thinking'
       this.statusMessage = '正在处理...'
-      // 追加而不是覆盖 —— 同一条会话里多轮对话要能连起来看
-      this.log.push({ type: 'text', role: 'user', content: prompt })
+      // 追加而不是覆盖 —— 同一条会话里多轮对话要能连起来看。
+      // **带 pending 标记**：这句话此刻只是发出去了，还不知道是开跑、
+      // 排队还是被拒。收到回执前不许把它显示成已受理
+      this.log.push({ type: 'text', role: 'user', content: prompt, delivery: { state: 'pending' } })
       this.currentDeckId = deckId
       // agent 接过这份文稿的所有权：画布锁住，直到任务终止或用户点「接管」。
       // 在**发出请求时**就转移，不等后端回第一条消息 —— 中间那段空窗期
@@ -172,6 +215,7 @@ export const useAgentStore = defineStore('agent', {
           // 所以这里转移一次、且只转移一次
           if (msg.status === 'done' || msg.status === 'error') {
             useSlidesStore().setDeckOwner('user')
+            this.runningTasks = Math.max(0, this.runningTasks - 1)
           }
           break
 
@@ -205,6 +249,50 @@ export const useAgentStore = defineStore('agent', {
           if (last?.type === 'reasoning') last.done = true
           break
         }
+
+        case 'agent.input': {
+          // 按 FIFO 配对，且**要分状态找** —— 理由见 oldestInDelivery 的注释
+          if (msg.state === 'started') {
+            const entry = this.oldestInDelivery(['pending', 'queued'])
+            if (!entry) break
+            entry.delivery = undefined
+            this.runningTasks++
+          }
+          else if (msg.state === 'queued') {
+            const entry = this.oldestInDelivery(['pending'])
+            if (!entry) break
+            entry.delivery = { state: 'queued', position: msg.position ?? 1 }
+            this.statusMessage = msg.position && msg.position > 1
+              ? `已排队，前面还有 ${msg.position - 1} 条`
+              : '已排队，下一个就是它'
+          }
+          else {
+            const entry = this.oldestInDelivery(['pending'])
+            if (!entry) break
+            entry.delivery = { state: 'rejected', reason: msg.reason ?? '未送达' }
+            this.settleIfNothingLive()
+          }
+          break
+        }
+
+        case 'agent.render.request':
+          /**
+           * 后端要量一次真实渲染。**故意不 await** ——
+           * handleMessage 是同步的消息分发口，在这里等几秒会把这条连接上
+           * 后续的所有消息一起堵住（`agent.deck` 是权威状态，堵住就是画布卡死）。
+           *
+           * 而且**必须回一条**：后端那边挂着等，不回它只能耗到超时。
+           * 所以异常也要变成一条带 error 的答复，而不是一个没人接的 rejection。
+           */
+          measureRenderedSlides(msg.slideIds, msg.wantShots)
+            .then(out => send({ type: 'agent.render.result', requestId: msg.requestId, ...out }))
+            .catch(err => send({
+              type: 'agent.render.result',
+              requestId: msg.requestId,
+              measurements: [],
+              error: err instanceof Error ? err.message : '测量失败',
+            }))
+          break
 
         case 'agent.conversation': {
           // 后端告诉我们本次任务落在哪条会话上。
@@ -280,6 +368,46 @@ export const useAgentStore = defineStore('agent', {
     },
 
     /**
+     * 最早那条处于指定状态的用户消息。
+     *
+     * **从前往后找**（和 `findAssetEntry` 相反）：回执是 FIFO 的，
+     * 最早发出去的那句最先有着落。同一句话连发两次时，按顺序配才配得对。
+     *
+     * **要分状态找，这一点是实测撞出来的。** 只按「还没有终局回执」找的话：
+     *
+     * ```
+     * A 已开跑  B 排队中  C 刚发出（pending）
+     * 收到 C 的 queued → 找到的是 B（它也还没终局），C 永远停在 pending
+     * ```
+     *
+     * 分工是：
+     *   - `queued` / `rejected` 只作用在 **pending** 上（一条刚发出去的话有了着落）
+     *   - `started` 作用在 **pending 或 queued** 上（可能是直接开跑，也可能是排完队轮到了）
+     */
+    oldestInDelivery(states: DeliveryState['state'][]) {
+      for (const entry of this.log) {
+        if (entry.type !== 'text' || entry.role !== 'user') continue
+        if (entry.delivery && states.includes(entry.delivery.state)) return entry
+      }
+      return undefined
+    },
+
+    /**
+     * 确实没有任何东西在跑了，就收手。
+     *
+     * 「收手」包括**把画布所有权还回去** —— `submitTask` 在发出请求那一刻
+     * 就把所有权交给了 agent，而输入被拒时根本没有任务与之对应。
+     * 不还的话画布会一直锁着，且用鼠标解不开。
+     */
+    settleIfNothingLive() {
+      if (this.runningTasks > 0) return
+      if (this.oldestInDelivery(['pending', 'queued'])) return
+      this.status = 'idle'
+      this.statusMessage = ''
+      useSlidesStore().setDeckOwner('user')
+    },
+
+    /**
      * 按票据找回那条资产日志。
      *
      * **从后往前找**：票据是唯一的，但日志可以有几百条，而刚发出 pending
@@ -303,6 +431,9 @@ export const useAgentStore = defineStore('agent', {
       this.currentDeckId = null
       this.conversations = []
       this.activeConversationId = null
+      // 日志清空了，那些 pending / queued 标记指向的条目也没了，
+      // 计数不归零的话下一份文稿会带着一个永远减不回 0 的账
+      this.runningTasks = 0
       // 兜底解锁。正常路径上终止事件已经还过所有权了，但 reset 会在
       // 切换文稿、登出、清空历史时调用 —— 那些时刻要是还锁着，
       // 新打开的文稿会带着一把没有任何任务与之对应的锁，谁也解不开

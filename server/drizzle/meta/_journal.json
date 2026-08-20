@@ -50,6 +50,13 @@
       "when": 1787183964606,
       "tag": "0006_merge_agent_roles",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "6",
+      "when": 1787193751316,
+      "tag": "0007_bitter_moondragon",
+      "breakpoints": true
     }
   ]
 }

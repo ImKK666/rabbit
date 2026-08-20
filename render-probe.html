@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<!--
+  离屏测量探针（开发工具）—— 见 scripts/render-probe.ts 头注释。
+
+  放在仓库根目录是因为 vite dev server 按根目录解析 HTML 入口。
+  **不会进生产构建**：`vite build` 未配 rollupOptions.input，只用 index.html 一个入口。
+-->
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Rabbit · 离屏测量探针</title>
+    <style>
+      body {
+        margin: 0;
+        padding: 24px 32px 60px;
+        background: #eceef2;
+        font: 13px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace;
+        color: #1a1d24;
+      }
+      h1 { font-size: 18px; margin: 0 0 4px; font-family: system-ui, sans-serif; }
+      p.lead { margin: 0 0 20px; color: #5b6472; font-family: system-ui, sans-serif; }
+      #out { white-space: pre; background: #fff; padding: 16px; border-radius: 6px; }
+      .ok { color: #1e7f4d; font-weight: 600; }
+      .bad { color: #c0392b; font-weight: 600; }
+      /* 参照组：正常挂在文档流里的那一份渲染 */
+      #onscreen .thumbnail-slide { border: 1px solid #c3c9d4; margin-bottom: 12px; }
+    </style>
+  </head>
+  <body>
+    <h1>离屏测量探针</h1>
+    <p class="lead">
+      同一批页，分别用「正常渲染」和「离屏渲染」各量一次，逐个元素比对。
+      判据 R3：两者必须一致 —— 不一致就说明离屏那条路量的不是用户看到的东西。
+    </p>
+    <div id="out">跑起来中…</div>
+    <div id="onscreen"></div>
+    <script type="module" src="/scripts/render-probe.ts"></script>
+  </body>
+</html>

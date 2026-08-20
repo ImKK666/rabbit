@@ -20,7 +20,8 @@
     "layout-audit": "vite-node scripts/audit-layouts.ts",
     "layout-shoot": "node scripts/shoot-layout-sheet.mjs",
     "layout-text": "node scripts/measure-layout-text.mjs",
-    "shapes": "vite-node scripts/build-shape-sheet.ts"
+    "shapes": "vite-node scripts/build-shape-sheet.ts",
+    "render-probe": "node scripts/render-probe.mjs"
   },
   "homepage": "https://github.com/ImKK666/rabbit",
   "dependencies": {
