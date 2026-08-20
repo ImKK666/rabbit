@@ -44,7 +44,8 @@ import { buildShapeGeometry } from '@/configs/shapeCatalog'
 import {
   CANVAS_WIDTH, CANVAS_HEIGHT, SAFE, SPACING, TYPE_SCALE, LINE_HEIGHT,
   richText, textBoxHeight, fitFontSize, fitSteps, mixHex, snapY, stack, scrimFor, ensureContrast, UNIT, LAYOUT_INSET,
-  type Palette,
+  fontForSize, TYPOGRAPHY_PAIRS,
+  type Palette, type TypeRecipe, type PaletteStyle,
 } from './design'
 
 export const LAYOUT_PATTERNS = [
@@ -153,6 +154,8 @@ export interface LayoutResult {
    * 现在它至少留下痕迹，`layouts.test.ts` 对全部样本断言它为空。
    */
   clampedIds: string[]
+  /** signature 元素的 id —— 它们刻意不挂动画，见 `Builder.signatureIds` */
+  signatureIds: string[]
 }
 
 export interface LayoutMeta {
@@ -213,8 +216,6 @@ export const LAYOUT_META: Record<LayoutPattern, LayoutMeta> = {
 
 interface Box { left: number, top: number, width: number, height: number }
 
-const FONT = 'Microsoft YaHei'
-
 class Builder {
   private n = 0
   readonly elements: PPTElement[] = []
@@ -230,7 +231,26 @@ class Builder {
    */
   readonly clampedIds: string[] = []
 
-  constructor(private prefix: string, readonly palette: Palette) {}
+  /**
+   * signature（配色风格的记忆点）的元素 id。
+   *
+   * **它们刻意不挂动画** —— 记忆点应该在第一次点击之前就已经在画布上，
+   * 而不是跟着内容飞进来。`animationOrder.ts` 的规则 A 本来就只查文本
+   * （原话：「一块从头铺到尾的背景板不挂动画是正常设计，报了全是噪音」），
+   * 所以 lint 不会报；但 `layouts.test.ts` 的「每一个元素都挂了动画」
+   * 比 lint 严，需要一份**精确**的豁免名单。
+   *
+   * 用 id 而不是按 `name` 前缀匹配：名字是给人看的文案，改一次文案
+   * 就会让豁免悄悄失效，而失效的表现是测试变红（还算好）或者
+   * 有人顺手把 signature 也挂上动画（那就没人知道了）。
+   */
+  readonly signatureIds: string[] = []
+
+  constructor(
+    private prefix: string,
+    readonly palette: Palette,
+    readonly type: TypeRecipe,
+  ) {}
 
   private id(): string {
     return `${this.prefix}_${++this.n}`
@@ -241,6 +261,11 @@ class Builder {
    *
    * 版式一律「先量后排」：把每一块的高度量出来交给 `stack`，由它决定整组放哪。
    * 直接 `y += 常量` 的写法是第二十轮之前版面又挤又空的总根源。
+   *
+   * **字族是从 `size` 推的，不是从调用方传的**（`fontForSize`）。
+   * 下面的 `text()` 用同一个函数、同一个 `size` 推一次 —— 于是
+   * 「按哪个字族量」和「按哪个字族渲染」在构造上就不可能对不上。
+   * 让调用方各传一次的话，45 个调用点里漏一个就是一处安静的估错。
    */
   measure(
     text: string,
@@ -249,7 +274,32 @@ class Builder {
     lineHeight: number = LINE_HEIGHT.body,
     bold = false,
   ): number {
-    return textBoxHeight(text, size, width, lineHeight, { bold })
+    return textBoxHeight(text, size, width, lineHeight, {
+      bold, font: fontForSize(size, this.type),
+    })
+  }
+
+  /**
+   * 在候选字号里挑放得下的最大那个。`fitFontSize` 的方法版 ——
+   * 存在的唯一理由是**它得知道字族**，而字族在 `this` 上。
+   *
+   * 有个先有鸡还是先有蛋：字族由字号定，而这里正是在挑字号。
+   * 解法是按**候选里最大的那个**定字族 —— 挑字号这件事只发生在标题上
+   * （8 个调用点全是 title / stat / quote），候选区间不会跨过 `DISPLAY_MIN`。
+   * 万一以后跨了，按最大值选出的是 display 字族，而 display 通常更宽 ——
+   * 估宽是安全那一侧。
+   */
+  fit(
+    text: string,
+    boxWidth: number,
+    maxHeight: number,
+    candidates: number[],
+    lineHeight: number = LINE_HEIGHT.heading,
+    opts: { bold?: boolean } = {},
+  ): number {
+    return fitFontSize(text, boxWidth, maxHeight, candidates, lineHeight, {
+      ...opts, font: fontForSize(Math.max(...candidates), this.type),
+    })
   }
 
   text(
@@ -283,7 +333,8 @@ class Builder {
       ...clamped,
       rotate: 0,
       content: richText(content, opts),
-      defaultFontName: FONT,
+      // 和 `measure` 同一个函数、同一个 size —— 量的和渲染的必然是同一个字族
+      defaultFontName: fontForSize(opts.size, this.type),
       defaultColor: opts.color,
       // 必须真的写到元素上：`measure` 是按 LAYOUT_INSET 算的，
       // 不写就等于按一个框算、按另一个框渲染。导出侧 useExport 也读它（转成 margin）
@@ -513,6 +564,105 @@ const clampItems = (items: LayoutItem[] | undefined, min: number, max: number): 
 // 版式实现
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Signature —— 每套配色风格的「记忆点」
+// ---------------------------------------------------------------------------
+
+/**
+ * ## 这段替换的是什么
+ *
+ * 旧 `CANVAS_CONTEXT` 里有一段「高频组合」，教模型：
+ * 卡片用 `roundRect` + `shadow: true`、卡片左上角配 32~48px 图标、
+ * 标题下面一条 accent 色的 bar（原话是「**最省力的『有设计感』**」）。
+ *
+ * 那三条逐条对上了业界那份 AI 设计特征清单的 P1 项
+ * （统一圆角+统一阴影糊全身 / 图标塞圆角方块 / 彩色边条），
+ * 而且因为写在 prompt 里，它们成了**每一页的默认长相** ——
+ * 一份稿子里每页都有那条 bar，二十页看下来就是一个模板填了二十遍。
+ *
+ * 这一版把决策挪进代码：模型不再决定「卡片长什么样」，
+ * 由配色风格决定整份稿子有**一个**记忆点。这条分工和字号、配色、字族
+ * 是同一条 —— prompt 只留「什么时候用哪个」。
+ *
+ * ## 为什么只画在页边距里
+ *
+ * `lintSlide` 的重叠判定是「交集面积占较小元素的 60%」，而面积超过画布 60%
+ * 的元素才被当成背景板放过。**一块半页大的色块正好卡在中间**：
+ * 它压住正文会被报重叠，面积又够不到背景板的门槛。
+ *
+ * 所以 signature 一律画在版心之外（`SAFE` 之外那一圈），
+ * 那里本来就没有内容。这不是妥协 —— 版心外的装饰是古典书籍排版的正经做法，
+ * 而且它天然不会和任何版式打架。
+ *
+ * ## 强度按风格分化
+ *
+ * business / academic 只到「几何母题」级别（一条线、一列刻度）；
+ * tech / vivid 可以上大动作（点阵、通栏色条）。学术稿子配一条通栏亮色
+ * 会和它「极简、去饱和、信息优先」的定位自相矛盾。
+ */
+const drawSignature = (b: Builder, style: PaletteStyle): void => {
+  const p = b.palette
+  // 每个 signature 元素都登记 id —— 见 Builder.signatureIds 的说明
+  const mark = (el: PPTShapeElement | null) => { if (el) b.signatureIds.push(el.id) }
+  switch (style) {
+    /** 商务：左边距一条贯通的细竖线。最克制的一种「这份稿子有人管过版面」 */
+    case 'business':
+      mark(b.shape('rect', { left: 40, top: SAFE.top, width: 2, height: SAFE.height }, {
+        fill: p.accent, opacity: 0.55, name: '版式记号·边线',
+      }))
+      break
+
+    /** 学术：左边距一列刻度短线，像书籍页边的标尺。无彩色，只用描边色 */
+    case 'academic': {
+      const n = 5
+      const gap = SAFE.height / (n - 1)
+      for (let i = 0; i < n; i++) {
+        mark(b.shape('rect', { left: 36, top: snapY(SAFE.top + gap * i), width: 16, height: 2 }, {
+          fill: p.border, name: `版式记号·刻度 ${i + 1}`,
+        }))
+      }
+      break
+    }
+
+    /** 科技：左上角一个 L 形角框 + 右下角一片点阵。两处呼应，够显眼又不吵 */
+    case 'tech': {
+      mark(b.shape('corner', { left: 28, top: 16, width: 30, height: 30 }, {
+        fill: p.accent, opacity: 0.8, name: '版式记号·角框',
+      }))
+      const cols = 6, rows = 3, d = 5, step = 14
+      for (let r = 0; r < rows; r++) {
+        for (let c = 0; c < cols; c++) {
+          mark(b.shape('ellipse', {
+            left: 872 + c * step, top: 516 + r * step, width: d, height: d,
+          }, { fill: p.accent, opacity: 0.45, name: '版式记号·点阵' }))
+        }
+      }
+      break
+    }
+
+    /** 活泼：底部通栏色条 + 右上角一个实心圆。最外放的一套 */
+    case 'vivid':
+      mark(b.shape('rect', { left: 0, top: CANVAS_HEIGHT - 10, width: CANVAS_WIDTH, height: 10 }, {
+        fill: p.accent, name: '版式记号·底栏',
+      }))
+      mark(b.shape('ellipse', { left: 952, top: 20, width: 20, height: 20 }, {
+        fill: p.accent, opacity: 0.85, name: '版式记号·角点',
+      }))
+      break
+  }
+}
+
+/**
+ * 满屏背景图的页不画 signature。
+ *
+ * 页边距在那种页面上被照片占满了 —— 画上去要么被压在图下面看不见，
+ * 要么浮在照片上像个污点。而且那种页本身视觉已经够强，不需要再加记忆点。
+ */
+const wantsSignature = (pattern: LayoutPattern, c: LayoutContent): boolean => {
+  const slot = LAYOUT_META[pattern].image
+  return !((slot === 'backdrop' || slot === 'overlay') && !!c.image?.src)
+}
+
 type LayoutFn = (b: Builder, c: LayoutContent) => { background: SlideBackground, slideType: SlideType }
 
 const LAYOUTS: Record<LayoutPattern, LayoutFn> = {
@@ -538,7 +688,7 @@ const LAYOUTS: Record<LayoutPattern, LayoutFn> = {
     })
 
     const subW = SAFE.width - 160
-    const titleSize = fitFontSize(c.title ?? '', SAFE.width, 200, DISPLAY_STEPS)
+    const titleSize = b.fit(c.title ?? '', SAFE.width, 200, DISPLAY_STEPS)
     const titleH = b.measure(c.title ?? '', titleSize, SAFE.width, LINE_HEIGHT.heading, true)
     const eyebrowH = b.measure(c.eyebrow ?? '', TYPE_SCALE.eyebrow, SAFE.width, LINE_HEIGHT.tight, true)
     const subH = b.measure(c.subtitle ?? '', TYPE_SCALE.subtitle, subW)
@@ -619,7 +769,7 @@ const LAYOUTS: Record<LayoutPattern, LayoutFn> = {
       })
 
     const colW = splitX - SAFE.left - SPACING.gutter
-    const titleSize = fitFontSize(c.title ?? '', colW, 220, DISPLAY_STEPS)
+    const titleSize = b.fit(c.title ?? '', colW, 220, DISPLAY_STEPS)
     const titleH = b.measure(c.title ?? '', titleSize, colW, LINE_HEIGHT.heading, true)
     const eyebrowH = b.measure(c.eyebrow ?? '', TYPE_SCALE.eyebrow, colW, LINE_HEIGHT.tight, true)
     const subH = b.measure(c.subtitle ?? '', TYPE_SCALE.subtitle, colW)
@@ -680,7 +830,7 @@ const LAYOUTS: Record<LayoutPattern, LayoutFn> = {
     const textRight = c.image?.src ? SAFE.left + Math.round(SAFE.width * 0.78) : SAFE.right
     const textW = Math.max(160, textRight - textLeft)
     const [bgImage, scrim] = b.backdrop(c.image, 'left', (textRight + 40) / CANVAS_WIDTH)
-    const titleSize = fitFontSize(c.title ?? '', textW, 180, [TYPE_SCALE.title, TYPE_SCALE.subtitle, TYPE_SCALE.itemTitle], LINE_HEIGHT.heading, { bold: true })
+    const titleSize = b.fit(c.title ?? '', textW, 180, [TYPE_SCALE.title, TYPE_SCALE.subtitle, TYPE_SCALE.itemTitle], LINE_HEIGHT.heading, { bold: true })
     const titleH = b.measure(c.title ?? '', titleSize, textW, LINE_HEIGHT.heading, true)
     // 副标题从 body(15) 提到 subtitle(22)：章节页上 15px 小得像脚注，
     // 和 38px 的标题之间层次直接断掉。转场页信息少，正该把这一行放大
@@ -1153,7 +1303,7 @@ const LAYOUTS: Record<LayoutPattern, LayoutFn> = {
     const eyebrowText = c.eyebrow || c.title || ''
     const noteText = stat.note || c.subtitle || ''
     // 数字本身也要能降级：「87%」和「87.4%」放得下，「1,284,309」按 88px 就出界了
-    const valueSize = fitFontSize(stat.value, colW, 150, [TYPE_SCALE.stat, 72, TYPE_SCALE.display, 52], LINE_HEIGHT.tight, { bold: true })
+    const valueSize = b.fit(stat.value, colW, 150, [TYPE_SCALE.stat, 72, TYPE_SCALE.display, 52], LINE_HEIGHT.tight, { bold: true })
     const valueH = b.measure(stat.value, valueSize, colW, LINE_HEIGHT.tight, true)
     const eyebrowH = b.measure(eyebrowText, TYPE_SCALE.eyebrow, colW, LINE_HEIGHT.tight, true)
     const labelH = b.measure(stat.label ?? '', TYPE_SCALE.subtitle, colW, LINE_HEIGHT.heading, true)
@@ -1241,7 +1391,7 @@ const LAYOUTS: Record<LayoutPattern, LayoutFn> = {
      * 实测 66 张样张里这一档的内容占比只有 18%，全场最低。
      * **不是留白，是没排完。** 短句就该放大到撑住版面。
      */
-    const quoteSize = fitFontSize(quoteText, quoteW, 300, [
+    const quoteSize = b.fit(quoteText, quoteW, 300, [
       TYPE_SCALE.display, 52, 44, TYPE_SCALE.title, TYPE_SCALE.subtitle, TYPE_SCALE.itemTitle,
     ], LINE_HEIGHT.heading)
     const quoteH = b.measure(quoteText, quoteSize, quoteW, LINE_HEIGHT.heading)
@@ -1298,7 +1448,7 @@ const LAYOUTS: Record<LayoutPattern, LayoutFn> = {
     const [bgImage, scrim] = b.backdrop(c.image, 'none')
     const hasImage = !!c.image?.src
 
-    const titleSize = fitFontSize(c.title ?? '', SAFE.width, 160, DISPLAY_STEPS, LINE_HEIGHT.heading, { bold: true })
+    const titleSize = b.fit(c.title ?? '', SAFE.width, 160, DISPLAY_STEPS, LINE_HEIGHT.heading, { bold: true })
     const titleH = b.measure(c.title ?? '', titleSize, SAFE.width, LINE_HEIGHT.heading, true)
     const subH = b.measure(c.subtitle ?? '', TYPE_SCALE.subtitle, SAFE.width)
 
@@ -1547,7 +1697,7 @@ const LAYOUTS: Record<LayoutPattern, LayoutFn> = {
     const innerW = cardW - pad * 2
 
     const eyebrowH = c.eyebrow ? b.measure(c.eyebrow, TYPE_SCALE.eyebrow, innerW, LINE_HEIGHT.tight, true) : 0
-    const titleSize = fitFontSize(c.title ?? '', innerW, 200, [TYPE_SCALE.display, 52, 44, TYPE_SCALE.title], LINE_HEIGHT.heading, { bold: true })
+    const titleSize = b.fit(c.title ?? '', innerW, 200, [TYPE_SCALE.display, 52, 44, TYPE_SCALE.title], LINE_HEIGHT.heading, { bold: true })
     const titleH = b.measure(c.title ?? '', titleSize, innerW, LINE_HEIGHT.heading, true)
     const subH = c.subtitle ? b.measure(c.subtitle, TYPE_SCALE.subtitle, innerW) : 0
 
@@ -1672,9 +1822,26 @@ export const buildLayout = (
   content: LayoutContent,
   palette: Palette,
   idPrefix: string,
-  options: { animate?: boolean } = {},
+  options: { animate?: boolean, typography?: TypeRecipe, style?: PaletteStyle } = {},
 ): LayoutResult => {
-  const builder = new Builder(idPrefix, palette)
+  /**
+   * 没传字体配对时用「宋黑经典」。
+   *
+   * 默认值放在这里而不是 `Builder` 的构造参数上：`Builder` 是内部类，
+   * 给它默认值等于让「忘了传」变成一个没人会发现的分支；而 `buildLayout`
+   * 是对外那一层，在这里默认是一条**产品决策**（不选就给最稳的那套），
+   * 写在这儿才有人看得见。
+   */
+  const builder = new Builder(idPrefix, palette, options.typography ?? TYPOGRAPHY_PAIRS.classic)
+
+  /**
+   * signature 先画 —— 它必须排在元素数组最前面才会渲染在最底层。
+   *
+   * 它**刻意不挂动画**：记忆点应该一开场就在那儿，而不是跟着内容一起飞进来。
+   * `lintSlideAnimationOrder` 只管文本有没有挂动画，形状没挂不会被报。
+   */
+  if (wantsSignature(pattern, content)) drawSignature(builder, options.style ?? 'business')
+
   const { background, slideType } = LAYOUTS[pattern](builder, content)
 
   return {
@@ -1683,6 +1850,7 @@ export const buildLayout = (
     background,
     slideType,
     clampedIds: builder.clampedIds,
+    signatureIds: builder.signatureIds,
   }
 }
 

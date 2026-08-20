@@ -285,6 +285,151 @@ export const PALETTE_STYLES: Record<PaletteStyle, StyleRecipe> = {
 export const isPaletteStyle = (v: unknown): v is PaletteStyle =>
   typeof v === 'string' && v in PALETTE_STYLES
 
+// ---------------------------------------------------------------------------
+// 字体配对
+// ---------------------------------------------------------------------------
+
+/**
+ * ## 为什么字体是「模型选」而配对是「代码定」
+ *
+ * 和上面 `PALETTE_STYLES` 那条分工逐字相同：**选哪套字是内容决策**
+ * （一份讲书法的稿子该用楷体、一份讲芯片的该用 MiSans，而只有模型知道
+ * 这份稿子是什么），**display 配哪个 body、字宽表是多少，是排版决策**
+ * （给模型 21 个字体自由组合，组出来的就是随机两个字）。
+ *
+ * 所以这里不给模型字体库，只给六个名字。
+ *
+ * ## 为什么和 `PaletteStyle` 拆成两维而不是绑在一起
+ *
+ * 绑在一起只有 4 种长相，而且把两个不同的判断挤进了一个选择：
+ * 「这份稿子的**场合**」（决定配色的冷暖克制）和「这份稿子的**题材**」
+ * （决定字的性格）本来就是两件事。拆开之后是 4 × 6 —— 学术配色 + 朱雀仿宋
+ * 是一份文史论文，学术配色 + MiSans 是一份理工论文，这个区别是真实存在的。
+ *
+ * 组合不做硬拦（模型选了就是选了），只在 `lintDeckDesign` 里按
+ * `formality` 差值报 warning —— 护栏是判据，不是禁令。
+ */
+export type TypographyPair
+  = 'classic' | 'scholarly' | 'editorial' | 'minimal' | 'impact' | 'warm'
+
+export interface TypeRecipe {
+  label: string
+  /** 什么场合用 —— 进 prompt */
+  usage: string
+  /** 标题字族：字号 ≥ `DISPLAY_MIN` 的元素用它 */
+  display: FontFamily
+  /** 正文字族 */
+  body: FontFamily
+  /**
+   * 正式度 0~10。只用来和 `PALETTE_STYLES` 的同名分做差值 lint ——
+   * 「学术配色 + 温暖手写」这种组合不该硬拦，但值得提一句。
+   */
+  formality: number
+}
+
+export const TYPOGRAPHY_PAIRS: Record<TypographyPair, TypeRecipe> = {
+  /** 宋体标题 + 黑体正文，中文排版里最稳的「有设计感」组合 */
+  classic: {
+    label: '宋黑经典',
+    usage: '汇报、提案、董事会材料。标题有分量，正文干净',
+    display: 'SourceHanSerif',
+    body: 'AlibabaPuHuiTi',
+    formality: 8,
+  },
+  /** 全思源，去性格，信息优先 */
+  scholarly: {
+    label: '学术克制',
+    usage: '论文汇报、研究综述、教学讲义。不抢内容',
+    display: 'SourceHanSerif',
+    body: 'SourceHanSans',
+    formality: 9,
+  },
+  /** 现代宋做标题，有编辑部那种「这是一篇文章」的味道 */
+  editorial: {
+    label: '编辑部',
+    usage: '行业观察、深度分享、长文改稿。像一篇有观点的文章',
+    display: 'LXGWNeoZhiSong',
+    body: 'SourceHanSans',
+    formality: 6,
+  },
+  /** 无衬线到底，几何感 */
+  minimal: {
+    label: '纯黑体极简',
+    usage: '数据看板、技术方案、极简风。结构优先',
+    display: 'MiSans',
+    body: 'SourceHanSans',
+    formality: 6,
+  },
+  /**
+   * 得意黑做标题。
+   *
+   * **它的字身比别家窄两成**（cjk 0.800，见 `CHAR_WIDTH_BY_FONT`）——
+   * 同样 64px 字号，视觉上比思源小一圈。这是它的设计，不是 bug；
+   * 版式引擎按实测表排，不用补偿。但调字号时要知道这回事。
+   */
+  impact: {
+    label: '几何科技',
+    usage: '产品发布、技术方案、对外宣讲。标题要有冲击力',
+    display: 'DeYiHei',
+    body: 'MiSans',
+    formality: 5,
+  },
+  /** 楷体的手写感，最不像 PPT 的一套 */
+  warm: {
+    label: '温暖手写',
+    usage: '内部分享、面向大众的介绍、教学。想显得亲切',
+    display: 'LXGWWenKai',
+    body: 'LXGWNeoXiHei',
+    formality: 3,
+  },
+}
+
+/** 字号到了这一档就用 display 字族。`measure` 和 `text` 必须用同一条规则 */
+export const DISPLAY_MIN = TYPE_SCALE.title
+
+/**
+ * 走不到版式引擎的那些地方用的字族 —— 形状里的文字、表格单元格。
+ *
+ * 它们是 agent 直接调 `addShape` / `addTable` 加的，不经过 `buildLayout`，
+ * 所以拿不到这一页选的 `TypeRecipe`。取 `classic.body` 和 `buildLayout`
+ * 的默认对齐，至少「什么都不选」时整份是一致的。
+ *
+ * **已知缺口**：agent 选了别的配对时，形状文字和表格仍是这一个 ——
+ * 一份 `impact`（得意黑 / MiSans）的稿子里，表格会是阿里普惠体。
+ * 补法是让 `theme.fontName` 承载配对的 body 字族（它已经被表格读了，
+ * 而且一直是空字符串没人写过），但那是 deck 级状态，得单独立判据。
+ */
+export const DEFAULT_BODY_FONT: FontFamily = TYPOGRAPHY_PAIRS.classic.body
+
+/** 一个元素该用哪个字族 —— 唯一的判据是字号 */
+export const fontForSize = (size: number, recipe: TypeRecipe): FontFamily =>
+  size >= DISPLAY_MIN ? recipe.display : recipe.body
+
+export const isTypographyPair = (v: unknown): v is TypographyPair =>
+  typeof v === 'string' && v in TYPOGRAPHY_PAIRS
+
+/** 给 prompt 用的配对清单 —— 和 `describePaletteStyles` 一样，加一个配对 prompt 里自动就有 */
+export const describeTypographyPairs = (): string =>
+  (Object.keys(TYPOGRAPHY_PAIRS) as TypographyPair[])
+    .map(k => `- ${k}（${TYPOGRAPHY_PAIRS[k].label}）：${TYPOGRAPHY_PAIRS[k].usage}`)
+    .join('\n')
+
+/**
+ * 配色风格的正式度，和 `TypeRecipe.formality` 同一把尺子。
+ *
+ * 单独一张表而不是加进 `StyleRecipe`：`PALETTE_STYLES` 的每个字段都在
+ * 参与配色推导，而这个数只服务 lint，混进去会让人以为它也影响颜色。
+ */
+export const PALETTE_FORMALITY: Record<PaletteStyle, number> = {
+  business: 8,
+  academic: 9,
+  tech: 5,
+  vivid: 3,
+}
+
+/** 正式度差多少算「值得提一句」。4 是刚好放过「商务 + 几何科技」（差 3）的那条线 */
+export const FORMALITY_GAP_LIMIT = 4
+
 /** 给 prompt 用的风格清单 —— 和 `describeLayouts` 一样，加一个风格 prompt 里自动就有 */
 export const describePaletteStyles = (): string =>
   (Object.keys(PALETTE_STYLES) as PaletteStyle[])
@@ -458,25 +603,91 @@ export const PARAGRAPH_SPACE = 5
  * 低估的两类正好是这类文稿里最密的东西 ——「800ms」「P99 2.4s」「SOC2 Type II」「87%」。
  * 一句话里数字和大写一多，估出来就比实际短一大截，下一个元素就压上来了。
  */
-const CHAR_WIDTH = {
-  cjk: 1.0,
-  /** 全角标点比汉字窄，但按 0.85 留一点余量 —— 标点常在行尾触发避头尾 */
-  cjkPunct: 0.85,
-  /**
-   * 拉丁与数字取的是**真实词**量出来的每字符宽，不是 a~z 的算术平均。
-   *
-   * 平均值会骗人：a~z 平均 0.471，但那个平均被 i / l / j / t / f / r 这些
-   * 窄字母拉下去了，而真实单词里占多数的是 e / o / h / b / k / n / m。
-   * 实测 `Webhook` 每字符 0.575、`800ms` 0.616、`SOC2` 0.644 ——
-   * 按平均值算，`Webhook` 少算 14.6%，刚好够让一行少断一次，
-   * 四栏卡片那种窄栏里一次少断就是一整行的高度差。
-   */
-  upper: 0.66,
-  digit: 0.63,
-  lower: 0.56,
-  asciiPunct: 0.32,
-  space: 0.25,
-} as const
+export interface CharWidthTable {
+  cjk: number
+  cjkPunct: number
+  upper: number
+  digit: number
+  lower: number
+  asciiPunct: number
+  space: number
+}
+
+/**
+ * 逐字体的字宽表，单位 em。**由 `npm run char-width` 在真浏览器里量出，勿手改。**
+ * 量法见 `scripts/char-width-probe.ts`，原始数据在 `samples/char-width.json`。
+ *
+ * ## 为什么必须一个字体一张表
+ *
+ * 改之前这里是**一张常量表**，注释说它是在 `variable.scss` 的 `$textElementFont`
+ * 栈下量的。那个栈是系统 fallback —— Mac 落 PingFang SC、Windows 落 Microsoft YaHei，
+ * **两台机器的字宽本来就不一样**。而 `layouts.ts` 当时写死的
+ * `defaultFontName: 'Microsoft YaHei'` 根本不在 `configs/font.ts` 白名单里，
+ * 匹配不到任何 `@font-face`，于是也落进那个栈。
+ *
+ * 换用登记字体之后一张表就不够了，实测差异大到不可忽略：
+ *
+ * | | cjk | upper | digit |
+ * |---|---|---|---|
+ * | 思源黑体 | 1.000 | 0.621 | 0.555 |
+ * | 霞鹜新致宋 | 1.000 | **0.688** | **0.618** |
+ * | **得意黑** | **0.800** | **0.464** | **0.424** |
+ *
+ * 得意黑是紧凑展示体，整体比别家窄两成。拿统一表估它会**高估 25%** ——
+ * 白白浪费四分之一版面；反过来拿它的表估思源宋体就会压字。
+ *
+ * ## 这里存的是**原始实测值**，余量在 `WIDTH_SAFETY`
+ *
+ * 这样源码里的数能和 `npm run char-width` 的输出逐行对上 ——
+ * 表漂了当场看得出来。旧表把余量揉进了数值里（实测 0.471 写成 0.56），
+ * 于是没人说得清哪一部分是测量、哪一部分是余量。
+ */
+export const CHAR_WIDTH_BY_FONT = {
+  SourceHanSans: { cjk: 1.000, cjkPunct: 0.821, upper: 0.621, digit: 0.555, lower: 0.511, asciiPunct: 0.389, space: 0.224 },
+  SourceHanSerif: { cjk: 1.000, cjkPunct: 0.821, upper: 0.672, digit: 0.548, lower: 0.535, asciiPunct: 0.390, space: 0.252 },
+  AlibabaPuHuiTi: { cjk: 0.984, cjkPunct: 0.984, upper: 0.604, digit: 0.575, lower: 0.522, asciiPunct: 0.408, space: 0.257 },
+  MiSans: { cjk: 1.000, cjkPunct: 1.000, upper: 0.638, digit: 0.562, lower: 0.498, asciiPunct: 0.364, space: 0.290 },
+  DeYiHei: { cjk: 0.800, cjkPunct: 0.800, upper: 0.464, digit: 0.424, lower: 0.386, asciiPunct: 0.321, space: 0.190 },
+  LXGWNeoZhiSong: { cjk: 1.000, cjkPunct: 0.826, upper: 0.688, digit: 0.618, lower: 0.512, asciiPunct: 0.365, space: 0.290 },
+  LXGWWenKai: { cjk: 1.000, cjkPunct: 1.000, upper: 0.646, digit: 0.600, lower: 0.503, asciiPunct: 0.408, space: 0.350 },
+  LXGWNeoXiHei: { cjk: 1.000, cjkPunct: 0.826, upper: 0.646, digit: 0.630, lower: 0.506, asciiPunct: 0.387, space: 0.270 },
+} as const satisfies Record<string, CharWidthTable>
+
+export type FontFamily = keyof typeof CHAR_WIDTH_BY_FONT
+
+export const FONT_FAMILIES = Object.keys(CHAR_WIDTH_BY_FONT) as FontFamily[]
+
+export const isFontFamily = (v: unknown): v is FontFamily =>
+  typeof v === 'string' && v in CHAR_WIDTH_BY_FONT
+
+/**
+ * 字宽安全余量，只乘在**非 CJK** 分量上。
+ *
+ * CJK 不乘：汉字是 em 方块，1.000 就是 1.000，加余量纯浪费版面。
+ * 非 CJK 乘 1.08：拉丁字形受 hinting、字距调整（kerning）、以及
+ * 「卡在边界上的那一个词」影响，实测值本身是准的，但准不等于没有抖动。
+ *
+ * 旧表的余量是逐项拍的（upper +4.8%、digit +9.2%、lower +18.9%、
+ * asciiPunct +7.0%），没有理由能解释为什么这四个数不一样。统一成一个常量，
+ * 而**它是不是够，由 `npm run layout-text` 在真浏览器里判**，不由我拍。
+ */
+const WIDTH_SAFETY = 1.08
+
+/**
+ * 没指定字体时用的表：**每一类取全部登记字体里最宽的那个**。
+ *
+ * 不用「默认字体的表」而用逐项最大值，是因为漏传 `font` 的后果不对称：
+ * 估宽只是浪费一点留白，估窄是文字直接压在一起。取最大值让漏传永远落在安全那侧。
+ */
+const WIDEST: CharWidthTable = (() => {
+  const keys = ['cjk', 'cjkPunct', 'upper', 'digit', 'lower', 'asciiPunct', 'space'] as const
+  const out = {} as CharWidthTable
+  for (const k of keys) out[k] = Math.max(...FONT_FAMILIES.map(f => CHAR_WIDTH_BY_FONT[f][k]))
+  return out
+})()
+
+const tableFor = (font?: FontFamily): CharWidthTable =>
+  font ? CHAR_WIDTH_BY_FONT[font] : WIDEST
 
 /** 粗体只让**非汉字**变宽（实测小写 0.471→0.520、数字 0.577→0.616，汉字不变） */
 const BOLD_FACTOR = 1.1
@@ -527,22 +738,48 @@ const RAGGED_SLACK = 1.06
 const CJK_RANGE = /[\u3400-\u9fff\uf900-\ufaff]/
 const CJK_PUNCT_RANGE = /[\u3000-\u303f\uff00-\uffef]/
 
-/** 单个字符的视觉宽度，单位是 em */
-const charWidth = (ch: string, bold: boolean): number => {
-  const b = bold ? BOLD_FACTOR : 1
-  if (CJK_RANGE.test(ch)) return CHAR_WIDTH.cjk
-  if (CJK_PUNCT_RANGE.test(ch)) return CHAR_WIDTH.cjkPunct
-  if (ch >= 'A' && ch <= 'Z') return CHAR_WIDTH.upper * b
-  if (ch >= '0' && ch <= '9') return CHAR_WIDTH.digit * b
-  if (ch >= 'a' && ch <= 'z') return CHAR_WIDTH.lower * b
-  if (ch === ' ' || ch === '\t') return CHAR_WIDTH.space
-  return CHAR_WIDTH.asciiPunct * b
+/**
+ * \u300c\u5b64\u513f\u6807\u70b9\u300d\u2014\u2014 \u4e2d\u6587\u6587\u7a3f\u91cc\u5230\u5904\u90fd\u662f\uff0c\u4f46\u7801\u4f4d**\u4e0d\u5728** `CJK_PUNCT_RANGE` \u91cc\uff1a
+ * \u5f2f\u5f15\u53f7 `\u201c\u201d\u2018\u2019`\uff08U+2018/9\u3001U+201C/D\uff09\u3001\u7834\u6298\u53f7 `\u2014`\uff08U+2014\uff09\u3001
+ * \u7701\u7565\u53f7 `\u2026`\uff08U+2026\uff09\u3001\u95f4\u9694\u53f7 `\u00b7`\uff08U+00B7\uff09\u3002
+ *
+ * \u6ca1\u6709\u8fd9\u6761\u6b63\u5219\u65f6\u5b83\u4eec\u5168\u90e8\u843d\u5230\u6700\u540e\u90a3\u4e2a `asciiPunct` \u5206\u652f\u3002\u800c `npm run char-width`
+ * \u5b9e\u6d4b\u5b83\u4eec\u5728\u4e2d\u6587\u5b57\u4f53\u91cc\u6839\u672c\u4e0d\u662f ASCII \u5bbd\u5ea6\uff1a
+ *
+ * | \u5b57\u4f53 | \u5b9e\u9645 | \u6309 asciiPunct \u4f30 | \u4f4e\u4f30 |
+ * |---|---|---|---|
+ * | \u601d\u6e90\u9ed1\u4f53 | 0.913 | 0.389 | **2.35\u00d7** |
+ * | \u601d\u6e90\u5b8b\u4f53 | 0.817 | 0.390 | 2.10\u00d7 |
+ * | \u963f\u91cc\u666e\u60e0\u4f53 | 0.605 | 0.408 | 1.48\u00d7 |
+ *
+ * \u4e00\u884c 40 \u5b57\u7684\u6b63\u6587\u91cc\u6709\u56db\u4e2a\u5f15\u53f7\uff0c\u5c31\u5c11\u7b97\u4e24\u4e2a\u591a\u5b57\u5bbd \u2014\u2014 \u8db3\u591f\u8ba9\u4e00\u884c\u5c11\u65ad\u4e00\u6b21\uff0c
+ * \u800c\u5c11\u65ad\u4e00\u6b21\u5c31\u662f\u4e00\u6574\u884c\u7684\u9ad8\u5ea6\u5dee\u3002
+ *
+ * \u5f52\u5230 `cjkPunct` \u800c\u4e0d\u662f\u65b0\u5f00\u4e00\u7c7b\uff1a`cjkPunct` \u7684\u5b9e\u6d4b\u503c\uff08\u601d\u6e90\u9ed1\u4f53 0.821\uff09
+ * \u79bb\u771f\u503c 0.913 \u53ea\u5dee 11%\uff0c\u800c `WIDTH_SAFETY` \u7684 8% \u53c8\u8865\u56de\u6765\u4e00\u622a\uff1b
+ * \u65b0\u5f00\u4e00\u7c7b\u8981\u91cd\u91cf\u5168\u90e8\u516b\u5f20\u8868\u3001\u52a8\u6d4b\u8bd5\u57fa\u51c6\u6587\u4ef6\uff0c\u6536\u76ca\u4e0d\u62b5\u6539\u52a8\u9762\u3002
+ * **\u4ecd\u7136\u662f\u7565\u5fae\u4f4e\u4f30\u7684**\uff0c\u771f\u8981\u8865\u9f50\u5f97\u7ed9\u5b83\u81ea\u5df1\u4e00\u6863 \u2014\u2014 \u90a3\u662f\u53e6\u4e00\u4ef6\u4e8b\u3002
+ */
+const CJK_PUNCT_EXTRA = /[\u00b7\u2014\u2018\u2019\u201c\u201d\u2026]/
+
+/** 单个字符的视觉宽度，单位是 em。`font` 省略时按最宽的那张表算（见 `WIDEST`） */
+const charWidth = (ch: string, bold: boolean, font?: FontFamily): number => {
+  const t = tableFor(font)
+  // 非 CJK 才乘余量与粗体系数 —— 汉字是 em 方块，加了纯浪费
+  const b = (bold ? BOLD_FACTOR : 1) * WIDTH_SAFETY
+  if (CJK_RANGE.test(ch)) return t.cjk
+  if (CJK_PUNCT_RANGE.test(ch) || CJK_PUNCT_EXTRA.test(ch)) return t.cjkPunct
+  if (ch >= 'A' && ch <= 'Z') return t.upper * b
+  if (ch >= '0' && ch <= '9') return t.digit * b
+  if (ch >= 'a' && ch <= 'z') return t.lower * b
+  if (ch === ' ' || ch === '\t') return t.space * WIDTH_SAFETY
+  return t.asciiPunct * b
 }
 
 /** 一行文字的视觉长度，单位是 em。导出只为单测能钉住字宽模型 */
-export const visualLength = (text: string, bold = false): number => {
+export const visualLength = (text: string, bold = false, font?: FontFamily): number => {
   let n = 0
-  for (const ch of text) n += charWidth(ch, bold)
+  for (const ch of text) n += charWidth(ch, bold, font)
   return n
 }
 
@@ -589,7 +826,7 @@ const chunk = (line: string): string[] => {
  * 单块比整行还宽时（超长英文词、窄栏）**独占一行**再继续 ——
  * 对应 CSS 的 `break-word` 会把它硬断开，行数至少是 1，这里按 1 算是保守的。
  */
-const wrapLines = (line: string, emPerLine: number, bold: boolean): number => {
+const wrapLines = (line: string, emPerLine: number, bold: boolean, font?: FontFamily): number => {
   const blocks = chunk(line)
   if (!blocks.length) return 1
 
@@ -606,8 +843,8 @@ const wrapLines = (line: string, emPerLine: number, bold: boolean): number => {
      * 于是「第二部分 · 市场表现与竞争格局分析」少算了两个空格的宽度，
      * 刚好卡在一行的边缘上 —— 估出来 1 行，浏览器排出来 2 行。
      */
-    const full = visualLength(block, bold)
-    const trimmed = visualLength(block.replace(/[ \t]+$/, ''), bold)
+    const full = visualLength(block, bold, font)
+    const trimmed = visualLength(block.replace(/[ \t]+$/, ''), bold, font)
     if (used === 0) {
       used = full; continue 
     }
@@ -630,13 +867,13 @@ export const estimateTextHeight = (
   fontSize: number,
   boxWidth: number,
   lineHeight: number = LINE_HEIGHT.body,
-  opts: { bold?: boolean } = {},
+  opts: { bold?: boolean, font?: FontFamily } = {},
 ): number => {
   // 一行能放多少 em
   const emPerLine = Math.max(1, boxWidth / fontSize) / RAGGED_SLACK
   const paragraphs = String(text).split('\n')
   const lines = paragraphs.reduce(
-    (sum, line) => sum + wrapLines(line, emPerLine, !!opts.bold),
+    (sum, line) => sum + wrapLines(line, emPerLine, !!opts.bold, opts.font),
     0,
   )
   // 行高按 max(字号, 16) 算 —— 见 ROOT_FONT_SIZE 的说明，这是量出来的
@@ -658,7 +895,7 @@ export const textBoxHeight = (
   fontSize: number,
   boxWidth: number,
   lineHeight: number = LINE_HEIGHT.body,
-  opts: { bold?: boolean, inset?: [number, number, number, number] } = {},
+  opts: { bold?: boolean, inset?: [number, number, number, number], font?: FontFamily } = {},
 ): number => {
   const [top, right, bottom, left] = opts.inset ?? LAYOUT_INSET
   return estimateTextHeight(text, fontSize, Math.max(1, boxWidth - left - right), lineHeight, opts)
@@ -678,7 +915,7 @@ export const fitFontSize = (
   maxHeight: number,
   candidates: number[],
   lineHeight: number = LINE_HEIGHT.heading,
-  opts: { bold?: boolean } = {},
+  opts: { bold?: boolean, font?: FontFamily } = {},
 ): number => {
   const sorted = [...candidates].sort((a, b) => b - a)
   for (const size of sorted) {

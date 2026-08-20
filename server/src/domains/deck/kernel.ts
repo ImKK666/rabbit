@@ -12,7 +12,11 @@ import type {
 import { ANIMATION_DEFS, TURNING_MODES } from '@/configs/animation'
 import { buildShapeGeometry, getCatalogShape, SHAPE_CATALOG_KEYS } from '@/configs/shapeCatalog'
 import { lintSlideAnimationOrder } from './animationOrder'
-import { buildPalette, CANVAS_WIDTH as DESIGN_W, CANVAS_HEIGHT as DESIGN_H, type PaletteStyle } from './design'
+import {
+  buildPalette, CANVAS_WIDTH as DESIGN_W, CANVAS_HEIGHT as DESIGN_H, DEFAULT_BODY_FONT,
+  TYPOGRAPHY_PAIRS, PALETTE_FORMALITY, FORMALITY_GAP_LIMIT,
+  type PaletteStyle, type TypographyPair,
+} from './design'
 import {
   buildLayout, validateLayoutContent, isLayoutPattern,
   type LayoutPattern, type LayoutContent,
@@ -351,6 +355,8 @@ export const slideSchema = z.object({
   turningMode: z.enum(TURNING_MODES as [TurningMode, ...TurningMode[]]).optional(),
   type: z.enum(['cover', 'contents', 'transition', 'content', 'end']).optional(),
   layout: z.string().optional(),
+  paletteStyle: z.string().optional(),
+  typography: z.string().optional(),
 })
 
 export const themeSchema = z.object({
@@ -605,7 +611,57 @@ export const lintDeckDesign = (slides: Slide[]): LintIssue[] => {
     }
   }
 
-  // ④ 出场顺序：先标题、再内容、装饰不抢跑
+  // ④ 配色风格与字体配对：整份文稿各只该有一套
+  //
+  // prompt 里写着「整份文稿只选一个，每页都传同一个」。在 `paletteStyle` /
+  // `typography` 落盘之前，**这句话没有任何东西在验** —— agent 每页换一个，
+  // 产出的就是一份东拼西凑的稿子，而所有检查都是绿的。
+  //
+  // 只看真正套过版式的页（`layout` 非空）：手工搭的页没有这两个字段，
+  // 把它们算进来会让「一份手工页 + 一份版式页」永远报警。
+  for (const [field, label, hint] of [
+    ['paletteStyle', '配色风格', 'applyLayout 的 style 参数'],
+    ['typography', '字体配对', 'applyLayout 的 typography 参数'],
+  ] as const) {
+    const used = new Map<string, number[]>()
+    slides.forEach((s, i) => {
+      if (!s.layout) return
+      const v = s[field]
+      if (!v) return
+      used.set(v, [...(used.get(v) ?? []), i + 1])
+    })
+    if (used.size > 1) {
+      const detail = [...used].map(([v, pages]) => `${v}（第 ${pages.join('/')} 页）`).join('，')
+      issues.push({
+        level: 'warning',
+        slideId: slides[0].id,
+        message: `整份文稿用了 ${used.size} 种${label}：${detail} —— 换来换去等于没有${label}，统一成一个（${hint}）`,
+      })
+    }
+  }
+
+  // ⑤ 配色风格与字体配对的正式度差得太远
+  //
+  // 这条**刻意只报 warning、不硬拦**：「学术配色 + 温暖手写」是个奇怪的组合，
+  // 但奇怪不等于错 —— 一份写给小学生的科普论文就该是那样。
+  // 护栏是判据，不是禁令。
+  {
+    const styled = slides.find(s => s.layout && s.paletteStyle && s.typography)
+    const pal = styled?.paletteStyle as PaletteStyle | undefined
+    const typ = styled?.typography as TypographyPair | undefined
+    if (pal && typ && pal in PALETTE_FORMALITY && typ in TYPOGRAPHY_PAIRS) {
+      const gap = Math.abs(PALETTE_FORMALITY[pal] - TYPOGRAPHY_PAIRS[typ].formality)
+      if (gap > FORMALITY_GAP_LIMIT) {
+        issues.push({
+          level: 'warning',
+          slideId: styled!.id,
+          message: `配色「${pal}」和字体「${TYPOGRAPHY_PAIRS[typ].label}」的正式度差 ${gap} 档 —— 一个很正式一个很随意，凑在一起会显得没想清楚给谁看。确认是有意的就忽略`,
+        })
+      }
+    }
+  }
+
+  // ⑥ 出场顺序：先标题、再内容、装饰不抢跑
   //
   // 放在 deck 级而不是 lintSlide 里，是因为 lintSlide 的结果会跟在**每一次**
   // 元素改动后面返回给 agent。手工搭页时元素和动画是分两步加的，
@@ -1091,7 +1147,7 @@ export const applyAddShape = (
           content: `<p style="text-align:center"><span style="font-size:${spec.textSize ?? 16}px;color:${spec.textColor ?? '#ffffff'}">${
             spec.text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
           }</span></p>`,
-          defaultFontName: 'Microsoft YaHei',
+          defaultFontName: DEFAULT_BODY_FONT,
           defaultColor: spec.textColor ?? '#ffffff',
           align: 'middle' as const,
         },
@@ -1232,7 +1288,7 @@ export const applyAddTable = (
       rowspan: 1,
       text,
       style: {
-        fontname: theme.fontName || 'Microsoft YaHei',
+        fontname: theme.fontName || DEFAULT_BODY_FONT,
         color: r === 0 && spec.header !== false ? palette.onPrimary : palette.text,
         ...(r === 0 && spec.header !== false ? { bold: true } : {}),
       },
@@ -1412,6 +1468,12 @@ export const applyLayoutToSlide = (
     paletteOverride?: { primary?: string, accent?: string, background?: string }
     /** 配色风格。选哪个是内容决策（模型定），风格里的色值是排版决策（代码定） */
     style?: PaletteStyle
+    /**
+     * 字体配对。和 `style` 完全同构的一条分工 —— 选哪套字是内容决策，
+     * display 配哪个 body、字宽表是多少是排版决策，见 `design.ts` 的
+     * `TYPOGRAPHY_PAIRS` 头注释。
+     */
+    typography?: TypographyPair
   } = {},
 ): KernelOutcome => {
   const slideIndex = slides.findIndex(s => s.id === slideId)
@@ -1426,7 +1488,11 @@ export const applyLayoutToSlide = (
 
   // id 前缀带上页序号和当前元素数，重复套版式不会撞 id
   const prefix = `ly${slideIndex + 1}x${slides[slideIndex].elements.length}`
-  const result = buildLayout(pattern as LayoutPattern, content, palette, prefix, { animate: opts.animate })
+  const result = buildLayout(pattern as LayoutPattern, content, palette, prefix, {
+    animate: opts.animate,
+    typography: opts.typography ? TYPOGRAPHY_PAIRS[opts.typography] : undefined,
+    style: opts.style,
+  })
 
   const elemError = validateElements(result.elements)
   if (elemError) return { ok: false, error: `版式生成的元素不合法（这是 bug，请报告）—— ${elemError}` }
@@ -1439,6 +1505,9 @@ export const applyLayoutToSlide = (
   slide.background = result.background
   slide.type = result.slideType
   slide.layout = pattern
+  // 落盘只为让 lint 看得见 —— 见 types/slides.ts 上的说明
+  slide.paletteStyle = opts.style ?? 'business'
+  slide.typography = opts.typography ?? 'classic'
 
   return { ok: true, data: newSlides, issues: lintSlide(slide) }
 }

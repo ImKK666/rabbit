@@ -32,7 +32,7 @@ import type { ReflectTools } from './reflectTool'
 import { DECK_TOOL_GROUPS, deckRoleGroups, type DeckTools } from './toolGroups'
 import { describeShapeCatalog } from '@/configs/shapeCatalog'
 import { describeLayouts } from './layouts'
-import { describePaletteStyles } from './design'
+import { describePaletteStyles, describeTypographyPairs } from './design'
 
 const CANVAS_CONTEXT = `
 你正在操作一个演示文稿编辑器。
@@ -68,6 +68,22 @@ ${describePaletteStyles()}
 而只有你知道这份稿子是什么。但风格里的九个色值是排版决策，代码定好了，
 你只要选名字。**别每页换一个** —— 换来换去等于没有风格。
 
+## 字体配对
+
+同样选**一个**，每次 applyLayout 都传同一个 typography 参数：
+
+${describeTypographyPairs()}
+
+规则和配色风格一模一样：选哪套字是内容决策（讲书法的稿子和讲芯片的稿子
+不该用同一套字），而**标题配哪个正文、每个字体多宽，是排版决策** ——
+代码里有每个字体在真浏览器里量出来的字宽表，你只要选名字。
+
+这两维是**分开**的：配色跟着**场合**走（汇报 / 发布会 / 论文 / 内部分享），
+字体跟着**题材**走。学术配色 + 朱雀仿宋是一份文史论文，学术配色 + MiSans
+是一份理工论文 —— 这个区别是真的。
+
+不传就是 classic。
+
 ## 排版底线
 
 1. **每页至少一个非文本元素**（形状 / 图表 / 线条 / 表格）。纯文字排得再好也像 Word 大纲。
@@ -96,17 +112,18 @@ ${describeLayouts()}
 
 ${describeShapeCatalog()}
 
-高频组合：
-- 标题下面一条 bar（宽 64~96，高 8~12，用 accent 色）—— 最省力的「有设计感」
-- 卡片 = roundRect（fill 用 surface，shadow: true，outlineColor 用 border）+ 上面叠文本
+形状用来**表达内容结构**，不用来「装饰一下显得有设计感」：
+
+- 流程 / 步骤 = 多个 chevron 横向排开
 - 序号 = ellipse 或 pill + 居中的数字
-- 流程 = 多个 chevron 横向排开
-- 封面装饰 = diagStripe 或 donut，opacity 0.1~0.2 压在角落
-- 卡片配图标 = 卡片左上角放一个 32~48px 的图标（cloud / shieldCheck / bolt …），
-  颜色用 primary 或 accent —— 一句话说不清的概念，一个图标就说清了
 - 支持 / 不支持对照 = checkCircle 与 closeCircle 成对，或方形那一套（checkSquare / closeSquare）
+- 一句话说不清的概念 = 一个图标（cloud / shieldCheck / bolt …）
 
 **图标用宽高相等的方框**（如 40×40）。它们是等比图形，给一个 120×40 的框只会留出一堆空白。
+
+**装饰不归你管。** 每套配色风格自带一个版面记号（边线 / 刻度 / 点阵 / 底栏），
+applyLayout 会自动画在版心之外。你再往每页加一条强调条、给每张卡片配一个角标图标，
+只会让二十页长得一模一样 —— 那是「模板填了二十遍」的观感，不是设计。
 
 ## 手工文本元素格式（type: "text"）
 
