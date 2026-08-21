@@ -2952,6 +2952,74 @@ lint ① 的键从「版式名」扩成「版式名 + 变体」—— 同版式�
 
 ---
 
+## R-61 · 两份参考的借鉴落地 + 生图接口调研
+
+续 R-60。决策者指向 `refs/skills/` 里的 GordenSuperPPTSkills 与
+ppt-agent-workflow-san，说「做出来的确实好看」。分析全文在
+[15 号文档](./15-image2-transparency.md)，这一轮把"现在能做的"全部落地：
+
+### A · 内容密度基线进 prompt
+
+Gorden 最反直觉的一条：「排版太简单几乎都是内容太薄」。
+prompt 的内容节加了量化基线：一张内容页 ≥ 一句导语 + 3~4 模块 ×
+（标题+要点+指标）+ 结论 ≈ 15~20 信息点；不够就**做厚内容**（真实材料
+结构化拆解），不是放大字号填空，数据零编造。
+
+### B · lint ⑪：全粗体 / 小字号（抄 layout_guard 两条）
+
+- 全粗体：6 块以上文字里 >85% 加粗 → warning（阈值与 Gorden 逐字相同）
+- 小字号：<6px → warning（6px ≈ 5.8pt，正是 Gorden 拦 6pt 的那条线）
+- 正则抠 content 的内联样式，不引 AST —— kernel 保持纯函数
+- 坐标系那条没抄：Rabbit 单一逻辑坐标系，「缩略图量坐标 + 源图尺寸」
+  那类混合坐标系错**结构上不可能发生**
+
+### C · 三个内容结构型版式（Gorden §4 结构→形式映射的落地）
+
+版式 13 → 16：**quadrant**（四象限矩阵，SWOT/双维分类）、
+**funnel**（漏斗转化，筛选/取舍）、**pyramid**（金字塔层级，愿景→落地）。
+三个都过全套判据（最大条数不溢出 / 动画全覆盖 / 出场顺序 / 暗色可读 /
+id 稳定）。金字塔撞出一个真 bug：深色主题下层色混出与背景同亮的中性色，
+层上文字两头都看不见 —— 现在层色向背景方向收到对比度达标为止。
+`layoutImage.test.ts` 的「不吃图名单」从 4 个变 7 个。
+
+### D · 确认闸门 askUser（workflow-san 的 review-gate）
+
+`ws/handler.ts` 里 `agent.confirm` 那个空分支（docs/13 留的债）终于接上：
+
+- 新工具 `askUser`：模型在「想清楚方向、还没建页」时停下来问一次，
+  二选一；挂起复用 R-52 的 `pendingRequests`（90 秒硬超时 / 取消作废 /
+  错 id 丢弃）
+- 全链路：`askTool.ts` → `agent.ask`（带 requestId）→ 前端面板
+  「是 / 否」按钮 → `agent.confirm` → settle
+- prompt 新增「确认闸门」节：什么稿件该问、怎么问、最多一次、超时自断
+- 工具 28 → 29，配额判据同步
+
+### E · docs/15 + 版式扩展决策规则
+
+移植 workflow-san 的 preset-decision-rules：复用 / 变体 / 新版式 /
+新档位的判据是**信息架构**不是视觉相似；红旗清单与「宁可诚实的小版式」
+原则原样保留。
+
+### 生图接口调研结论（决定「接入 image2 生产透明通道图片」怎么做）
+
+**gpt-image-1.5 原生支持 `background: transparent`**（generations 端点，
+png/webp 带 alpha）；官方 Codex imagegen skill 已从绿幕整条迁到原生 alpha
+（PR #37788）。`gpt-image-2` 不支持透明。edits 端点（≤16 张输入、prompt 引导
+mask、1.5 高保真前 5 张）**未见透明输出** —— "提取式"剥层仍要绿幕。
+
+接入设计（docs/15 §四）：原生 alpha 优先、绿幕保底；三个落地形态按序是
+①装饰层去键色（O2 退役）→ ②新工具 `generateIconSet`（透明图标表 +
+alpha 连通域切片，Rabbit 目前完全没有的能力）→ ③框架/质感层（红线内形态，
+最后做）。**本轮未动生图接入代码**，待办已进待完成表。
+
+### 判据
+
+新增 20 条测试（lint ⑪ 六条 + askTool 问答闭环/超时/取消四条 + 三个新
+版式随全套 fixtures 走 + 配额与 promptCoverage 更新）。
+**1000 deck 测试绿**；`bunx tsc --noEmit`、`vue-tsc --build` exit 0。
+
+---
+
 ## 待完成
 
 > 下面这张表是**当前**的权威清单。其中 agent 相关的多项已被
@@ -2975,12 +3043,13 @@ lint ① 的键从「版式名」扩成「版式名 + 变体」—— 同版式�
 | ~~并发控制~~ | ~~agent 跑时用户手改画布会被整份 `agent.deck` 覆盖~~ —— **第十六轮已修**（单一权威写者，画布锁 + 接管） | ✅ |
 | **乐观并发从没生效过** | `routes/deck.ts:60` 的 `version < existing.version → 409` 实现了，但前端 `saveDeck`（`App.vue:99`）**从来不传 `version`**，那道检查一次都没跑过。表现是两个标签页开同一份文稿会互相静默覆盖。和 agent 无关，是独立的老毛病 | 中 |
 | ~~图片资产存储~~ | ~~对象存储（S3/R2）~~ —— **第十七轮已完成**：腾讯云 COS，桶 / CORS / 内容寻址全部实测通过 | ✅ |
+| **生图接入 gpt-image-1.5 原生透明通道** | docs/15 §四：①asset_sources 加 `supportsAlpha`、generations 请求带 `background/output_format`；②装饰层去键色（O2 退役）；③新工具 `generateIconSet`（透明图标表 + alpha 连通域切片）。调研结论：generations 支持 `background=transparent`，edits 不支持透明输出 | 高 |
 | **调研摄入** | 方案已定，见 [13-queue-reflect-ingest.md](./13-queue-reflect-ingest.md) §四§五。**摄入的验收标准是「几乎所有材料都能吃」**（pdf / txt / 图片 / word / md / json / 网页 url），按「解析在哪」分三档：浏览器侧（jszip 已在树里 + pdfjs）/ 服务端（URL 抓取）/ 模型（图片与扫描件）。搜索照抄 `imageSearch.ts` 那套：付费 provider 首选 + 一档免 key 兜底 | **高** |
-| **`agent.confirm` 接上去** | 空分支等的那个「后端挂起等前端」机制，R-52 已经建好了（`runtime/pendingRequests.ts`，渲染后反思用的就是它），只差接线 | 中 |
+| ~~**`agent.confirm` 接上去**~~ | **R-61 已完成**：`askUser` 确认闸门全链路（后端工具 + ws + 面板「是/否」按钮 + 90 秒超时），prompt 有「确认闸门」节 | ✅ |
 | ~~渲染后反思~~ | 11 号 D3。**R-52 已完成**：`reflectRender` 工具 + 离屏测量 + 独立配置的视觉复核模型。判据与负对照见 13 号文档 §三 | ✅ |
 | ~~排队输入~~ | 11 号 C 期。**R-52 已完成**：`runtime/inputQueue.ts` + `runtime/taskGate.ts`，顺带修掉「被拒的输入在面板上显示成已受理」 | ✅ |
 | OAuth 登录 | GitHub / Google，目前只有账号密码 | 低 |
-| agent 中途提问 | `ws/handler.ts` 的 `agent.confirm` 仍是空分支。**等待机制 R-52 已经建好**（`runtime/pendingRequests.ts`），只差把提问接上去 | 低 |
+| ~~agent 中途提问~~ | **R-61 已完成**，与 `agent.confirm` 同一条 | ✅ |
 | AGPL-3.0 授权 | 需联系 PPTist 作者询价（决策 C） | **高风险** |
 
 ## 待确认

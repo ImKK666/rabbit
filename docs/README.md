@@ -23,6 +23,7 @@
 | [12-single-agent.md](./12-single-agent.md) | **四角色 → 单 agent 一问一答** —— 三次冷启动的实测代价、历史被压扁成文本的后果、思考块跨工具/跨轮保留、11 号 §四 的修正 | 要动 agent 编排或对话形状 |
 | [13-queue-reflect-ingest.md](./13-queue-reflect-ingest.md) | **排队输入 · 渲染后反思 · 调研摄入** —— FINISHING 窗口的出口、把渲染量出来的真实几何回灌给 agent、三档解析的摄入设计、FTS5 中文实测 | 要动交互 / 质量闭环 / 内容来源 |
 | [14-ornament-layer.md](./14-ornament-layer.md) | **生成装饰层** —— 生图模型不出 alpha（会把棋盘格画成像素）、绿底抠图的实测数据、负空间图控构图、八条判据与负对照 | 要动生图 / 装饰 / 视觉质感 |
+| [15-image2-transparency.md](./15-image2-transparency.md) | **两份参考的借鉴 + 版式扩展决策规则 + GPT 生图接口调研 + 透明通道接入设计** —— Gorden/workflow-san 分析摘录、preset 决策规则移植、`background=transparent` 与 edits 能力、原生 alpha vs 绿幕双路线 | 要扩展版式库 / 接入透明通道生图 / 做确认闸门 |
 | [upstream/](./upstream/) | 上游 PPTist 自带文档，其中 [`AI_PPT_SCHEMA.md`](./upstream/AI_PPT_SCHEMA.md) 是面向 AI 生成的元素级契约 | 要产出符合底座 schema 的数据 |
 
 ## 一页速览
