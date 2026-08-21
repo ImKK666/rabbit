@@ -119,3 +119,95 @@ export const recordCrash = (
   console.error(`[crash:${source}]`, record.message, record.component ?? '', err)
   return record
 }
+
+// ---------------------------------------------------------------------------
+// 崩溃横幅
+// ---------------------------------------------------------------------------
+
+/**
+ * 上次崩过就在页面顶上挂一条横幅，带一键复制。
+ *
+ * ## 为什么是纯 DOM，不做成 Vue 组件
+ *
+ * **崩溃可能就发生在 Vue 挂载期间** —— 那种情况下 Vue 组件根本渲染不出来，
+ * 做成组件的横幅等于没有。而这条横幅要服务的正是最糟的那个场景。
+ *
+ * 顺带也不依赖任何构建期的样式：全部内联，因为样式表也可能没加载上。
+ *
+ * ## 为什么要有它 —— 「打开控制台」不是所有人都做得到
+ *
+ * Safari 的开发者菜单**默认是关的**，要先去设置里勾「显示网页开发者功能」。
+ * 一个排查步骤如果要求用户先改浏览器设置，那它在现实里就是不会被执行的。
+ */
+export const showCrashBanner = (
+  records: CrashRecord[],
+  doc: Document = document,
+): HTMLElement | null => {
+  if (records.length === 0) return null
+  try {
+    const first = records[0]
+    const bar = doc.createElement('div')
+    bar.style.cssText = [
+      'position:fixed', 'inset:0 0 auto 0', 'z-index:2147483647',
+      'background:#7f1d1d', 'color:#fff', 'padding:10px 14px',
+      'font:13px/1.5 -apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif',
+      'display:flex', 'gap:12px', 'align-items:flex-start',
+      'box-shadow:0 2px 8px rgba(0,0,0,.3)',
+    ].join(';')
+
+    const text = doc.createElement('div')
+    text.style.cssText = 'flex:1;min-width:0'
+    const head = doc.createElement('div')
+    head.style.cssText = 'font-weight:600;margin-bottom:2px'
+    head.textContent = `上次运行崩了（记录到 ${records.length} 条，下面是第一条 —— 它才是根因）`
+    const body = doc.createElement('div')
+    body.style.cssText = 'opacity:.9;word-break:break-all'
+    body.textContent = [first.source, first.component, first.hook, first.message]
+      .filter(Boolean).join(' · ')
+    text.append(head, body)
+
+    const mkBtn = (label: string) => {
+      const b = doc.createElement('button')
+      b.textContent = label
+      b.style.cssText = [
+        'flex:0 0 auto', 'background:#fff', 'color:#7f1d1d', 'border:0',
+        'border-radius:4px', 'padding:5px 10px', 'cursor:pointer',
+        'font:inherit', 'font-weight:600',
+      ].join(';')
+      return b
+    }
+
+    const copy = mkBtn('复制全部')
+    copy.onclick = () => {
+      const payload = JSON.stringify(records, null, 2)
+      // `navigator.clipboard` 在非 https / 非 localhost 下不存在，
+      // 所以必须有 textarea 那条老路 —— 否则「复制」按钮在一半环境里是死的
+      const fallback = () => {
+        const ta = doc.createElement('textarea')
+        ta.value = payload
+        ta.style.cssText = 'position:fixed;opacity:0'
+        doc.body.appendChild(ta)
+        ta.select()
+        try { doc.execCommand('copy') } finally { ta.remove() }
+      }
+      if (navigator.clipboard?.writeText) {
+        navigator.clipboard.writeText(payload).then(
+          () => { copy.textContent = '已复制 ✓' },
+          () => { fallback(); copy.textContent = '已复制 ✓' },
+        )
+      }
+      else { fallback(); copy.textContent = '已复制 ✓' }
+    }
+
+    const dismiss = mkBtn('清除')
+    dismiss.onclick = () => { clearCrashLog(); bar.remove() }
+
+    bar.append(text, copy, dismiss)
+    doc.body.appendChild(bar)
+    return bar
+  }
+  catch {
+    // 横幅自己不能成为第二个故障点
+    return null
+  }
+}
