@@ -53,6 +53,9 @@ const CONTENT: Record<LayoutPattern, LayoutContent> = {
   'image-grid': { title: '标题', items: [{ title: 'A', body: 'a' }, { title: 'B', body: 'b' }] },
   'split-figure': { title: '标题', items: [{ title: 'A', body: 'a' }, { title: 'B', body: 'b' }] },
   'full-figure': { title: '标题' },
+  'quadrant': { title: '标题', items: [{ title: 'A' }, { title: 'B' }, { title: 'C' }, { title: 'D' }] },
+  'funnel': { title: '标题', items: [{ title: 'A' }, { title: 'B' }, { title: 'C' }] },
+  'pyramid': { title: '标题', items: [{ title: 'A' }, { title: 'B' }, { title: 'C' }] },
 }
 
 const build = (pattern: LayoutPattern, extra: Partial<LayoutContent> = {}) =>
@@ -369,8 +372,13 @@ describe('不吃图的版式', () => {
      * image-grid 在这张名单上是**另一个理由**：它每条自己配图
      * （`items[].image`），整页再压一张背景图会和三张小图打架。
      * 所以「不吃 content.image」对它不是限制，是设计。
+     *
+     * quadrant / funnel / pyramid（R-61）：结构型版式，图没有位置 ——
+     * 它们的版面是几何结构本身，塞图等于拆掉结构。
      */
-    expect(NO_IMAGE_PATTERNS.sort()).toEqual(['cards', 'compare', 'image-grid', 'timeline'])
+    expect(NO_IMAGE_PATTERNS.sort()).toEqual(
+      ['cards', 'compare', 'funnel', 'image-grid', 'pyramid', 'quadrant', 'timeline'],
+    )
   })
 
   it('image-grid 是唯一吃条目图的版式', () => {

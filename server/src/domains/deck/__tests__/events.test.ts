@@ -26,7 +26,7 @@ const SAMPLES: ServerMessage[] = [
   { type: 'agent.reasoning', role: 'generator', delta: '嗯' },
   { type: 'agent.reasoning.done', role: 'generator' },
   { type: 'agent.conversation', id: 1, title: '新会话' },
-  { type: 'agent.ask', question: '要横版还是竖版' },
+  { type: 'agent.ask', requestId: 'req_ask_1', question: '要横版还是竖版' },
   { type: 'agent.deck', slidesJson: '[]', version: 3 },
   { type: 'agent.asset.pending', ticket: 'a1b2', kind: 'generate', prompt: 'a data center' },
   { type: 'agent.asset.ready', ticket: 'a1b2', src: `asset://${'0'.repeat(64)}`, width: 1376, height: 768 },

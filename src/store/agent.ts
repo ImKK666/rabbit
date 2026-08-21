@@ -83,6 +83,11 @@ export type AgentLogEntry =
     /** ready 时是尺寸，failed 时是原因 */
     detail?: string
   }
+  /**
+   * R-61：agent 的确认闸门提问。等用户点「是 / 否」，答案经
+   * `agent.confirm` 原样带回 requestId。只存在于实时流里，不落库。
+   */
+  | { type: 'ask', question: string, requestId: string, answer?: boolean }
 
 export interface ConversationMeta {
   id: number
@@ -111,6 +116,11 @@ export interface AgentState {
    * 会永远转下去，画布也会永远锁着 —— 一把没有任何任务与之对应的锁。
    */
   runningTasks: number
+  /**
+   * R-61：日志里正在等回答的那条 ask 的下标。null = 没有在等的提问。
+   * 面板据此渲染「是 / 否」按钮；回答后置回 null。
+   */
+  pendingAskIndex: number | null
 }
 
 export const useAgentStore = defineStore('agent', {
@@ -123,6 +133,7 @@ export const useAgentStore = defineStore('agent', {
     conversations: [],
     activeConversationId: null,
     runningTasks: 0,
+    pendingAskIndex: null,
   }),
 
   getters: {
@@ -168,6 +179,23 @@ export const useAgentStore = defineStore('agent', {
       // 后端按工作区键登记任务，取消必须点名是哪一份演示文稿
       if (this.currentDeckId === null) return
       send({ type: 'agent.cancel', deckId: this.currentDeckId })
+    },
+
+    /**
+     * R-61：回答 agent 的确认闸门提问。
+     *
+     * 本地先落答案再发消息 —— 用户点完按钮那一刻 UI 就该定住，
+     * 等后端回执再改状态会让按钮在弱网下显得「点了没反应」。
+     * 超时后服务器会把迟到的答复丢掉（那边按 requestId 认领），无害。
+     */
+    answerAsk(value: boolean) {
+      if (this.pendingAskIndex === null) return
+      const entry = this.log[this.pendingAskIndex]
+      if (!entry || entry.type !== 'ask' || entry.answer !== undefined) return
+      entry.answer = value
+      send({ type: 'agent.confirm', requestId: entry.requestId, value })
+      this.pendingAskIndex = null
+      this.statusMessage = ''
     },
 
     /**
@@ -353,7 +381,12 @@ export const useAgentStore = defineStore('agent', {
         }
 
         case 'agent.ask':
-          this.statusMessage = msg.question
+          // R-61：确认闸门。进日志并记下下标，面板据此渲染「是 / 否」按钮。
+          // 一次任务里最多一条在等 —— 后端每次只挂起一个提问
+          this.pendingAskIndex = this.log.push({
+            type: 'ask', question: msg.question, requestId: msg.requestId,
+          }) - 1
+          this.statusMessage = `等待确认：${msg.question}`
           break
 
         case 'error':

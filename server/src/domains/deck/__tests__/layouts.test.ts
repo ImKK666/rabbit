@@ -81,6 +81,36 @@ const CONTENT: Record<LayoutPattern, LayoutContent> = {
     ],
   },
   'full-figure': { title: '把复杂留给自己', subtitle: '把简单留给用户', eyebrow: '产品理念' },
+  'quadrant': {
+    title: '机会评估矩阵',
+    subtitle: '按价值与可行性两个维度把机会分成四类',
+    items: [
+      { label: '快速取胜', title: '价值高 · 容易做', body: '立即投入资源，三个月内上线' },
+      { label: '战略投入', title: '价值高 · 难做', body: '成立专项小组，分阶段推进' },
+      { label: '顺手捡起', title: '价值低 · 容易做', body: '空闲时做，不占主线资源' },
+      { label: '明确放弃', title: '价值低 · 难做', body: '记录决策，不再投入' },
+    ],
+  },
+  'funnel': {
+    title: '获客转化漏斗',
+    subtitle: '从曝光到付费的五层转化',
+    items: [
+      { label: '100%', title: '曝光', body: '全渠道触达' },
+      { label: '32%', title: '访问', body: '进入官网落地页' },
+      { label: '11%', title: '试用', body: '注册并体验核心功能' },
+      { label: '4%', title: '付费', body: '订阅付费版本' },
+      { label: '3%', title: '续费', body: '第二年留存' },
+    ],
+  },
+  'pyramid': {
+    title: '战略金字塔',
+    subtitle: '从愿景到落地的三层结构',
+    items: [
+      { title: '愿景', body: '让每一次汇报都有据可依' },
+      { title: '目标', body: '三年覆盖头部客户 50 家' },
+      { title: '路径', body: '产品化 + 生态化两条腿走路' },
+    ],
+  },
 }
 
 /**
@@ -104,6 +134,9 @@ const MINIMAL: Record<LayoutPattern, LayoutContent> = {
   'image-grid': { title: '三块能力', items: [{ title: '甲' }, { title: '乙' }] },
   'split-figure': { title: '为什么是现在', items: [{ title: '甲' }, { title: '乙' }] },
   'full-figure': { title: '把复杂留给自己' },
+  'quadrant': { title: '机会评估矩阵', items: [{ title: '甲' }, { title: '乙' }, { title: '丙' }, { title: '丁' }] },
+  'funnel': { title: '获客转化漏斗', items: [{ title: '甲' }, { title: '乙' }, { title: '丙' }] },
+  'pyramid': { title: '战略金字塔', items: [{ title: '甲' }, { title: '乙' }, { title: '丙' }] },
 }
 
 const box = (el: PPTElement) =>

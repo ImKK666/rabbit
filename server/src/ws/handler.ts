@@ -1,6 +1,6 @@
 import type { ServerWebSocket } from 'bun'
 import { verifyToken, type JwtPayload } from '@server/auth/jwt'
-import { runAgentTask, cancelAgentTask, releaseWsResources, settleRenderResult } from '@server/agent/orchestrator'
+import { runAgentTask, cancelAgentTask, releaseWsResources, settleRenderResult, settleUserAnswer } from '@server/agent/orchestrator'
 
 export interface WsUserData {
   userId: number
@@ -22,7 +22,11 @@ export type ClientMessage =
    * 一个用户可以同时在多份演示文稿上跑任务，所以取消要点名取消哪一个。
    */
   | { type: 'agent.cancel', deckId: number }
-  | { type: 'agent.confirm', value: boolean }
+  /**
+   * 用户确认 agent 的提问（前端 → 后端）。`requestId` 必须原样带回 ——
+   * 后端按它找回是哪一次在等（和 `agent.render.result` 同一套机制）。
+   */
+  | { type: 'agent.confirm', requestId?: string, value: boolean }
   /**
    * 渲染后反思的回答（前端 → 后端）。
    *
@@ -62,7 +66,14 @@ export type ServerMessage =
   | { type: 'agent.reasoning.done', role: string }
   /** 告诉前端本次任务落在哪条会话上（新建时前端据此挂进列表） */
   | { type: 'agent.conversation', id: number, title: string }
-  | { type: 'agent.ask', question: string }
+  /**
+   * agent 停下来问用户一个问题（后端 → 前端，R-61 确认闸门）。
+   *
+   * `requestId` 必须原样随 `agent.confirm` 带回 —— 后端按它找回是
+   * 哪一次在等。这是继 `agent.render.request` 之后第二条
+   * 「后端挂起等回答」的下行消息，机制同一套（`pendingRequests`）。
+   */
+  | { type: 'agent.ask', requestId: string, question: string }
   /**
    * 这一句用户输入的去向。**三种状态一条消息**，不是三种消息。
    *
@@ -190,11 +201,15 @@ export const handleWsMessage = async (
         break
       }
 
-      case 'agent.confirm':
-        // TODO: 用户确认 agent 提问。**等待机制本身已经有了**
-        // （`runtime/pendingRequests.ts`，渲染后反思用的就是它），
-        // 缺的只是把提问也接上去 —— 见 docs/13 §三
+      case 'agent.confirm': {
+        // R-61：确认闸门的回答。对不上就只打一行日志 ——
+        // 超时之后才回来的那条如果被接受，agent 会拿到一份属于上一次提问的回答
+        const accepted = settleUserAnswer(msg.requestId ?? '', msg.value)
+        if (!accepted) {
+          console.log('[ws] 用户确认没有对应的等待者（多半是已经超时了），丢弃')
+        }
         break
+      }
 
       case 'agent.render.result': {
         // 交给在等它的那次测量。对不上就只打一行日志 ——

@@ -7,7 +7,7 @@
 
 import { z } from 'zod'
 import type {
-  Slide, PPTElement, PPTAnimation, SlideTheme, AnimationEffect, TurningMode,
+  Slide, PPTElement, PPTTextElement, PPTAnimation, SlideTheme, AnimationEffect, TurningMode,
 } from '@/types/slides'
 import { ANIMATION_DEFS, TURNING_MODES } from '@/configs/animation'
 import { buildShapeGeometry, getCatalogShape, SHAPE_CATALOG_KEYS } from '@/configs/shapeCatalog'
@@ -603,6 +603,42 @@ const MIN_ELEMENTS_PER_SLIDE = 3
 const MIN_EFFECT_VARIETY = 3
 
 /**
+ * R-61 · 文本样式启发式的阈值（抄 Gorden layout_guard 的两条）。
+ *
+ * 小字号阈值 6px：1000px 逻辑宽对应 13.33in，即 75px/in —— 6px ≈ 5.8pt，
+ * 正是 Gorden 拦「低于 6pt」的那条线。我们的 caption 是 12px，6px 已经
+ * 小到只剩脚注意义。
+ * 全粗体阈值：6 块以上文字里 >85% 加粗才报 —— 阈值和 Gorden 逐字相同
+ * （「6 个以上文本框超过 85% bold」）。
+ */
+const SMALL_TEXT_PX = 6
+const BOLD_MIN_BLOCKS = 6
+const BOLD_RATIO_LIMIT = 0.85
+
+/**
+ * 一页文本的样式统计：总数 / 加粗数 / 含超小字号块数。
+ *
+ * 从 content 的 HTML 里正则抠 `font-size` 与 `font-weight` ——
+ * 版式引擎的 `richText` 和 agent 手工元素都写内联样式，这条两条路都覆盖。
+ * 正则而不是 AST：这里只要两个数，不值得把解析器拖进 kernel。
+ */
+const collectTextStyles = (slide: Slide): { count: number, bold: number, tiny: number } => {
+  let count = 0
+  let bold = 0
+  let tiny = 0
+  for (const el of slide.elements) {
+    if (el.type !== 'text') continue
+    const t = el as PPTTextElement
+    count++
+    if (/\bfont-weight\s*:\s*(700|bold)\b/i.test(t.content)
+      || /<(strong|b)\b/i.test(t.content)) bold++
+    const sizes = [...t.content.matchAll(/font-size\s*:\s*([\d.]+)px/gi)].map(m => parseFloat(m[1]))
+    if (sizes.some(s => s < SMALL_TEXT_PX)) tiny++
+  }
+  return { count, bold, tiny }
+}
+
+/**
  * 版式分布判据的起查页数。
  *
  * 四页以下谈「分布」没有意义 —— 封面 + 两页内容 + 结尾，本来就没有多少可分布的。
@@ -945,6 +981,33 @@ export const lintDeckDesign = (slides: Slide[], theme?: SlideTheme): LintIssue[]
           + '两边同字就只剩字号在扛。挑一个和它性格不同的做正文（衬线配非衬线是最稳的一组）',
       })
       break
+    }
+  }
+
+  // ⑪ 文本样式启发式（抄 Gorden layout_guard 的两条）
+  //
+  // 全粗体：6 块以上文字里超过 85% 加粗 —— 全部强调等于没有强调，
+  // 而这是「AI 味」里最典型的一档（模型为了“更像截图”会把正文也加粗）。
+  // 小字号：低于 6px 的字在 1000px 宽画布上约等于 PowerPoint 的 5.8pt，
+  // 投影上读不出来。这两条都是确定性检查，不必渲染。
+  for (const [i, slide] of slides.entries()) {
+    if (!slide.elements.length) continue
+    const stats = collectTextStyles(slide)
+    if (stats.tiny > 0) {
+      issues.push({
+        level: 'warning',
+        slideId: slide.id,
+        message: `第 ${i + 1} 页有 ${stats.tiny} 块文字的字号低于 ${SMALL_TEXT_PX}px —— `
+          + '投影上读不出来。要么删掉，要么换一个装得下它的位置',
+      })
+    }
+    if (stats.count >= BOLD_MIN_BLOCKS && stats.bold / stats.count > BOLD_RATIO_LIMIT) {
+      issues.push({
+        level: 'warning',
+        slideId: slide.id,
+        message: `第 ${i + 1} 页 ${stats.count} 块文字里 ${stats.bold} 块是加粗的（${Math.round(stats.bold / stats.count * 100)}%）—— `
+          + '全部强调等于没有强调。只有标题、按钮标题、重点词该加粗，普通正文保持常规字重',
+      })
     }
   }
 

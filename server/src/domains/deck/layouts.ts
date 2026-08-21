@@ -44,7 +44,7 @@ import { buildShapeGeometry } from '@/configs/shapeCatalog'
 import {
   CANVAS_WIDTH, CANVAS_HEIGHT, SAFE, SPACING, TYPE_SCALE, LINE_HEIGHT,
   richText, textBoxHeight, fitFontSize, fitSteps, mixHex, snapY, stack, scrimFor, ensureContrast, UNIT, LAYOUT_INSET,
-  fontForSize, TYPOGRAPHY_PAIRS,
+  fontForSize, readableOn, contrastRatio, TYPOGRAPHY_PAIRS,
   type Palette, type TypeRecipe, type PaletteStyle,
 } from './design'
 
@@ -62,6 +62,9 @@ export const LAYOUT_PATTERNS = [
   'image-grid',
   'split-figure',
   'full-figure',
+  'quadrant',
+  'funnel',
+  'pyramid',
 ] as const
 
 export type LayoutPattern = typeof LAYOUT_PATTERNS[number]
@@ -221,6 +224,13 @@ export const LAYOUT_META: Record<LayoutPattern, LayoutMeta> = {
   'image-grid': { pattern: 'image-grid', name: '图文网格', usage: '内容页：2~3 个概念**各配一张图**，图在上文字在下。产品特性、案例展示、团队介绍', pace: 'content', items: [2, 3], requires: ['title', 'items'], image: null, itemImage: true },
   'split-figure': { pattern: 'split-figure', name: '左图右列', usage: '内容页：左边一张大图，右边 2~4 条要点。既要配图又要讲清条目时用它，是 cards / bullets 的配图替身', pace: 'content', items: [2, 4], requires: ['title', 'items'], image: 'panel' },
   'full-figure': { pattern: 'full-figure', name: '满屏图 + 浮层卡片', usage: '内容页：整幅照片当背景，文字装在一块实心浮层卡片里。视觉冲击最强，适合章节开场、金句、单一论断', pace: 'rhythm', items: null, requires: ['title'], image: 'overlay' },
+  // R-61 · 三个「内容结构型」版式，抄 Gorden §4 的结构→形式映射：
+  // 现状/双维分类 → 象限；筛选/转化 → 漏斗；层级/优先级 → 金字塔。
+  // 它们补的是「内容结构在版式库里没有对应物」的空白 ——
+  // 之前这类内容只能被塞进 bullets / cards，结构表达不出来。
+  'quadrant': { pattern: 'quadrant', name: '四象限矩阵', usage: '内容页：2×2 四格平分版面，SWOT / 优势劣势 / 双维分类。每格左上角小标签 + 标题 + 正文', pace: 'content', items: [4, 4], requires: ['title', 'items'], image: null },
+  'funnel': { pattern: 'funnel', name: '漏斗转化', usage: '内容页：3~5 层逐层收窄的转化漏斗，条内标题 + 转化率，条下说明。筛选 / 转化 / 取舍结构', pace: 'content', items: [3, 5], requires: ['title', 'items'], image: null },
+  'pyramid': { pattern: 'pyramid', name: '金字塔层级', usage: '内容页：3~4 层金字塔，顶层最窄最重要（愿景/核心结论），向下逐层变宽展开', pace: 'content', items: [3, 4], requires: ['title', 'items'], image: null },
 }
 
 /**
@@ -1102,6 +1112,286 @@ const LAYOUT_VARIANTS: Partial<Record<LayoutPattern, LayoutFn>> = {
 }
 
 const LAYOUTS: Record<LayoutPattern, LayoutFn> = {
+  // ── R-61 · 内容结构型版式（抄 Gorden §4 的结构→形式映射） ──
+  // 三个版式共用「先量后排 + fitSteps 降级 + 中线/分层结构」的同一套纪律，
+  // 坐标全部由代码算 —— 红线（不往排版层加自由度）不动。
+
+  // 四象限矩阵：2×2 平分版面，中线分隔，格内左上角小标签 + 标题 + 正文。
+  // 内容结构 = 双维分类（SWOT / 优势劣势 / 轻重缓急）
+  'quadrant': (b, c) => {
+    const p = b.palette
+    const items = clampItems(c.items, 4, 4)
+
+    const titleH = b.measure(c.title ?? '', TYPE_SCALE.title, SAFE.width, LINE_HEIGHT.heading, true)
+    const title = b.text({ left: SAFE.left, top: SAFE.top, width: SAFE.width, height: titleH }, c.title ?? '', {
+      size: TYPE_SCALE.title, color: p.text, bold: true, lineHeight: LINE_HEIGHT.heading, textType: 'title',
+    })
+    const bar = b.shape('bar', { left: SAFE.left, top: snapY(SAFE.top + titleH + 4), width: 64, height: 10 }, {
+      fill: p.accent, name: '强调条',
+    })
+
+    let y = snapY(SAFE.top + titleH + 14 + SPACING.headingGap)
+    let subtitle: PPTElement | null = null
+    if (c.subtitle) {
+      const h = b.measure(c.subtitle, TYPE_SCALE.body, SAFE.width)
+      subtitle = b.text({ left: SAFE.left, top: y, width: SAFE.width, height: h }, c.subtitle, {
+        size: TYPE_SCALE.body, color: b.onPhoto(p.textMuted), textType: 'content',
+      })
+      y = snapY(y + h + SPACING.paragraphGap)
+    }
+
+    const divider = 2
+    const cellW = (SAFE.width - divider) / 2
+    const cellH = (SAFE.bottom - y - divider) / 2
+    const pad = 16
+    const innerW = cellW - pad * 2
+
+    // 格内放不下就降级：行距 → 正文字号 → 标题字号
+    const step = fitSteps(
+      [
+        { title: TYPE_SCALE.itemTitle, body: TYPE_SCALE.body, lh: LINE_HEIGHT.body },
+        { title: TYPE_SCALE.itemTitle, body: TYPE_SCALE.caption, lh: LINE_HEIGHT.tight },
+        { title: 17, body: TYPE_SCALE.caption, lh: LINE_HEIGHT.tight },
+      ],
+      s => Math.max(...items.map(it => {
+        const th = b.measure(it.title ?? '', s.title, innerW, LINE_HEIGHT.heading, true)
+        const bh = it.body ? b.measure(it.body, s.body, innerW, s.lh) : 0
+        return 18 + 6 + th + bh
+      })),
+      cellH - pad * 2,
+    )
+
+    // 中线：结构线随标题同步画出，不单独占一步
+    const hLine = b.line([0, 0], [SAFE.width, 0], SAFE.left, snapY(y + cellH + divider / 2), p.border, 1)
+    const vLine = b.line([0, 0], [0, cellH * 2 + divider], SAFE.left + cellW + divider / 2, y, p.border, 1)
+
+    b.animate(title, 'fade-down', 'click', 500)
+    b.animate(bar, 'wipe', 'meantime', 400)
+    b.animate(subtitle, 'fade-up', 'auto', 400)
+    b.animate(hLine, 'wipe', 'meantime', 400)
+    b.animate(vLine, 'wipe-down', 'meantime', 400)
+
+    items.forEach((item, i) => {
+      const col = i % 2, row = Math.floor(i / 2)
+      const left = SAFE.left + col * (cellW + divider)
+      const top = y + row * (cellH + divider)
+      const cell = b.shape('rect', { left, top, width: cellW, height: cellH }, {
+        fill: p.surface, ...cardDecor(p), name: `象限 ${i + 1}`,
+      })
+      const label = b.text(
+        { left: left + pad, top: top + pad, width: innerW, height: 18 },
+        item.label ?? `象限 ${i + 1}`,
+        {
+          size: TYPE_SCALE.eyebrow, color: b.onPhoto(p.accent), bold: true,
+          lineHeight: LINE_HEIGHT.tight, textType: 'itemNumber',
+        },
+      )
+      const headH = b.measure(item.title ?? '', step.title, innerW, LINE_HEIGHT.heading, true)
+      const headTop = snapY(top + pad + 18 + 6)
+      const head = b.text({ left: left + pad, top: headTop, width: innerW, height: headH }, item.title ?? '', {
+        size: step.title, color: p.text, bold: true, lineHeight: LINE_HEIGHT.heading, textType: 'itemTitle',
+      })
+      const body = item.body
+        ? b.text(
+          { left: left + pad, top: snapY(headTop + headH), width: innerW, height: cellH - pad - (headTop - top) - headH },
+          item.body,
+          { size: step.body, color: b.onPhoto(p.textMuted), lineHeight: step.lh, textType: 'item' },
+        )
+        : null
+
+      b.animate(cell, 'fade-up', i === 0 ? 'click' : 'auto', 400)
+      b.animate(label, 'fade-up', 'meantime', 400)
+      b.animate(head, 'fade-up', 'meantime', 400)
+      b.animate(body, 'fade-up', 'meantime', 400)
+    })
+
+    return { background: { type: 'solid', color: p.background }, slideType: 'content' }
+  },
+
+  // 漏斗转化：N 条逐层收窄的横条。条内标题 + 转化率，条下说明。
+  // 内容结构 = 筛选 / 转化 / 逐步取舍
+  'funnel': (b, c) => {
+    const p = b.palette
+    const items = clampItems(c.items, 3, 5)
+    const n = items.length
+
+    const titleH = b.measure(c.title ?? '', TYPE_SCALE.title, SAFE.width, LINE_HEIGHT.heading, true)
+    const title = b.text({ left: SAFE.left, top: SAFE.top, width: SAFE.width, height: titleH }, c.title ?? '', {
+      size: TYPE_SCALE.title, color: p.text, bold: true, lineHeight: LINE_HEIGHT.heading, textType: 'title',
+    })
+    const bar = b.shape('bar', { left: SAFE.left, top: snapY(SAFE.top + titleH + 4), width: 64, height: 10 }, {
+      fill: p.accent, name: '强调条',
+    })
+
+    let y = snapY(SAFE.top + titleH + 14 + SPACING.headingGap)
+    let subtitle: PPTElement | null = null
+    if (c.subtitle) {
+      const h = b.measure(c.subtitle, TYPE_SCALE.body, SAFE.width)
+      subtitle = b.text({ left: SAFE.left, top: y, width: SAFE.width, height: h }, c.subtitle, {
+        size: TYPE_SCALE.body, color: b.onPhoto(p.textMuted), textType: 'content',
+      })
+      y = snapY(y + h + SPACING.paragraphGap)
+    }
+
+    const minW = 300
+    const widths = items.map((_, i) => Math.round(SAFE.width - (SAFE.width - minW) * i / (n - 1)))
+    const barH = 52
+    const barGap = 12
+
+    // 放不下就丢条下说明（先保条）。丢说明是止损不是事故 —— 漏斗的信息主体在条内
+    const budget = SAFE.bottom - y
+    const step = fitSteps(
+      [
+        { body: TYPE_SCALE.caption as number | null, lh: LINE_HEIGHT.tight },
+        { body: null, lh: LINE_HEIGHT.tight },
+      ],
+      s => items.reduce((sum, it, i) => {
+        const bh = s.body !== null && it.body ? b.measure(it.body, s.body, SAFE.width - 40, s.lh) : 0
+        return sum + barH + (bh ? bh + 8 : 0) + (i === 0 ? 0 : barGap)
+      }, 0),
+      budget,
+    )
+    const bodyHs = items.map(it =>
+      step.body !== null && it.body ? b.measure(it.body, step.body, SAFE.width - 40, step.lh) : 0)
+
+    const rows = stack(
+      items.map((_, i) => ({ height: barH + (bodyHs[i] ? bodyHs[i] + 8 : 0), gap: i === 0 ? 0 : barGap })),
+      { top: y, bottom: SAFE.bottom }, 'middle',
+    )
+
+    b.animate(title, 'fade-down', 'click', 500)
+    b.animate(bar, 'wipe', 'meantime', 400)
+    b.animate(subtitle, 'fade-up', 'auto', 400)
+
+    items.forEach((item, i) => {
+      const w = widths[i]
+      const left = SAFE.left + Math.round((SAFE.width - w) / 2)
+      const top = rows.tops[i]
+      // 长标题按条宽自动降字号，绝不溢出条
+      const titleSize = fitFontSize(
+        item.title ?? '', w - 120, barH - 12,
+        [TYPE_SCALE.itemTitle, TYPE_SCALE.caption],
+        LINE_HEIGHT.tight, { bold: true },
+      )
+      const barEl = b.shape('rect', { left, top, width: w, height: barH }, {
+        fill: p.primary, opacity: 0.95 - 0.4 * (i / (n - 1)), name: `漏斗层 ${i + 1}`,
+      })
+      const titleEl = b.text({ left: left + 24, top, width: w - 120, height: barH }, item.title ?? '', {
+        size: titleSize, color: p.onPrimary, bold: true, lineHeight: LINE_HEIGHT.tight,
+        vAlign: 'middle', textType: 'itemTitle',
+      })
+      const labelEl = b.text({ left: left + w - 96, top, width: 72, height: barH }, item.label ?? '', {
+        size: TYPE_SCALE.itemTitle, color: p.onPrimary, bold: true, align: 'right',
+        lineHeight: LINE_HEIGHT.tight, vAlign: 'middle', textType: 'itemNumber',
+      })
+      const body = bodyHs[i]
+        ? b.text(
+          { left: SAFE.left + 20, top: snapY(top + barH + 8), width: SAFE.width - 40, height: bodyHs[i] },
+          item.body ?? '',
+          { size: step.body as number, color: b.onPhoto(p.textMuted), lineHeight: step.lh, textType: 'item' },
+        )
+        : null
+
+      b.animate(barEl, 'wipe', i === 0 ? 'click' : 'auto', 500)
+      b.animate(titleEl, 'fade-up', 'meantime', 400)
+      b.animate(labelEl, 'fade-up', 'meantime', 400)
+      b.animate(body, 'fade-up', 'meantime', 400)
+    })
+
+    return { background: { type: 'solid', color: p.background }, slideType: 'content' }
+  },
+
+  // 金字塔层级：顶层最窄最重要，向下逐层变宽。层高按宽度比例分。
+  // 内容结构 = 层级 / 优先级 / 愿景→落地
+  'pyramid': (b, c) => {
+    const p = b.palette
+    const items = clampItems(c.items, 3, 4)
+    const n = items.length
+
+    const titleH = b.measure(c.title ?? '', TYPE_SCALE.title, SAFE.width, LINE_HEIGHT.heading, true)
+    const title = b.text({ left: SAFE.left, top: SAFE.top, width: SAFE.width, height: titleH }, c.title ?? '', {
+      size: TYPE_SCALE.title, color: p.text, bold: true, lineHeight: LINE_HEIGHT.heading, textType: 'title',
+    })
+    const bar = b.shape('bar', { left: SAFE.left, top: snapY(SAFE.top + titleH + 4), width: 64, height: 10 }, {
+      fill: p.accent, name: '强调条',
+    })
+
+    let y = snapY(SAFE.top + titleH + 14 + SPACING.headingGap)
+    let subtitle: PPTElement | null = null
+    if (c.subtitle) {
+      const h = b.measure(c.subtitle, TYPE_SCALE.body, SAFE.width)
+      subtitle = b.text({ left: SAFE.left, top: y, width: SAFE.width, height: h }, c.subtitle, {
+        size: TYPE_SCALE.body, color: b.onPhoto(p.textMuted), textType: 'content',
+      })
+      y = snapY(y + h + SPACING.paragraphGap)
+    }
+
+    const minW = 240
+    const widths = items.map((_, i) => Math.round(minW + (SAFE.width - minW) * i / (n - 1)))
+    const totalW = widths.reduce((s, w) => s + w, 0)
+    const gap = 8
+    const available = SAFE.bottom - y - gap * (n - 1)
+
+    // 层高按宽度比例分 —— 顶层的字少又窄，本来就该矮
+    const heights = widths.map(w => Math.max(48, Math.floor(available * w / totalW)))
+
+    // 顶部窄层放不下正文就丢（先保标题），逐层算
+    const headHs = items.map((it, i) =>
+      b.measure(it.title ?? '', TYPE_SCALE.itemTitle, widths[i] - 40, LINE_HEIGHT.heading, true))
+    const bodyHs = items.map((it, i) =>
+      it.body ? b.measure(it.body, TYPE_SCALE.caption, widths[i] - 40, LINE_HEIGHT.tight) : 0)
+    const keepBody = items.map((_, i) =>
+      bodyHs[i] > 0 && headHs[i] + bodyHs[i] + 8 <= heights[i] - 16)
+
+    const rows = stack(
+      items.map((_, i) => ({ height: heights[i], gap: i === 0 ? 0 : gap })),
+      { top: y, bottom: SAFE.bottom }, 'middle',
+    )
+
+    b.animate(title, 'fade-down', 'click', 500)
+    b.animate(bar, 'wipe', 'meantime', 400)
+    b.animate(subtitle, 'fade-up', 'auto', 400)
+
+    items.forEach((item, i) => {
+      const w = widths[i]
+      const left = SAFE.left + Math.round((SAFE.width - w) / 2)
+      const top = rows.tops[i]
+      // 层色在 primary→accent 之间渐变；但要保证「层上文字」对**页面底色**也可读 ——
+      // 深色主题下混出来的中间色可能和背景同亮，文字会两头都看不见。
+      // 往背景方向收到可读为止（最多收到一半，再收金字塔的层次就没了）
+      let fill = mixHex(p.primary, p.accent, i / (n - 1))
+      let on = readableOn(fill)
+      for (let k = 1; k <= 10 && contrastRatio(on, p.background) < 2.5; k++) {
+        fill = mixHex(mixHex(p.primary, p.accent, i / (n - 1)), p.background, k / 10)
+        on = readableOn(fill)
+      }
+      const layer = b.shape('rect', { left, top, width: w, height: heights[i] }, {
+        fill, name: `金字塔层 ${i + 1}`,
+      })
+
+      const showBody = keepBody[i]
+      const contentH = headHs[i] + (showBody ? bodyHs[i] + 4 : 0)
+      const contentTop = snapY(top + Math.max(4, (heights[i] - contentH) / 2))
+      const head = b.text({ left, top: contentTop, width: w, height: headHs[i] }, item.title ?? '', {
+        size: TYPE_SCALE.itemTitle, color: on, bold: true, align: 'center',
+        lineHeight: LINE_HEIGHT.heading, textType: 'itemTitle',
+      })
+      const body = showBody
+        ? b.text(
+          { left, top: snapY(contentTop + headHs[i] + 4), width: w, height: bodyHs[i] },
+          item.body ?? '',
+          { size: TYPE_SCALE.caption, color: on, align: 'center', lineHeight: LINE_HEIGHT.tight, textType: 'item' },
+        )
+        : null
+
+      b.animate(layer, 'wipe', i === 0 ? 'click' : 'auto', 500)
+      b.animate(head, 'fade-up', 'meantime', 400)
+      b.animate(body, 'fade-up', 'meantime', 400)
+    })
+
+    return { background: { type: 'solid', color: p.background }, slideType: 'content' }
+  },
+
   // 居中封面：装饰性斜切块压在角落，标题居中，下方一道强调条
   'title-center': (b, c) => {
     const p = b.palette

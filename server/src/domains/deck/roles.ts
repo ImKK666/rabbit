@@ -30,6 +30,7 @@ import type { AssetTools } from './assetTools'
 // 同上，必须 `import type`：`reflectTool.ts` 经 `runtime/llm.ts` 拉 `bun:sqlite`
 import type { ReflectTools } from './reflectTool'
 import type { OrnamentTools } from './ornamentTool'
+import type { AskTools } from './askTool'
 import { DECK_TOOL_GROUPS, deckRoleGroups, type DeckTools } from './toolGroups'
 import { describeShapeCatalog } from '@/configs/shapeCatalog'
 import { describeLayouts } from './layouts'
@@ -307,6 +308,8 @@ ${ANIMATION_GUIDE}
    视觉方案（三个锚点色 + 一对字 + 质感档位）按上面「先定这份稿子长什么样」那节做完，
    包括最后自己批的那一遍；叙事线是从哪讲到哪、每页用哪个版式、哪几页放节奏页。
    两件事一次想完，不要一页一页现编。想的过程不用写给用户看，直接进入执行。
+   **重要稿件（对外 / 管理层 / 销售 / 技术密集 / 方向有分岔）：
+   想完之后、建页之前，用 askUser 停下来让用户确认一次方向（见「确认闸门」）。**
 1. **setTheme 把设计好的颜色定下来**（带 designNote）。这一步在建页之前 ——
    形状、图表、表格都读主题，晚定的话前面加的东西就是旧色
 2. getDesignTokens 拿字号阶梯和间距栅格（改造现有稿子的话再 getDeck 看现状）
@@ -327,9 +330,26 @@ ${ANIMATION_GUIDE}
 
 - **内容要具体。**「介绍产品优势」不是内容，
   「三个优势：响应快 200ms / 成本低 40% / 零运维」才是
+- **内容密度基线**（「版面太简单」的根子几乎总是内容太薄，不是版式没选对）：
+  一张内容页至少 = 一句导语 + 3~4 个并列模块（每个模块 = 标题 + 1~2 条要点
+  + 一个可以强调的数字/指标）+ 一句结论或来源，约 15~20 个信息点。
+  内容不够时先**把内容做厚**：拿真实材料做结构化拆解（把「上市」拆成
+  时间/募资额/意义），不是放大字号填空，更不是编数据 ——
+  **数据零编造，只有用户给过的数值才许用**
 - 有数字的地方用 chart，有对比的地方用 compare，有时间顺序的地方用 timeline ——
   别把什么都塞进 bullets
 - 节奏页（section / stat / quote / full-figure）在规划叙事线时就排进去，不要等排完版再补
+
+## 确认闸门（askUser · 重要稿件用）
+
+对外、管理层、销售、技术密集、或者方向明显有分岔的稿子，
+在「大纲与方向想清楚、还没开始建页」时用 askUser 停下来让用户确认一次：
+
+- 问题要**具体、二选一**：「这份稿子走数据报告路线还是故事叙事路线？
+  是 = 数据报告，否 = 故事叙事」。不要问「可以开始了吗」这种废话
+- 用户点「是」= 按问题里说的第一个方向继续；「否」= 第二个方向
+- **每个任务最多一次**；用户没回答（超时 / 页面没开）就按你自己的判断继续，不要重试
+- 普通稿子不要问 —— 问多了用户会觉得 agent 什么都要人拍板
 
 ## 配图（如果你手上有 searchImage / generateImage）
 
@@ -467,7 +487,7 @@ export const getSystemPrompt = (role: AgentRole): string => SYSTEM_PROMPTS[role]
  */
 export const getToolSubset = (
   role: AgentRole,
-  allTools: AgentTools & Partial<AssetTools> & Partial<ReflectTools> & Partial<OrnamentTools>,
+  allTools: AgentTools & Partial<AssetTools> & Partial<ReflectTools> & Partial<OrnamentTools> & Partial<AskTools>,
   { assets = false }: { assets?: boolean } = {},
 ): RoleToolset =>
   selectToolGroups(allTools, DECK_TOOL_GROUPS, deckRoleGroups(role, { assets }))

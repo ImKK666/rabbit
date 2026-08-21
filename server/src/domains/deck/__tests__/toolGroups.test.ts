@@ -20,6 +20,7 @@ import { ASSET_TOOL_NAMES } from '../assetResults'
 import type { AssetTools } from '../assetTools'
 import type { ReflectTools } from '../reflectTool'
 import type { OrnamentTools } from '../ornamentTool'
+import type { AskTools } from '../askTool'
 
 const makeDeckTools = () => {
   let state: DeckState = { slides: [], theme: undefined as never, version: 0 }
@@ -42,11 +43,11 @@ const makeDeckTools = () => {
  */
 const makeTools = () => {
   const stub = Object.fromEntries(
-    [...ASSET_TOOL_NAMES, ...REFLECT_TOOL_NAMES, ...ORNAMENT_TOOL_NAMES].map(n => [n, {}]),
+    [...ASSET_TOOL_NAMES, ...REFLECT_TOOL_NAMES, ...ORNAMENT_TOOL_NAMES, ...ASK_TOOL_NAMES].map(n => [n, {}]),
   )
   // 占位物在运行时不是真工具，但这一组只读 `Object.keys` 和对象同一性，够用
   return { ...makeDeckTools(), ...stub } as
-    ReturnType<typeof makeDeckTools> & AssetTools & ReflectTools & OrnamentTools
+    ReturnType<typeof makeDeckTools> & AssetTools & ReflectTools & OrnamentTools & AskTools
 }
 
 /**
@@ -78,8 +79,12 @@ const REFLECT_TOOL_NAMES = ['reflectRender']
 /** R-58 加的两个：装饰层压在上面，底图垫在下面（docs/14） */
 const ORNAMENT_TOOL_NAMES = ['addOrnament', 'generateBackdrop']
 
+/** R-61 加的一个：确认闸门（review gate，抄 workflow-san） */
+const ASK_TOOL_NAMES = ['askUser']
+
 const ALL_TOOL_NAMES = [
   ...DECK_TOOL_NAMES, ...IMAGE_TOOL_NAMES, ...REFLECT_TOOL_NAMES, ...ORNAMENT_TOOL_NAMES,
+  ...ASK_TOOL_NAMES,
 ].sort()
 
 /** 拆层前 planner / reviewer 那个 switch 分支里硬列的 5 个 */
@@ -88,11 +93,11 @@ const READONLY_TOOL_NAMES = [
 ].sort()
 
 describe('工具总集', () => {
-  it('是 28 个（23 个 deck + 2 个图片 + 1 个反思 + 2 个生成图层），键名与实现一致', () => {
+  it('是 29 个（23 个 deck + 2 个图片 + 1 个反思 + 2 个生成图层 + 1 个确认闸门），键名与实现一致', () => {
     // 这条同时是上面几份硬编码清单的锚：工具增删时这里先红，
     // 提醒去更新清单，而不是让清单悄悄和现实脱节
     expect(Object.keys(makeTools()).sort()).toEqual(ALL_TOOL_NAMES)
-    expect(ALL_TOOL_NAMES).toHaveLength(28)
+    expect(ALL_TOOL_NAMES).toHaveLength(29)
   })
 
   it('原有 23 个 deck 工具一个没少、一个没改名', () => {
@@ -145,11 +150,12 @@ describe('图片能力关着时整组不注册', () => {
    */
   const tools = makeTools()
 
-  it('拿到的正好是 23 个 deck 工具 + 反思工具 —— 图片和装饰两组一起摘掉', () => {
+  it('拿到的正好是 23 个 deck 工具 + 反思工具 + 确认闸门 —— 图片和装饰两组一起摘掉', () => {
     // 装饰层也要打生图模型，所以 `assets: false` 时它一定不可用。
-    // **这条是 R-58 改过的**：加装饰组时它先红了，红得对 —— 那是一次真实的配额变更
+    // **这条是 R-58 改过的**：加装饰组时它先红了，红得对 —— 那是一次真实的配额变更。
+    // R-61 又红一次：askUser 不依赖生图，所以关掉图片它仍然在 —— 也是对的
     expect(Object.keys(getToolSubset('deck', tools, { assets: false })).sort())
-      .toEqual([...DECK_TOOL_NAMES, ...REFLECT_TOOL_NAMES].sort())
+      .toEqual([...DECK_TOOL_NAMES, ...REFLECT_TOOL_NAMES, ...ASK_TOOL_NAMES].sort())
   })
 
   it('默认（不传 assets）就是不给 —— 忘了传不会把图片工具漏出去', () => {

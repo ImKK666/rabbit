@@ -35,6 +35,7 @@ const MUST_BE_IN_WORKFLOW = [
   'lintDeck',          // 不主动跑就不会跑
   'reflectRender',     // 慢，且只有它看得见渲染后的问题
   'generateBackdrop',  // 慢、贵，且有严格的先后位置
+  'askUser',           // R-61：不主动说「重要稿件可以停一次」，模型永远不会问
 ]
 
 describe('工具在提示词里够得着', () => {

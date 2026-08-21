@@ -40,7 +40,8 @@ const contentFor = (pattern: string) => ({
     { label: '2024', title: '甲', body: '甲的说明' },
     { label: '2025', title: '乙', body: '乙的说明' },
     { label: '2026', title: '丙', body: '丙的说明' },
-  ].slice(0, pattern === 'compare' ? 2 : 3),
+    { label: '2027', title: '丁', body: '丁的说明' },
+  ].slice(0, pattern === 'compare' ? 2 : pattern === 'quadrant' ? 4 : 3),
 })
 
 describe('kernel · mintElementId', () => {
@@ -996,5 +997,62 @@ describe('kernel · 出场顺序 lint', () => {
     const issues = lintSlideAnimationOrder(slide)
     expect(issues.length).toBeGreaterThan(0)
     expect(issues.every(i => i.level === 'warning')).toBe(true)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// R-61 · 文本样式启发式（抄 Gorden layout_guard 的两条：全粗体 / 小字号）
+// ---------------------------------------------------------------------------
+
+describe('kernel · 文本样式 lint（R-61）', () => {
+  const styled = (content: string, id = ''): PPTElement => textEl(`t${id}`, { content })
+
+  const boldHtml = (n: number, boldCount: number): PPTElement[] =>
+    Array.from({ length: n }, (_, i) => styled(
+      i < boldCount
+        ? '<p><span style="font-size:15px;color:#111;font-weight:700">x</span></p>'
+        : '<p><span style="font-size:15px;color:#111">x</span></p>',
+      `${i}`,
+    ))
+
+  const slideWith = (els: PPTElement[], id = 's1'): Slide => ({ id, elements: els })
+
+  it('6 块文字全加粗 → 报「全部强调等于没有强调」', () => {
+    const issues = lintDeckDesign([slideWith(boldHtml(6, 6))])
+    expect(issues.some(i => i.message.includes('全部强调等于没有强调'))).toBe(true)
+  })
+
+  it('6 块文字里 1 块加粗（正常层级）→ 不报', () => {
+    const issues = lintDeckDesign([slideWith(boldHtml(6, 1))])
+    expect(issues.some(i => i.message.includes('加粗'))).toBe(false)
+  })
+
+  it('不足 6 块文字时全加粗也不报 —— 阈值和 Gorden 逐字相同', () => {
+    const issues = lintDeckDesign([slideWith(boldHtml(5, 5))])
+    expect(issues.some(i => i.message.includes('加粗'))).toBe(false)
+  })
+
+  it('<strong> 标签也算加粗 —— 手工元素会用它而不是内联样式', () => {
+    const els = Array.from({ length: 6 }, (_, i) => styled('<p><strong>x</strong></p>', `${i}`))
+    expect(lintDeckDesign([slideWith(els)]).some(i => i.message.includes('全部强调'))).toBe(true)
+  })
+
+  it('字号低于 6px → 报「读不出来」；6px 及以上不报', () => {
+    const tiny = styled('<p><span style="font-size:5px;color:#111">x</span></p>', 'a')
+    const okSize = styled('<p><span style="font-size:6px;color:#111">x</span></p>', 'b')
+    const issues = lintDeckDesign([slideWith([tiny, okSize])])
+    const tinyIssues = issues.filter(i => i.message.includes('读不出来'))
+    expect(tinyIssues).toHaveLength(1)
+    expect(tinyIssues[0].message).toContain('1 块文字')
+  })
+
+  it('一页里多块小字只报一次，计数正确', () => {
+    const els = [
+      styled('<p><span style="font-size:5px">x</span></p>', 'a'),
+      styled('<p><span style="font-size:4px">x</span></p>', 'b'),
+    ]
+    const issues = lintDeckDesign([slideWith(els)]).filter(i => i.message.includes('读不出来'))
+    expect(issues).toHaveLength(1)
+    expect(issues[0].message).toContain('2 块文字')
   })
 })

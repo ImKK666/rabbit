@@ -41,6 +41,11 @@ import { runDeckTask } from '@server/domains/deck/pipeline'
  */
 export { settleRenderResult } from '@server/domains/deck/reflectTool'
 
+/**
+ * R-61：确认闸门（`askUser`）的回答走这里回 deck 域。理由同上。
+ */
+export { settleUserAnswer } from '@server/domains/deck/askTool'
+
 /** 排队项。**它持有 ws** —— 所以断线清理的谓词写在这一层，不在 runtime */
 interface PendingTask {
   ws: ServerWebSocket<WsUserData>

@@ -20,12 +20,14 @@ import type { AssetTools } from './assetTools'
 import type { ReflectTools } from './reflectTool'
 // 同上，必须 `import type`：`ornamentTool.ts` 经 `runtime/assetConfig.ts` 拉 `bun:sqlite`
 import type { OrnamentTools } from './ornamentTool'
+// askTool 不碰库，但和上面保持一致：类型导入不拖 bun:sqlite 进 vitest
+import type { AskTools } from './askTool'
 
-/** deck 域现在能提供的全部工具。装配时由 `pipeline.ts` 把三组合到一起 */
-export type DeckTools = AgentTools & AssetTools & ReflectTools & OrnamentTools
+/** deck 域现在能提供的全部工具。装配时由 `pipeline.ts` 把几组合到一起 */
+export type DeckTools = AgentTools & AssetTools & ReflectTools & OrnamentTools & AskTools
 
 /**
- * 25 个工具分成 7 组。
+ * 26 个工具分成 8 组（R-61 加了确认闸门 askUser）。
  *
  * `satisfies` 而不是类型标注：这样组里写错工具名是**编译错误**，
  * 同时 `DECK_TOOL_GROUPS` 的键仍是字面量联合，
@@ -78,13 +80,19 @@ export const DECK_TOOL_GROUPS = {
    * 而这正是每页多花 15 秒之后第一个会提的要求。
    */
   ornament: ['addOrnament', 'generateBackdrop'],
+
+  /**
+   * R-61：确认闸门。单独一组 —— 它是唯一一个会**挂起整轮等用户**的工具，
+   * 将来想要「只读 agent」或「不许提问的 agent」时这一组要能单独摘掉。
+   */
+  ask: ['askUser'],
 } as const satisfies ToolGroupMap<DeckTools>
 
 export type DeckToolGroup = keyof typeof DECK_TOOL_GROUPS
 
 /** 全部能力。单独抽出来是为了下面那张表和判据都指向同一份组名 */
 const ALL_DECK_GROUPS = [
-  'read', 'slide', 'element', 'layout', 'theme', 'animation', 'asset', 'render', 'ornament',
+  'read', 'slide', 'element', 'layout', 'theme', 'animation', 'asset', 'render', 'ornament', 'ask',
 ] as const satisfies readonly DeckToolGroup[]
 
 /**
@@ -92,8 +100,8 @@ const ALL_DECK_GROUPS = [
  *
  * **R-51 之前这里有四行**：planner / reviewer 只拿那 5 个只读工具，
  * generator / editor 拿全集。合并成一个 agent 之后只剩一行，
- * 配额**与原来的 generator 逐键相等** —— 判据 7 在 `toolGroups.test.ts` 里
- * 把那 25 个键独立抄了一份当期望，不从这张表反推。
+ * 配额**与原来的 generator 逐键相等（加上 R-61 的 askUser）** ——
+ * 判据 7 在 `toolGroups.test.ts` 里把那 26 个键独立抄了一份当期望，不从这张表反推。
  *
  * 只读那一档没了，因为「只判断不动手」的角色没了。
  * 这一层本身保留：它表达的是「谁有资格用什么」，

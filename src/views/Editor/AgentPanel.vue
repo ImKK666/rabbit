@@ -151,6 +151,16 @@
               <span class="asset-detail" v-if="entry.detail">{{ entry.detail }}</span>
             </div>
 
+            <!-- 确认闸门：agent 停下来问用户，点「是 / 否」原样带回 requestId -->
+            <div class="log-entry ask-entry" v-else-if="entry.type === 'ask'">
+              <div class="ask-question">❓ {{ entry.question }}</div>
+              <div class="ask-actions" v-if="entry.answer === undefined">
+                <Button size="small" type="primary" @click="handleAnswer(idx, true)">是</Button>
+                <Button size="small" @click="handleAnswer(idx, false)">否</Button>
+              </div>
+              <div class="ask-answered" v-else>已选择：{{ entry.answer ? '是' : '否' }}</div>
+            </div>
+
             <!-- 状态变化 -->
             <div class="log-entry status-entry" v-else-if="entry.type === 'status' && entry.message">
               <span class="status-icon" :class="entry.status">●</span>
@@ -282,6 +292,12 @@ const handleDeleteConv = async (conv: { id: number, title: string }) => {
   catch {
     alert('删除失败')
   }
+}
+
+const handleAnswer = (_idx: number, value: boolean) => {
+  // 按钮只出现在还在等的那条上（后端同一时刻最多一条在等）；
+  // 双保险：store 里按 pendingAskIndex 认领，点错了也只是 no-op
+  agentStore.answerAsk(value)
 }
 
 const handleFork = async (messageId: number) => {
@@ -933,4 +949,26 @@ useStickToBottom(bodyRef, log, { deep: true })
   gap: 6px;
   margin-left: auto;
 }
+.ask-entry {
+  padding: 8px 12px;
+  margin: 4px 0;
+  border: 1px solid rgba(90, 155, 213, 0.45);
+  border-radius: 6px;
+  background: rgba(90, 155, 213, 0.08);
+
+  .ask-question {
+    font-size: 13px;
+    line-height: 1.5;
+    margin-bottom: 8px;
+  }
+  .ask-actions {
+    display: flex;
+    gap: 8px;
+  }
+  .ask-answered {
+    font-size: 12px;
+    color: var(--textColorMuted, #888);
+  }
+}
+
 </style>

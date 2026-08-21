@@ -52,6 +52,7 @@ import { createAgentTools, type DeckState } from './tools'
 import { createAssetTools, type AssetTools } from './assetTools'
 import { createReflectTools, reflectVisualAvailable } from './reflectTool'
 import { createOrnamentTools } from './ornamentTool'
+import { createAskTool } from './askTool'
 import { getSystemPrompt, getToolSubset } from './roles'
 import { createDeckChannel, type DeckChannel } from './channel'
 // 单一真相源在 kernel —— lint ⑨ 拿它当「颜色真的被改过」的参照物（R-60）
@@ -501,8 +502,13 @@ const runTurn = async ({
     emit: msg => channel.emit(msg),
   })
 
+  // R-61：确认闸门。和反思/装饰层一样建在这一轮里 ——
+  // 它只依赖通道和取消信号，不读 deck 状态，但按轮装配让
+  // 「取消即作废在等提问」随任务生命周期一起走
+  const ask = createAskTool({ emit: msg => channel.emit(msg), signal })
+
   const allTools = {
-    ...createAgentTools(accessor), ...(assetTools ?? {}), ...reflect.tools, ...ornament,
+    ...createAgentTools(accessor), ...(assetTools ?? {}), ...reflect.tools, ...ornament, ...ask,
   }
   const tools = toolless ? undefined : getToolSubset(AGENT_ROLE, allTools, { assets: !!assetTools })
   const system = getSystemPrompt(AGENT_ROLE)
