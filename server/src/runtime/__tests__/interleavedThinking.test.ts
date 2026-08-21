@@ -98,7 +98,9 @@ const reasoningIn = (prompt: LanguageModelV1Prompt) =>
     .filter(p => p.type === 'reasoning')
 
 describe('判据 9 · 第二步的请求里带着第一步的思考', () => {
-  beforeEach(() => { prompts.length = 0 })
+  beforeEach(() => {
+    prompts.length = 0
+  })
 
   it('确实跑了两步 —— 第一步调工具，第二步收尾', async () => {
     const stream = await run()
@@ -167,7 +169,9 @@ describe('判据 9 · 第二步的请求里带着第一步的思考', () => {
  * 判据对不敏感的错误是看不见的 —— 所以这里直接盯「累积」这个性质本身。
  */
 describe('落库不许重复', () => {
-  beforeEach(() => { prompts.length = 0 })
+  beforeEach(() => {
+    prompts.length = 0
+  })
 
   it('response.messages 是累积的 —— 这就是那个坑，先把它钉住', async () => {
     const stream = await run()

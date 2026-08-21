@@ -151,7 +151,9 @@ const handleFetch = async () => {
   catch (err: any) {
     fetchHint.value = `拉取失败: ${err?.response?.data?.error || '请求失败'}`
   }
-  finally { fetching.value = false }
+  finally {
+    fetching.value = false
+  }
 }
 
 const handleToggle = async (id: number, enabled: boolean) => {

@@ -187,7 +187,9 @@ describe('relayFetch · 接线', () => {
 
   it('非字符串 body 直接放行 —— 上传之类的请求不该被碰', async () => {
     let got: unknown = null
-    const base = (async (_i: unknown, init: unknown) => { got = init; return new Response('ok') }) as unknown as typeof fetch
+    const base = (async (_i: unknown, init: unknown) => {
+      got = init; return new Response('ok')
+    }) as unknown as typeof fetch
     const init = { method: 'POST', body: new Uint8Array([1, 2, 3]) }
     await relayFetch(createReasoningRelay(), base)('https://x/y', init as never)
     expect(got).toBe(init)
@@ -197,10 +199,14 @@ describe('relayFetch · 接线', () => {
     const broken = {
       learn: () => {},
       size: () => 1,
-      patch: () => { throw new Error('boom') },
+      patch: () => {
+        throw new Error('boom')
+      },
     }
     let sent = ''
-    const base = (async (_i: unknown, init: { body: string }) => { sent = init.body; return new Response('ok') }) as unknown as typeof fetch
+    const base = (async (_i: unknown, init: { body: string }) => {
+      sent = init.body; return new Response('ok')
+    }) as unknown as typeof fetch
     await relayFetch(broken, base)('https://x/y', { method: 'POST', body: '{"messages":[]}' })
     expect(sent).toBe('{"messages":[]}')
   })

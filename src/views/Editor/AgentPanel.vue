@@ -277,7 +277,7 @@ const handleDeleteConv = async (conv: { id: number, title: string }) => {
   try {
     await agentStore.deleteConversation(conv.id)
     expandedEntries.clear()
-  expandedGroups.clear()
+    expandedGroups.clear()
   }
   catch {
     alert('删除失败')
@@ -289,7 +289,7 @@ const handleFork = async (messageId: number) => {
   try {
     await agentStore.forkFrom(messageId)
     expandedEntries.clear()
-  expandedGroups.clear()
+    expandedGroups.clear()
   }
   catch {
     alert('分叉失败')
@@ -302,7 +302,7 @@ const handleClear = async () => {
   try {
     await agentStore.clearHistory()
     expandedEntries.clear()
-  expandedGroups.clear()
+    expandedGroups.clear()
   }
   catch {
     alert('清空失败')

@@ -52,7 +52,9 @@ api.interceptors.request.use(config => {
  * 用回调注册而不是直接 import store，避免 services ←→ store 循环依赖。
  */
 let unauthorizedHandler: (() => void) | null = null
-export const setUnauthorizedHandler = (fn: () => void) => { unauthorizedHandler = fn }
+export const setUnauthorizedHandler = (fn: () => void) => {
+  unauthorizedHandler = fn
+}
 
 api.interceptors.response.use(
   res => res,

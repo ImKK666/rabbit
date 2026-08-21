@@ -82,7 +82,9 @@ const load = async () => {
     const res = await adminApi.listUsers() as any
     users.value = res.users || []
   }
-  catch { users.value = [] }
+  catch {
+    users.value = []
+  }
 }
 
 const handleRoleChange = async (id: number, role: 'admin' | 'user') => {
@@ -91,7 +93,9 @@ const handleRoleChange = async (id: number, role: 'admin' | 'user') => {
     const u = users.value.find(u => u.id === id)
     if (u) u.role = role
   }
-  catch (err: any) { alert(err?.response?.data?.error || '操作失败') }
+  catch (err: any) {
+    alert(err?.response?.data?.error || '操作失败')
+  }
 }
 
 const openResetModal = (u: User) => {
@@ -110,7 +114,9 @@ const handleReset = async () => {
     resetVisible.value = false
     alert('密码已重置')
   }
-  catch (err: any) { alert(err?.response?.data?.error || '重置失败') }
+  catch (err: any) {
+    alert(err?.response?.data?.error || '重置失败')
+  }
 }
 
 const handleDelete = async (id: number) => {
@@ -119,7 +125,9 @@ const handleDelete = async (id: number) => {
     await adminApi.deleteUser(id)
     users.value = users.value.filter(u => u.id !== id)
   }
-  catch (err: any) { alert(err?.response?.data?.error || '删除失败') }
+  catch (err: any) {
+    alert(err?.response?.data?.error || '删除失败')
+  }
 }
 
 const formatTime = (t: string | number) => {

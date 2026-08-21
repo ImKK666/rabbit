@@ -45,7 +45,9 @@ const mount = (el: FakeEl | undefined, opts: { deep?: boolean } = {}) => {
   })
   return {
     elRef: elRef as unknown as Ref<FakeEl | undefined>,
-    grow: () => { source.value++ },
+    grow: () => {
+      source.value++
+    },
     flush: async () => {
       await nextTick()
       await nextTick()

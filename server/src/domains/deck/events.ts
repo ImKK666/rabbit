@@ -63,7 +63,7 @@ const CANCEL_POLICY: Record<ServerMessage['type'], 'survives' | 'reclaimable'> =
   //
   // **但光回收还不够**：回收掉的话前端永远不会回答，后端那次等待就只能
   // 耗到超时。所以取消时还要主动把在等的那些作废
-  //（`reflectTool.ts` 里挂在 signal 上的 `cancelAll`）。
+  // （`reflectTool.ts` 里挂在 signal 上的 `cancelAll`）。
   // 这是「回收一条消息」和「叫醒等它的人」两件事，漏掉后者只是慢，不是错 ——
   // 但慢到超时那几秒会让取消看起来没生效
   'agent.render.request': 'reclaimable',

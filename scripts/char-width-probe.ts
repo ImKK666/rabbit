@@ -209,7 +209,7 @@ const run = async () => {
           .map(([k, v]) => `${k}=${v.toFixed(3)}`).join('  '))
       .join('\n')
   }
-  ;(window as unknown as { __charWidth: FontTable[] }).__charWidth = tables
+  (window as unknown as { __charWidth: FontTable[] }).__charWidth = tables
 }
 
 run()

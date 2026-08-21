@@ -108,7 +108,9 @@ const loadProviders = async () => {
     const res = await adminApi.listProviders() as any
     providers.value = res.providers || []
   }
-  catch { providers.value = [] }
+  catch {
+    providers.value = []
+  }
 }
 
 const openForm = (p?: Provider) => {
@@ -147,7 +149,9 @@ const handleTest = async () => {
   catch (err: any) {
     testResult.value = { ok: false, error: err?.response?.data?.error || '请求失败' }
   }
-  finally { testing.value = false }
+  finally {
+    testing.value = false
+  }
 }
 
 const handleSave = async () => {
@@ -166,7 +170,9 @@ const handleSave = async () => {
       await adminApi.updateProvider(editingId.value, data as any)
     }
     else {
-      if (!form.apiKey) { saving.value = false; return }
+      if (!form.apiKey) {
+        saving.value = false; return
+      }
       const res = await adminApi.createProvider(data as any) as any
       editingId.value = res.provider?.id || null
     }
@@ -176,7 +182,9 @@ const handleSave = async () => {
   catch (err: any) {
     alert(err?.response?.data?.error || '保存失败')
   }
-  finally { saving.value = false }
+  finally {
+    saving.value = false
+  }
 }
 
 const handleDelete = async (id: number) => {
@@ -185,7 +193,9 @@ const handleDelete = async (id: number) => {
     await adminApi.deleteProvider(id)
     await loadProviders()
   }
-  catch (err: any) { alert(err?.response?.data?.error || '删除失败') }
+  catch (err: any) {
+    alert(err?.response?.data?.error || '删除失败')
+  }
 }
 
 onMounted(loadProviders)
