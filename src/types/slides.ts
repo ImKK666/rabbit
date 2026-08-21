@@ -846,6 +846,21 @@ export interface Slide {
    */
   paletteStyle?: string
   typography?: string
+  /**
+   * R-55: 本页 applyLayout 时**模型显式给出**的配色锚点角色名
+   *（`'primary'` / `'accent'` / `'background'` 的任意子集）。
+   *
+   * 和 `paletteStyle` 同一性质的编辑期元数据，**存在的理由也只有一个：
+   * 让 lint 分得清「模型选了商务」和「模型什么都没选、于是落到了商务」**。
+   *
+   * 这两件事在 `paletteStyle` 上看起来一模一样（都是 `'business'`），
+   * 因为 `applyLayoutToSlide` 写的是 `opts.style ?? 'business'` ——
+   * 默认值一旦落盘就再也分不出它是决定还是缺省。而这两者的区别正是
+   * 「这份稿子被设计过」和「二十份稿子长一个样」的区别。
+   *
+   * 空数组 = 一个锚点都没给（走的全是主题默认色）。PPTist 本体不读，导出也不带。
+   */
+  paletteAnchors?: string[]
 }
 
 /**
@@ -866,6 +881,27 @@ export interface SlideTheme {
   fontName: string
   outline: PPTElementOutline
   shadow: PPTElementShadow
+  /**
+   * R-56: 模型自己写的一句话 —— 这套配色/字体是被这份稿子里的什么驱动的。
+   *
+   * ## 为什么要有它
+   *
+   * prompt 里写着「每一个颜色都要说得出是这份稿子里的什么东西驱动的」，
+   * 而在这个字段之前**这句话没有任何东西在验** —— 和 `paletteStyle` 落盘之前
+   * 的处境逐字相同。写下来这件事本身就是逼着模型真的去想一遍。
+   *
+   * ## 为什么不拿默认主题当参照物
+   *
+   * 判「这份稿子被设计过吗」有两条路：跟 `store/slides.ts` 那套默认色比，
+   * 或者让模型自己说。前者是**代码在猜**，而且默认主题一改判据就悄悄失准。
+   * 后者是模型在答 —— 它本来就该答，只是以前没地方写。
+   *
+   * 判据只看它有没有写，写得好不好判不了（和 `ensureContrast` 的分工一样：
+   * 判据管「有没有做决定」，兜底管「决定得能不能读」）。
+   *
+   * 跟着 `themeJson` 整块存，不用迁移。PPTist 本体不读，导出也不带。
+   */
+  designNote?: string
 }
 
 export interface SlideTemplate {

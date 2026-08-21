@@ -575,6 +575,215 @@ describe('kernel · deck-level design lint', () => {
 })
 
 // ---------------------------------------------------------------------------
+// 版式分布与节奏
+//
+// 这两条守的都是「相邻页判据看不见的那一层」：cards / compare 交替二十页，
+// 每一对相邻页都不同，① 全绿，而读者看到的是同两张脸轮流出现。
+// ---------------------------------------------------------------------------
+
+describe('kernel · 版式分布与节奏', () => {
+  const deck = (...layouts: string[]): Slide[] =>
+    layouts.map((layout, i) => {
+      const id = `s${i + 1}`
+      return ok(applyLayoutToSlide([{ id, elements: [] }], id, THEME, layout, contentFor(layout)))[0] as Slide
+    })
+
+  const has = (slides: Slide[], fragment: string): boolean =>
+    lintDeckDesign(slides).some(i => i.message.includes(fragment))
+
+  // 六个内容版式，正好够拼出一段「每页都不一样、但全是内容页」的稿子
+  const CONTENT_SIX = ['bullets', 'cards', 'compare', 'timeline', 'image-grid', 'split-figure']
+
+  describe('分布', () => {
+    it('报出被一个版式占掉四成以上的稿子', () => {
+      // 六页里三页 cards（50%），且相邻页都不同 —— ① 一条都不会响
+      const slides = deck('cards', 'compare', 'cards', 'timeline', 'cards', 'bullets')
+      expect(has(slides, '同一个版式')).toBe(false)
+      expect(has(slides, '用了「卡片网格」')).toBe(true)
+      expect(has(slides, '50%')).toBe(true)
+    })
+
+    it('放过版式铺得开的稿子', () => {
+      expect(has(deck(...CONTENT_SIX), '相邻页没重复不等于整份有变化')).toBe(false)
+    })
+
+    it('四页以下不查分布 —— 那时候没有多少可分布的', () => {
+      // 四页里两页 cards（50%），但样本太小，不该报
+      expect(has(deck('cards', 'compare', 'cards', 'timeline'), '整份有变化')).toBe(false)
+    })
+
+    it('五页里两页同版式仍然正常 —— 至少三页才触发', () => {
+      expect(has(deck('cards', 'compare', 'cards', 'timeline', 'bullets'), '整份有变化')).toBe(false)
+    })
+  })
+
+  describe('节奏', () => {
+    it('报出连着六页内容页', () => {
+      const slides = deck('title-center', ...CONTENT_SIX, 'end')
+      expect(has(slides, '连着 6 页都是内容页')).toBe(true)
+      expect(has(slides, '第 2~7 页')).toBe(true)
+    })
+
+    it('中间插一页节奏页就放过', () => {
+      const slides = deck(
+        'title-center', 'bullets', 'cards', 'compare',
+        'section',
+        'timeline', 'image-grid', 'split-figure', 'end',
+      )
+      expect(has(slides, '都是内容页')).toBe(false)
+    })
+
+    it('封面 / 结尾也算喘气的地方 —— 它们本来就是大留白的页', () => {
+      // 五页内容 + 结尾 + 五页内容：两段都是 5，不该报
+      const slides = deck(...CONTENT_SIX.slice(0, 5), 'end', ...CONTENT_SIX.slice(0, 5))
+      expect(has(slides, '都是内容页')).toBe(false)
+    })
+
+    it('手工页不冒充节奏页 —— 它长什么样 lint 不知道', () => {
+      const slides = deck('title-center', 'bullets', 'cards', 'compare')
+      slides.push({ id: 'manual', elements: [textEl('m')] })
+      slides.push(...deck('timeline', 'image-grid', 'split-figure'))
+      expect(has(slides, '连着 6 页都是内容页')).toBe(true)
+    })
+  })
+
+  it('两条都是 warning，不是 error', () => {
+    const slides = deck('title-center', ...CONTENT_SIX, 'end')
+    expect(lintDeckDesign(slides).every(i => i.level === 'warning')).toBe(true)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 「这份稿子被设计过吗」
+//
+// 判的是 paletteAnchors 而不是 paletteStyle —— 后者写的是 `?? 'business'`，
+// 默认值一旦落盘就再也分不出它是决定还是缺省，而这两者的区别正是
+// 「被设计过」和「二十份长一个样」的区别。
+// ---------------------------------------------------------------------------
+
+describe('kernel · 设计意图与字体配对', () => {
+  const build = (
+    layouts: string[],
+    opts: Parameters<typeof applyLayoutToSlide>[5] = {},
+  ): Slide[] =>
+    layouts.map((layout, i) => {
+      const id = `s${i + 1}`
+      return ok(applyLayoutToSlide(
+        [{ id, elements: [] }], id, THEME, layout, contentFor(layout), opts,
+      ))[0] as Slide
+    })
+
+  const has = (slides: Slide[], fragment: string): boolean =>
+    lintDeckDesign(slides).some(i => i.message.includes(fragment))
+
+  describe('这份稿子被设计过吗', () => {
+    const NOTE = '深海主题：底色取自深水区，主色取自发光水母'
+    const themed = (designNote?: string): SlideTheme => ({ ...THEME, designNote })
+
+    it('既没写 designNote 也没给锚点 → 报「没有被设计过」', () => {
+      const slides = build(['cards', 'compare', 'timeline'])
+      expect(has(slides, '配色没有被设计过')).toBe(true)
+    })
+
+    /**
+     * 这条是第一版判据的**反例**：走 setTheme 定色时 paletteAnchors 一定是空的，
+     * 而那才是正路（形状/图表/表格都读主题）。第一版把它判成了「没设计」。
+     */
+    /**
+     * 匹配的是 /配色|锚点|设计过/ 而不是当前那句话的原文 —— 这条测试存在的意义
+     * 是钉住**第一版判据那个错**（它判 paletteAnchors，于是把走 setTheme 的稿子
+     * 判成没设计），而第一版报的是另一句「一个配色锚点都没给」。
+     * 只匹配现在这句原文的话，这条测试在第一版上会**因为匹配不上而假绿**。
+     */
+    it('setTheme 写了 designNote 就放过 —— 那才是定颜色的正路', () => {
+      const slides = build(['cards', 'compare', 'timeline'])
+      expect(slides.every(s => (s.paletteAnchors ?? []).length === 0)).toBe(true)
+      const complaints = lintDeckDesign(slides, themed(NOTE))
+        .filter(i => /配色|锚点|设计过/.test(i.message))
+      expect(complaints.map(i => i.message)).toEqual([])
+    })
+
+    it('designNote 是空白字符串不算数', () => {
+      expect(lintDeckDesign(build(['cards', 'compare', 'timeline']), themed('   '))
+        .some(i => i.message.includes('配色没有被设计过'))).toBe(true)
+    })
+
+    it('个别页覆盖色仍算做了决定 —— 第二信号', () => {
+      const slides = build(['cards', 'compare', 'timeline'], {
+        paletteOverride: { background: '#0d1b2a' },
+      })
+      expect(has(slides, '配色没有被设计过')).toBe(false)
+    })
+
+    it('落盘的是「显式给了哪几个」，不是最终色值', () => {
+      const [slide] = build(['cards'], {
+        paletteOverride: { primary: '#8a1538', accent: '#e0a458' },
+      })
+      expect(slide.paletteAnchors).toEqual(['accent', 'primary'])
+    })
+
+    it('选了风格但没定颜色，仍然算没设计 —— style 是质感档位不是配色', () => {
+      const slides = build(['cards', 'compare', 'timeline'], { style: 'vivid' })
+      expect(slides[0].paletteStyle).toBe('vivid')
+      expect(has(slides, '配色没有被设计过')).toBe(true)
+    })
+
+    it('改一页不报 —— 那一次没有义务重新设计整份', () => {
+      expect(has(build(['cards', 'compare']), '配色没有被设计过')).toBe(false)
+    })
+
+    it('lintDeck 会把 theme 透下去', () => {
+      const slides = build(['cards', 'compare', 'timeline'])
+      expect(lintDeck(slides, { theme: themed(NOTE) })
+        .some(i => i.message.includes('配色没有被设计过'))).toBe(false)
+      expect(lintDeck(slides).some(i => i.message.includes('配色没有被设计过'))).toBe(true)
+    })
+  })
+
+  describe('自己配一对字', () => {
+    it('八个字体里自由配对，落盘成 custom:', () => {
+      const [slide] = build(['cards'], { fonts: { display: 'DeYiHei', body: 'MiSans' } })
+      expect(slide.typography).toBe('custom:DeYiHei+MiSans')
+    })
+
+    it('自配优先于预设名', () => {
+      const [slide] = build(['cards'], {
+        typography: 'classic',
+        fonts: { display: 'LXGWWenKai', body: 'SourceHanSans' },
+      })
+      expect(slide.typography).toBe('custom:LXGWWenKai+SourceHanSans')
+    })
+
+    it('标题正文同一个字族 → 报没有对比', () => {
+      const slides = build(['cards', 'compare'], {
+        fonts: { display: 'SourceHanSans', body: 'SourceHanSans' },
+      })
+      expect(has(slides, '字族对比是层级的第一道')).toBe(true)
+    })
+
+    it('性格不同的一对不报', () => {
+      const slides = build(['cards', 'compare'], {
+        fonts: { display: 'SourceHanSerif', body: 'SourceHanSans' },
+      })
+      expect(has(slides, '字族对比是层级的第一道')).toBe(false)
+    })
+
+    it('自配不参与正式度判断 —— 那个分是给六套预设人工标的', () => {
+      const slides = build(['cards', 'compare'], {
+        style: 'academic',
+        fonts: { display: 'LXGWWenKai', body: 'LXGWNeoXiHei' },
+      })
+      expect(has(slides, '正式度差')).toBe(false)
+    })
+
+    it('六套预设仍然照常工作', () => {
+      const [slide] = build(['cards'], { typography: 'editorial' })
+      expect(slide.typography).toBe('editorial')
+    })
+  })
+})
+
+// ---------------------------------------------------------------------------
 // R-39 · 出场顺序 lint
 //
 // 这条规则守的是**手工搭页**那条路：agent 用 addElement + addAnimation 自己拼时间线，

@@ -38,7 +38,10 @@ import {
   type KernelOutcome,
 } from './kernel'
 import { LAYOUT_PATTERNS, describeLayouts } from './layouts'
-import { buildPalette, describePaletteStyles, TYPE_SCALE, SPACING, SAFE } from './design'
+import {
+  buildPalette, describePaletteStyles, FONT_FAMILIES, TYPE_SCALE, SPACING, SAFE,
+  type FontFamily,
+} from './design'
 
 // ---------------------------------------------------------------------------
 // Deck 状态持有者
@@ -168,8 +171,9 @@ export const createAgentTools = (accessor: DeckStateAccessor) => ({
       designChecks: z.boolean().optional().describe('是否包含设计类检查，默认 true'),
     }),
     execute: async ({ designChecks }) => {
-      const { slides } = accessor.get()
-      const issues = lintDeck(slides, { designChecks })
+      // theme 必须传：判据⑨ 要看 theme.designNote，少了它走 setTheme 定色的稿子会被误报
+      const { slides, theme } = accessor.get()
+      const issues = lintDeck(slides, { designChecks, theme })
       return JSON.stringify({ issueCount: issues.length, issues })
     },
   }),
@@ -270,13 +274,24 @@ export const createAgentTools = (accessor: DeckStateAccessor) => ({
   }),
 
   setTheme: tool({
-    description: '更新演示文稿主题（背景色、字体颜色、字体名等）',
+    description: [
+      '**定这份稿子的颜色，用这个。** 整份走一次，形状 / 图表 / 表格 / getDesignTokens 全都跟着走。',
+      'backgroundColor 是页面底色，themeColors[0] 是主色、[1] 是强调色。',
+      '',
+      'applyLayout 那三个 primaryColor / accentColor / backgroundColor 是**个别页的例外**，',
+      '只改得动版式那一层 —— 拿它们当整份配色用，形状和图表会留在旧主题上，一份稿子两张脸。',
+    ].join('\n'),
     parameters: z.object({
-      props: z.record(z.unknown()).describe('要更新的主题属性，如 { "backgroundColor": "#1a1a2e", "fontColor": "#eee" }'),
+      props: z.record(z.unknown()).describe('要更新的主题属性，如 { "backgroundColor": "#f4f1ea", "themeColors": ["#8a1538", "#e0a458"], "fontColor": "#2b2b2b" }'),
+      designNote: z.string().optional()
+        .describe('一句话：这套颜色是被这份稿子里的什么驱动的。定颜色时必须写 —— 写不出来说明还没设计，只是挑了几个好看的色。lintDeck 会查'),
     }),
-    execute: async ({ props }) => {
+    execute: async ({ props, designNote }) => {
       const state = accessor.get()
-      const outcome = applySetTheme(state.theme, props as Partial<SlideTheme>)
+      const outcome = applySetTheme(state.theme, {
+        ...(props as Partial<SlideTheme>),
+        ...(designNote ? { designNote } : {}),
+      })
       if (!outcome.ok) return JSON.stringify({ ok: false, error: outcome.error })
       accessor.set({ ...state, theme: outcome.data, version: state.version + 1 })
       await accessor.onChange?.()
@@ -370,24 +385,43 @@ ${describeLayouts()}
         }).optional().describe('本页配图。只有标了「可配图」的版式吃它，摆放位置/裁剪/遮罩全部自动算'),
       }).describe('版式内容'),
       animate: z.boolean().optional().describe('是否生成出场动画，默认 true。每个版式的编排各不相同'),
+      backgroundColor: z.string().optional()
+        .describe('**页面底色，你来定**。整份文稿传同一个。从这份稿子讲的东西里取色，别默认白底'),
+      primaryColor: z.string().optional()
+        .describe('**主色，你来定**。标题强调、关键图形用它。整份文稿传同一个'),
+      accentColor: z.string().optional()
+        .describe('**强调色，你来定**，要和主色不同色相。只用在需要跳出来的地方。整份文稿传同一个。surface / border / textMuted / onPrimary 这些由代码从这三个锚点推，不用你操心'),
       style: z.enum(['business', 'tech', 'academic', 'vivid']).optional()
-        .describe('配色风格。**整份文稿只选一个，每页都传同一个** —— 选哪个是内容决策（学术汇报和产品发布会本来就该长得不一样），具体色值由代码定'),
+        .describe('**质感档位，不是配色** —— 它不改你给的三个锚点色，只调「卡片和背景拉多开、描边多重、次要文字多淡」。business 最克制、academic 几乎纯中性、tech 层次最分明、vivid 最饱和。整份文稿传同一个，不传是 business'),
       typography: z.enum(['classic', 'scholarly', 'editorial', 'minimal', 'impact', 'warm']).optional()
-        .describe('字体配对。**整份文稿只选一个，每页都传同一个**，规则和 style 完全一样 —— 选哪套字是内容决策（讲书法的稿子和讲芯片的稿子不该用同一套字），display 配哪个 body、每个字体的字宽表由代码定。不传就是 classic'),
-      primaryColor: z.string().optional().describe('覆盖本页主色，如 #2f6feb'),
-      accentColor: z.string().optional().describe('覆盖本页强调色'),
-      backgroundColor: z.string().optional().describe('覆盖本页背景色'),
+        .describe('六套现成字体配对，当**起点**用。想自己配就改用 displayFont + bodyFont。整份文稿传同一个'),
+      displayFont: z.enum(FONT_FAMILIES as [FontFamily, ...FontFamily[]]).optional()
+        .describe('**标题字族，你来定**（字号 ≥ 38px 的元素用它）。和 bodyFont 必须一起传，传了就覆盖 typography。只能从这八个里挑 —— 表外字体没有实测字宽，估行高会按最坏情况算，白白浪费版面'),
+      bodyFont: z.enum(FONT_FAMILIES as [FontFamily, ...FontFamily[]]).optional()
+        .describe('**正文字族，你来定**。要和 displayFont 性格不同（衬线配非衬线是最稳的一组），两边同字就只剩字号在扛层级'),
     }),
-    execute: async ({ slideId, pattern, content, animate, style, typography, primaryColor, accentColor, backgroundColor }) => {
+    execute: async ({
+      slideId, pattern, content, animate, style, typography,
+      primaryColor, accentColor, backgroundColor, displayFont, bodyFont,
+    }) => {
       const state = accessor.get()
       const paletteOverride = {
         ...(primaryColor ? { primary: primaryColor } : {}),
         ...(accentColor ? { accent: accentColor } : {}),
         ...(backgroundColor ? { background: backgroundColor } : {}),
       }
+      // 两个都给才算自配 —— 只给一个的话另一半仍要从 typography 取，
+      // 那就是「一半自己配一半用预设」，配出来的对比关系不受任何一方控制
+      if ((displayFont ? 1 : 0) + (bodyFont ? 1 : 0) === 1) {
+        return { ok: false, error: 'displayFont 和 bodyFont 必须一起给 —— 只定一半，另一半会落回预设，配对关系就没人管了' }
+      }
       return applyMutation(accessor, applyLayoutToSlide(
         state.slides, slideId, state.theme, pattern, content,
-        { animate, style, typography, paletteOverride: Object.keys(paletteOverride).length ? paletteOverride : undefined },
+        {
+          animate, style, typography,
+          fonts: displayFont && bodyFont ? { display: displayFont, body: bodyFont } : undefined,
+          paletteOverride: Object.keys(paletteOverride).length ? paletteOverride : undefined,
+        },
       ))
     },
   }),
