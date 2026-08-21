@@ -54,15 +54,8 @@ import { createReflectTools, reflectVisualAvailable } from './reflectTool'
 import { createOrnamentTools } from './ornamentTool'
 import { getSystemPrompt, getToolSubset } from './roles'
 import { createDeckChannel, type DeckChannel } from './channel'
-
-const DEFAULT_THEME: SlideTheme = {
-  themeColors: ['#5b9bd5', '#ed7d31', '#a5a5a5', '#ffc000', '#4472c4', '#70ad47'],
-  fontColor: '#333',
-  fontName: '',
-  backgroundColor: '#fff',
-  shadow: { h: 3, v: 3, blur: 2, color: '#808080' },
-  outline: { width: 2, color: '#525252', style: 'solid' },
-}
+// 单一真相源在 kernel —— lint ⑨ 拿它当「颜色真的被改过」的参照物（R-60）
+import { DEFAULT_THEME } from './kernel'
 
 /** 这个域唯一的 agent */
 const AGENT_ROLE: AgentRole = 'deck'
@@ -503,6 +496,8 @@ const runTurn = async ({
       return [t?.backgroundColor, t?.themeColors?.[0], t?.fontColor]
         .filter((c): c is string => !!c)
     },
+    // R-60: 艺术流派同样从主题取，没写时由工具按页回落质感档位默认
+    getArtDirection: () => accessor.get().theme?.artDirection,
     emit: msg => channel.emit(msg),
   })
 

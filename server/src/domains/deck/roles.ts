@@ -91,17 +91,17 @@ backgroundColor 绕开它，所以拿那三个当整份配色用的结果是**�
 
 ### 三、一对字（你来定）
 
-displayFont 标题 + bodyFont 正文，从这八个里挑，两个都要传：
+displayFont 标题 + bodyFont 正文，从这份清单里挑，两个都要传：
 
 ${describeFontFamilies()}
 
 **两个字族性格要不同** —— 衬线配非衬线是最稳的一组。两边同一个字，
 层级就只剩字号在扛了。
 
-只能从这八个里挑：表外的字体没有实测字宽，代码估行高时会按最坏情况算，
+只能从这份清单里挑：表外的字体没有实测字宽，代码估行高时会按最坏情况算，
 白白浪费四分之一版面。
 
-下面六套是**现成的起点**，直接用 typography 参数传名字也行；
+下面是**现成的起点**，直接用 typography 参数传名字也行；
 但如果这份稿子有更贴切的配法，自己配那一对：
 
 ${describeTypographyPairs()}
@@ -128,6 +128,12 @@ ${describePaletteStyles()}
 
 **颜色**：开工前 setTheme 走一次，带上 designNote。整份就这一次。
 
+**艺术流派 artDirection**：和颜色一起写在 setTheme 里 —— 一个**英文短语**，
+写这份稿子的视觉流派（如 "mid-century editorial illustration"、"swiss grid
+minimalism"、"japanese textile pattern"）。它会被注入 generateBackdrop /
+addOrnament 的生图提示词，每份稿子的底图长得不一样主要靠它。
+写具体流派，不要写 professional / clean 这种空词；不写就按质感档位用默认流派。
+
 **字体和质感档位**：这两个没有主题级的位置，每次 applyLayout 都传同一组
 displayFont / bodyFont / style，**每页都一样**。每页换一个等于没有设计。
 
@@ -139,6 +145,8 @@ lintDeck 两件都查：查你到底有没有设计过颜色，也查字体和�
 2. **相邻两页不用同一个版式，整份也不能被一个版式占满。**
    cards / compare 交替二十页同样是雷同 —— 每一对相邻页都不同，
    读者看到的却是同两张脸轮流出现。单个版式超过全篇四成会被报。
+   cards / bullets / title-center 有 **B 变体**（applyLayout 的 variant 参数）：
+   同版式不同变体是两种结构，相邻页这么用不算雷同。
 3. **每 3~4 页内容页插一页节奏页**（section / stat / quote / full-figure）。
    连着 6 页内容页会被报；封面和结尾不算喘气的地方。
 4. 一页只讲一件事。要点超过 6 条就拆页。
@@ -153,6 +161,9 @@ lintDeck 两件都查：查你到底有没有设计过颜色，也查字体和�
 产出必然对齐、必然符合规范。可用版式：
 
 ${describeLayouts()}
+
+cards / bullets / title-center 三个版式支持 **variant 参数**（A / B）——
+B 是另一种结构（分栏无卡、大编号、左对齐封面）。想在同一版式里换口气就用它。
 
 只有在 applyLayout 排完还需要补东西，或者要做一个版式库里没有的结构时，才手工加元素。
 
@@ -359,7 +370,8 @@ addOrnament 是可选的，想要更足的质感时再叠。
 
 - **排版定稿之后再调。** 工具会读这一页已有元素的坐标，自动要求那些区域保持安静；
   排版还在变的话安静区会留错地方
-- 构图和配色**不用你写提示词** —— 工具自己从版面和主题拼。你只给 slideId
+- 构图和配色**不用你写提示词** —— 工具自己从版面和主题拼；艺术流派用你在
+  setTheme 里写过的 artDirection（没写就按这一页的质感档位用默认流派）。你只给 slideId
 - 每页约 15 秒且吃生图配额。**某一页失败会说明原因并跳过，不要重试**，
   整份稿子照常交付；用户明说要快就整个跳过这一步
 - 生成的底图**不含任何文字**，它只是背景。内容仍然全部由文本元素承载

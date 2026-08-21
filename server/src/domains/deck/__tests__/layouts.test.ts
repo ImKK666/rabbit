@@ -4,10 +4,13 @@ import { ANIMATION_DEFS } from '@/configs/animation'
 import { groupTriggersIntoSteps, flattenTriggerSteps } from '@/utils/animationSteps'
 import {
   LAYOUT_PATTERNS, LAYOUT_META, buildLayout, validateLayoutContent,
-  isLayoutPattern, describeLayouts,
+  isLayoutPattern, describeLayouts, signatureVariant,
   type LayoutPattern, type LayoutContent,
 } from '../layouts'
-import { buildPalette, CANVAS_WIDTH, CANVAS_HEIGHT, SAFE, contrastRatio } from '../design'
+import {
+  buildPalette, CANVAS_WIDTH, CANVAS_HEIGHT, SAFE, contrastRatio, PALETTE_STYLES,
+  type Palette, type PaletteStyle,
+} from '../design'
 
 const THEME: SlideTheme = {
   themeColors: ['#2f6feb', '#f2596b', '#a5a5a5', '#ffc000', '#4472c4', '#70ad47'],
@@ -358,7 +361,8 @@ describe('layouts · 出场顺序', () => {
     const byId = new Map(elements.map(el => [el.id, el]))
     for (const id of signatureIds) {
       const el = byId.get(id)!
-      if (!('left' in el) || !('top' in el)) continue
+      // line 元素有 left/top/width（线宽）但没有 height —— 收窄成「有框的元素」TS 才认
+      if (!('left' in el) || !('top' in el) || !('height' in el)) continue
       const outside = el.left + el.width <= SAFE.left
         || el.left >= SAFE.right
         || el.top + el.height <= SAFE.top
@@ -552,5 +556,160 @@ describe('layouts · robustness', () => {
     const b = buildLayout('cards', CONTENT.cards, PALETTE, 'p2')
     const overlap = a.elements.map(e => e.id).filter(id => b.elements.some(e => e.id === id))
     expect(overlap).toHaveLength(0)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// R-60 · signature 变体
+//
+// 每档质感风格两个变体，按主题锚点色的哈希稳定选一个 ——
+// 同一份稿子所有页同一个记号，不同配色的稿子自然分散。
+// ---------------------------------------------------------------------------
+
+describe('layouts · signature 变体（R-60）', () => {
+  /** 从一批候选配色里找出哈希为指定变体的调色板 */
+  const paletteWithVariant = (target: number): Palette => {
+    for (let i = 0; i < 300; i++) {
+      const hex = (0x100000 + i * 0x0a1b2d).toString(16).slice(1)
+      const p = buildPalette({ ...THEME, backgroundColor: `#${hex}` })
+      if (signatureVariant(p) === target) return p
+    }
+    throw new Error(`找不到哈希为 ${target} 的调色板 —— 要么 hash 坏了，要么撞了`)
+  }
+
+  it('同一个调色板哈希稳定，不同调色板会分散到两个变体', () => {
+    expect(signatureVariant(PALETTE)).toBe(signatureVariant(PALETTE))
+    expect(signatureVariant(paletteWithVariant(0))).toBe(0)
+    expect(signatureVariant(paletteWithVariant(1))).toBe(1)
+  })
+
+  it.each(Object.keys(PALETTE_STYLES) as PaletteStyle[])(
+    '%s 的两个变体都画得出来、都在版心之外、且互不相同', (style: PaletteStyle) => {
+      const a = buildLayout('cards', CONTENT.cards, paletteWithVariant(0), 'a', { style })
+      const b = buildLayout('cards', CONTENT.cards, paletteWithVariant(1), 'b', { style })
+      const names = (r: ReturnType<typeof buildLayout>) =>
+        r.elements.filter(e => r.signatureIds.includes(e.id)).map(e => e.name ?? e.id).sort()
+      // 两个变体都真的画了记号
+      expect(names(a).length, `${style} v0`).toBeGreaterThan(0)
+      expect(names(b).length, `${style} v1`).toBeGreaterThan(0)
+      // 两个变体长得不一样 —— 否则「变体」只是换了个名字
+      expect(names(a), style).not.toEqual(names(b))
+      // 全部落在版心之外（SAFE 之外的页边距里）
+      for (const r of [a, b]) {
+        for (const id of r.signatureIds) {
+          const el = r.elements.find(e => e.id === id)!
+          // line 元素有 left/top/width（线宽）但没有 height —— 收窄成「有框的元素」TS 才认
+      if (!('left' in el) || !('top' in el) || !('height' in el)) continue
+          const outside = el.left + el.width <= SAFE.left
+            || el.left >= SAFE.right
+            || el.top + el.height <= SAFE.top
+            || el.top >= SAFE.bottom
+          expect(outside, `${style}: ${('name' in el && el.name) || id} 伸进了版心`).toBe(true)
+        }
+      }
+    },
+  )
+})
+
+// ---------------------------------------------------------------------------
+// R-60 · 版式结构变体 B
+//
+// cards / bullets / title-center 各有一个 B 变体（分栏无卡 / 大编号 / 左对齐封面）。
+// 它们是同版式的另一种成熟结构，必须过和 A 同一套判据。
+// ---------------------------------------------------------------------------
+
+describe('layouts · 结构变体 B（R-60）', () => {
+  const WITH_B: LayoutPattern[] = ['cards', 'bullets', 'title-center']
+
+  const longContent: Record<string, LayoutContent> = {
+    cards: {
+      title: '四大支柱，一项都不能少',
+      items: [
+        { title: '极致的响应速度', body: '端到端时延从 800ms 压缩到 200ms，P99 波动控制在 15% 以内' },
+        { title: '硬核的成本控制', body: '单位成本在规模翻倍的同时下降 40%，毛利结构显著改善' },
+        { title: '彻底的零运维', body: '不再需要专职值班团队，告警自动闭环处理' },
+        { title: '持续的模型迭代', body: '每周两次全量评测，线上效果只升不降' },
+      ],
+    },
+    bullets: {
+      title: '六条结论，从数据到组织',
+      items: [
+        { title: '响应更快', body: '端到端时延从 800ms 降到 200ms，P99 不再抖动' },
+        { title: '成本更低', body: '单位成本下降 40%，规模翻倍成本不涨' },
+        { title: '零运维', body: '不再需要专职值班，告警自动闭环' },
+        { title: '模型更强', body: '每周两次评测，线上效果只升不降' },
+        { title: '组织更扁', body: '三个团队合成一个平台组' },
+        { title: '生态更宽', body: '开放平台接口，第三方可以接入' },
+      ],
+    },
+    'title-center': { title: '一个超长的标题需要自动降级到更小的字号仍然排得下', subtitle: '副标题也不能太短，不然看不出自动折行的边界' },
+  }
+
+  it('三个版式有 B 变体，且与 A 的结构不同', () => {
+    for (const p of WITH_B) {
+      const a = buildLayout(p, CONTENT[p], PALETTE, 'va', { variant: 'A' })
+      const b = buildLayout(p, CONTENT[p], PALETTE, 'vb', { variant: 'B' })
+      const kinds = (r: ReturnType<typeof buildLayout>) =>
+        r.elements.map(e => `${e.type}:${e.name ?? ''}`).sort().join('|')
+      expect(kinds(b), p).not.toEqual(kinds(a))
+    }
+  })
+
+  it('B 变体内容给满 / 只给必填都不依赖兜底截断', () => {
+    for (const p of WITH_B) {
+      expect(buildLayout(p, longContent[p], PALETTE, 'l', { variant: 'B' }).clampedIds, p).toEqual([])
+      expect(buildLayout(p, MINIMAL[p], PALETTE, 'm', { variant: 'B' }).clampedIds, p).toEqual([])
+    }
+  })
+
+  it('B 变体给每一个元素都挂了动画（signature 除外）', () => {
+    const cellIndex2 = (elements: PPTElement[], animations: PPTAnimation[]) => {
+      const cells = flattenTriggerSteps(groupTriggersIntoSteps(animations.map(a => a.trigger)))
+      const at = new Map<string, number>()
+      cells.forEach((cell, i) => {
+        for (const idx of cell) if (!at.has(animations[idx].elId)) at.set(animations[idx].elId, i)
+      })
+      return at
+    }
+    for (const p of WITH_B) {
+      const r = buildLayout(p, longContent[p], PALETTE, 'an', { variant: 'B' })
+      const at = cellIndex2(r.elements, r.animations)
+      const exempt = new Set(r.signatureIds)
+      const naked = r.elements.filter(el => !at.has(el.id) && !exempt.has(el.id))
+      expect(naked.map(el => el.name ?? el.id), p).toEqual([])
+    }
+  })
+
+  it('B 变体时间线同样从 click 开始、标题领跑', () => {
+    for (const p of WITH_B) {
+      const r = buildLayout(p, CONTENT[p], PALETTE, 'cl', { variant: 'B' })
+      expect(r.animations[0].trigger, p).toBe('click')
+      const titleId = r.elements.find(e => e.type === 'text' && e.textType === 'title')?.id
+      expect(titleId, p).toBeTruthy()
+      const titleIdx = r.animations.findIndex(a => a.elId === titleId)
+      // 标题必须是第一个 click 步或与之同时 —— 绝不能排在正文后面
+      const stepOf = flattenTriggerSteps(groupTriggersIntoSteps(r.animations.map(a => a.trigger)))
+      const titleStep = stepOf.findIndex(cell => cell.includes(titleIdx))
+      expect(titleStep, p).toBeLessThanOrEqual(0)
+    }
+  })
+
+  it('B 变体 id 稳定、前缀不同不撞', () => {
+    for (const p of WITH_B) {
+      const a = buildLayout(p, CONTENT[p], PALETTE, 'same', { variant: 'B' })
+      const b = buildLayout(p, CONTENT[p], PALETTE, 'same', { variant: 'B' })
+      expect(a.elements.map(e => e.id), p).toEqual(b.elements.map(e => e.id))
+      const c = buildLayout(p, CONTENT[p], PALETTE, 'other', { variant: 'B' })
+      const overlap = a.elements.map(e => e.id).filter(id => c.elements.some(e => e.id === id))
+      expect(overlap, p).toHaveLength(0)
+    }
+  })
+
+  it('没有 B 变体的版式传了 B 也落回 A —— 变体不是随便一个字母', () => {
+    const r = buildLayout('timeline', CONTENT.timeline, PALETTE, 'tv', { variant: 'B' })
+    const a = buildLayout('timeline', CONTENT.timeline, PALETTE, 'ta', { variant: 'A' })
+    expect(r.elements.map(e => `${e.type}:${e.name ?? ''}`)).toEqual(
+      a.elements.map(e => `${e.type}:${e.name ?? ''}`),
+    )
   })
 })

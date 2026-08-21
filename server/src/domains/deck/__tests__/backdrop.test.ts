@@ -95,6 +95,28 @@ describe('buildBackdropPrompt · 从源头消除「模型把坐标画出来」',
   it('一个矩形都没有时也拼得出来', () => {
     expect(() => buildBackdropPrompt({ rects: [], colors })).not.toThrow()
   })
+
+  // ── R-60：艺术流派注入。原来 Style 行写死 flat vector，每份稿子的底图同脸
+  it('传了 artDirection 就替换写死的 Style 行', () => {
+    const art = 'mid-century editorial illustration'
+    const p = buildBackdropPrompt({ rects: [rect()], colors, artDirection: art })
+    expect(p).toContain('ART DIRECTION')
+    expect(p).toContain(art)
+    expect(p).not.toContain('flat vector / editorial print design')
+  })
+
+  it('不传 artDirection 保持旧措辞 —— 安静区阈值是照它标定的', () => {
+    const p = buildBackdropPrompt({ rects: [rect()], colors })
+    expect(p).toContain('flat vector / editorial print design')
+    expect(p).not.toContain('ART DIRECTION')
+  })
+
+  it('artDirection 只换风格行，结构约束（安静区/禁文字）原样保留', () => {
+    const p = buildBackdropPrompt({ rects: [rect()], colors, artDirection: 'brutalist grid minimalism' })
+    expect(p).toContain('FIRST AND MOST IMPORTANT')
+    expect(p).toContain('CALM ZONES')
+    expect(p).toContain('ENTIRELY')
+  })
 })
 
 describe('安静区判据', () => {

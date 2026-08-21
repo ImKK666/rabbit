@@ -40,8 +40,17 @@ import {
 import { LAYOUT_PATTERNS, describeLayouts } from './layouts'
 import {
   buildPalette, describePaletteStyles, FONT_FAMILIES, TYPE_SCALE, SPACING, SAFE,
-  type FontFamily,
+  PALETTE_STYLES, TYPOGRAPHY_PAIRS,
+  type FontFamily, type PaletteStyle, type TypographyPair,
 } from './design'
+
+/**
+ * 质感档位 / 字体配对的枚举都从数据表派生，不手抄 ——
+ * R-60 加 editorial / soft 两档、heritage 一对时，抄了名单的每个 enum
+ * 都会悄悄落后（而落后没有任何东西会报错，模型只会拿到一张旧菜单）。
+ */
+const PALETTE_STYLE_ENUM = Object.keys(PALETTE_STYLES) as [PaletteStyle, ...PaletteStyle[]]
+const TYPOGRAPHY_PAIR_ENUM = Object.keys(TYPOGRAPHY_PAIRS) as [TypographyPair, ...TypographyPair[]]
 
 // ---------------------------------------------------------------------------
 // Deck 状态持有者
@@ -181,7 +190,7 @@ export const createAgentTools = (accessor: DeckStateAccessor) => ({
   getDesignTokens: tool({
     description: '获取当前主题推导出的设计规范：颜色角色（主色/强调色/正文/次要文字/卡片底/描边）、字号阶梯、间距栅格、安全区、可选的配色风格。自己配色前先调这个，别凭空编颜色',
     parameters: z.object({
-      style: z.enum(['business', 'tech', 'academic', 'vivid']).optional()
+      style: z.enum(PALETTE_STYLE_ENUM).optional()
         .describe('按哪个风格推导。不传按 business'),
     }),
     execute: async ({ style }) => {
@@ -285,12 +294,25 @@ export const createAgentTools = (accessor: DeckStateAccessor) => ({
       props: z.record(z.unknown()).describe('要更新的主题属性，如 { "backgroundColor": "#f4f1ea", "themeColors": ["#8a1538", "#e0a458"], "fontColor": "#2b2b2b" }'),
       designNote: z.string().optional()
         .describe('一句话：这套颜色是被这份稿子里的什么驱动的。定颜色时必须写 —— 写不出来说明还没设计，只是挑了几个好看的色。lintDeck 会查'),
+      artDirection: z.string().optional()
+        .describe('一个**英文短语**：这份稿子的视觉流派，如 "mid-century editorial illustration"、"swiss grid minimalism"、"japanese textile pattern"。会注入生成底图/装饰层的生图提示词，让底图跟着内容走。写具体流派，不要写 professional / clean 这种空词；没写就按质感档位用默认流派'),
     }),
-    execute: async ({ props, designNote }) => {
+    execute: async ({ props, designNote, artDirection }) => {
       const state = accessor.get()
+      // R-60：designNote 必须伴随真实的颜色决定 —— 库里实测过「note 写满一页、
+      // 颜色一个没动」的稿子（星耀影视）。这里在入口就把那条路堵死。
+      const colorKeys = ['backgroundColor', 'themeColors', 'fontColor'] as const
+      if (designNote?.trim() && !colorKeys.some(k => k in (props ?? {}))) {
+        return JSON.stringify({
+          ok: false,
+          error: 'designNote 写了，但 props 里一个颜色键（backgroundColor / themeColors / fontColor）都没有 —— '
+            + '设计说明必须和真实的颜色决定一起给，把想好的颜色写进来',
+        })
+      }
       const outcome = applySetTheme(state.theme, {
         ...(props as Partial<SlideTheme>),
         ...(designNote ? { designNote } : {}),
+        ...(artDirection ? { artDirection } : {}),
       })
       if (!outcome.ok) return JSON.stringify({ ok: false, error: outcome.error })
       accessor.set({ ...state, theme: outcome.data, version: state.version + 1 })
@@ -391,18 +413,20 @@ ${describeLayouts()}
         .describe('**主色，你来定**。标题强调、关键图形用它。整份文稿传同一个'),
       accentColor: z.string().optional()
         .describe('**强调色，你来定**，要和主色不同色相。只用在需要跳出来的地方。整份文稿传同一个。surface / border / textMuted / onPrimary 这些由代码从这三个锚点推，不用你操心'),
-      style: z.enum(['business', 'tech', 'academic', 'vivid']).optional()
-        .describe('**质感档位，不是配色** —— 它不改你给的三个锚点色，只调「卡片和背景拉多开、描边多重、次要文字多淡」。business 最克制、academic 几乎纯中性、tech 层次最分明、vivid 最饱和。整份文稿传同一个，不传是 business'),
-      typography: z.enum(['classic', 'scholarly', 'editorial', 'minimal', 'impact', 'warm']).optional()
-        .describe('六套现成字体配对，当**起点**用。想自己配就改用 displayFont + bodyFont。整份文稿传同一个'),
+      style: z.enum(PALETTE_STYLE_ENUM).optional()
+        .describe('**质感档位，不是配色** —— 它不改你给的三个锚点色，只调「卡片和背景拉多开、描边多重、次要文字多淡」。business 最克制、academic 几乎纯中性、tech 层次最分明、vivid 最饱和、editorial 墨感最重、soft 最温柔。整份文稿传同一个，不传是 business'),
+      typography: z.enum(TYPOGRAPHY_PAIR_ENUM).optional()
+        .describe('现成字体配对，当**起点**用（清单见系统提示词）。想自己配就改用 displayFont + bodyFont。整份文稿传同一个'),
       displayFont: z.enum(FONT_FAMILIES as [FontFamily, ...FontFamily[]]).optional()
-        .describe('**标题字族，你来定**（字号 ≥ 38px 的元素用它）。和 bodyFont 必须一起传，传了就覆盖 typography。只能从这八个里挑 —— 表外字体没有实测字宽，估行高会按最坏情况算，白白浪费版面'),
+        .describe('**标题字族，你来定**（字号 ≥ 38px 的元素用它）。和 bodyFont 必须一起传，传了就覆盖 typography。只能从登记过的字族里挑 —— 表外字体没有实测字宽，估行高会按最坏情况算，白白浪费版面'),
       bodyFont: z.enum(FONT_FAMILIES as [FontFamily, ...FontFamily[]]).optional()
         .describe('**正文字族，你来定**。要和 displayFont 性格不同（衬线配非衬线是最稳的一组），两边同字就只剩字号在扛层级'),
+      variant: z.enum(['A', 'B']).optional()
+        .describe('结构变体，默认 A。只有 cards / bullets / title-center 有 B 变体：同版式的另一种排法（卡片网格 vs 分栏无卡、圆点列表 vs 大编号、居中封面 vs 左对齐封面）。相邻页同版式但不同变体，lintDeck 不报'),
     }),
     execute: async ({
       slideId, pattern, content, animate, style, typography,
-      primaryColor, accentColor, backgroundColor, displayFont, bodyFont,
+      primaryColor, accentColor, backgroundColor, displayFont, bodyFont, variant,
     }) => {
       const state = accessor.get()
       const paletteOverride = {
@@ -418,7 +442,7 @@ ${describeLayouts()}
       return applyMutation(accessor, applyLayoutToSlide(
         state.slides, slideId, state.theme, pattern, content,
         {
-          animate, style, typography,
+          animate, style, typography, variant,
           fonts: displayFont && bodyFont ? { display: displayFont, body: bodyFont } : undefined,
           paletteOverride: Object.keys(paletteOverride).length ? paletteOverride : undefined,
         },

@@ -202,7 +202,7 @@ export const readableOn = (bg: string): string =>
  * 而只有模型知道这份稿子是什么），**风格里的九个色值是排版决策**
  * （交给模型就是随机挑六个色，那正是第六轮诊断 ④ 说的事）。
  *
- * 所以这里不给模型调色盘，只给四个名字。
+ * 所以这里不给模型调色盘，只给名字（清单经 `describePaletteStyles` 自动进 prompt）。
  *
  * ## 每个包改的是什么
  *
@@ -210,7 +210,7 @@ export const readableOn = (bg: string): string =>
  * 它调的是那些「推导出来的」角色：底色的冷暖、卡片与背景的分离度、
  * 描边的轻重、次要文字的弱化程度。这几样正好是「看着高级 / 看着廉价」的分水岭。
  */
-export type PaletteStyle = 'business' | 'tech' | 'academic' | 'vivid'
+export type PaletteStyle = 'business' | 'tech' | 'academic' | 'vivid' | 'editorial' | 'soft'
 
 interface StyleRecipe {
   label: string
@@ -280,10 +280,68 @@ export const PALETTE_STYLES: Record<PaletteStyle, StyleRecipe> = {
     mutedAmount: 0.32,
     accentShift: { color: '#f97316', amount: 0.22 },
   },
+  /**
+   * R-60 新增 · 编辑风：高对比、墨感。杂志 / 观点长文那一路 ——
+   * 描边最重、次要文字弱化最少、强调色往墨色压。
+   * 和 academic 的区别：academic 是「去性格的信息优先」，editorial 是
+   * 「有观点的排版」—— 对比度本身就是它的表达。
+   */
+  editorial: {
+    label: '编辑风',
+    usage: '观点长文、文化品牌、深度分享。高对比、墨感、有观点',
+    tint: '#1a1a1a',
+    tintAmount: 0.05,
+    surfaceLift: [0.05, 0.09],
+    borderAmount: 0.28,
+    mutedAmount: 0.3,
+    accentShift: { color: '#111111', amount: 0.25 },
+  },
+  /**
+   * R-60 新增 · 柔和：低对比、空气感。生活美学 / 教育 / 轻量分享 ——
+   * 卡片和背景几乎不分家、描边最细、次要文字冲淡最少。
+   * 和 business 的区别：business 是「克制」，soft 是「温柔」，
+   * 底色染暖的比例明显更高。
+   */
+  soft: {
+    label: '柔和',
+    usage: '生活美学、教育、轻量分享。低对比、空气感、不吵',
+    tint: '#f3d9c6',
+    tintAmount: 0.06,
+    surfaceLift: [0.02, 0.05],
+    borderAmount: 0.1,
+    mutedAmount: 0.28,
+  },
 }
 
 export const isPaletteStyle = (v: unknown): v is PaletteStyle =>
   typeof v === 'string' && v in PALETTE_STYLES
+
+/**
+ * R-60: 每档质感的**默认艺术流派** —— 生成底图 / 装饰层提示词的回落值。
+ *
+ * 模型在 setTheme 里写了 `artDirection` 时用它的；没写（或改了主题却忘了写）
+ * 时按页面上落盘的 `paletteStyle` 查这张表。所以**模型不写也不会落到
+ * 「每份稿子同一个流派」** —— 四档质感各自有不同的一张脸。
+ *
+ * 措辞是给生图模型吃的英文风格词，注意和 `StyleRecipe.usage` 的分工：
+ * 那是给 deck agent 看的中文场合说明，这是给图像模型看的流派词。
+ * 两边**必须分开维护** —— 合用一个字段就会出现「给人看的中文」或
+ * 「给模型看的英文」有一头不通。
+ */
+export const ART_DIRECTIONS: Record<PaletteStyle, string> = {
+  business: 'refined corporate editorial: hairline rules, soft flat panels, quiet monochrome tints',
+  tech: 'precision technical blueprint: thin grid lines, luminous gradients, glassy geometric panels',
+  academic: 'quiet print academia: subtle paper grain, restrained ink marks, classic book-margin ornaments',
+  vivid: 'playful poster collage: bold flat geometric shapes, thick outlines, saturated colour blocks',
+  editorial: 'high-contrast magazine layout: heavy ink rules, duotone blocks, dramatic negative space',
+  soft: 'airy pastel minimalism: soft blurred washes, delicate grain, gentle rounded forms',
+}
+
+/** 一页该用哪个艺术流派：主题里模型写的优先，没写回落质感档位的默认 */
+export const artDirectionFor = (theme: { artDirection?: string } | undefined, style?: string): string => {
+  if (theme?.artDirection?.trim()) return theme.artDirection.trim()
+  return ART_DIRECTIONS[isPaletteStyle(style) ? style : 'business']
+}
 
 // ---------------------------------------------------------------------------
 // 字体配对
@@ -303,14 +361,14 @@ export const isPaletteStyle = (v: unknown): v is PaletteStyle =>
  *
  * 绑在一起只有 4 种长相，而且把两个不同的判断挤进了一个选择：
  * 「这份稿子的**场合**」（决定配色的冷暖克制）和「这份稿子的**题材**」
- * （决定字的性格）本来就是两件事。拆开之后是 4 × 6 —— 学术配色 + 朱雀仿宋
+ * （决定字的性格）本来就是两件事。拆开之后是 N × M（R-60 后是 6 × 7）—— 学术配色 + 朱雀仿宋
  * 是一份文史论文，学术配色 + MiSans 是一份理工论文，这个区别是真实存在的。
  *
  * 组合不做硬拦（模型选了就是选了），只在 `lintDeckDesign` 里按
  * `formality` 差值报 warning —— 护栏是判据，不是禁令。
  */
 export type TypographyPair
-  = 'classic' | 'scholarly' | 'editorial' | 'minimal' | 'impact' | 'warm'
+  = 'classic' | 'scholarly' | 'editorial' | 'minimal' | 'impact' | 'warm' | 'heritage'
 
 export interface TypeRecipe {
   label: string
@@ -382,6 +440,14 @@ export const TYPOGRAPHY_PAIRS: Record<TypographyPair, TypeRecipe> = {
     body: 'LXGWNeoXiHei',
     formality: 3,
   },
+  /** R-60 新增：朱雀仿宋标题 + 思源黑正文。古典气是它的全部 */
+  heritage: {
+    label: '朱雀古典',
+    usage: '文化、品牌叙事、古籍人文题材。仿宋标题的古典气 + 黑体正文的干净',
+    display: 'ZhuQueFangSong',
+    body: 'SourceHanSans',
+    formality: 7,
+  },
 }
 
 /** 字号到了这一档就用 display 字族。`measure` 和 `text` 必须用同一条规则 */
@@ -425,6 +491,8 @@ export const PALETTE_FORMALITY: Record<PaletteStyle, number> = {
   academic: 9,
   tech: 5,
   vivid: 3,
+  editorial: 7,
+  soft: 4,
 }
 
 /** 正式度差多少算「值得提一句」。4 是刚好放过「商务 + 几何科技」（差 3）的那条线 */
@@ -651,6 +719,9 @@ export const CHAR_WIDTH_BY_FONT = {
   LXGWNeoZhiSong: { cjk: 1.000, cjkPunct: 0.826, upper: 0.688, digit: 0.618, lower: 0.512, asciiPunct: 0.365, space: 0.290 },
   LXGWWenKai: { cjk: 1.000, cjkPunct: 1.000, upper: 0.646, digit: 0.600, lower: 0.503, asciiPunct: 0.408, space: 0.350 },
   LXGWNeoXiHei: { cjk: 1.000, cjkPunct: 0.826, upper: 0.646, digit: 0.630, lower: 0.506, asciiPunct: 0.387, space: 0.270 },
+  // R-60 新进登记（2026-08-21 实测，`npm run char-width`）
+  ZhuQueFangSong: { cjk: 1.000, cjkPunct: 1.000, upper: 0.597, digit: 0.447, lower: 0.447, asciiPunct: 0.332, space: 0.200 },
+  WenDingPLKaiTi: { cjk: 1.000, cjkPunct: 1.000, upper: 0.500, digit: 0.500, lower: 0.500, asciiPunct: 0.500, space: 0.500 },
 } as const satisfies Record<string, CharWidthTable>
 
 export type FontFamily = keyof typeof CHAR_WIDTH_BY_FONT
@@ -667,7 +738,7 @@ export const isFontFamily = (v: unknown): v is FontFamily =>
  * 在真浏览器里量出、勿手改**，掺进手写文案就没法整表覆盖了。
  *
  * 类型写成 `Record<FontFamily, string>` 是故意的 —— 往 `CHAR_WIDTH_BY_FONT`
- * 加一个字体而忘了写性格，这里会当场编译不过。六套预设配对能覆盖的组合有限，
+ * 加一个字体而忘了写性格，这里会当场编译不过。预设配对能覆盖的组合有限，
  * 模型自己配对时**唯一的依据就是这段文案**，漏一个等于那个字体不存在。
  */
 export const FONT_NOTES: Record<FontFamily, string> = {
@@ -679,6 +750,8 @@ export const FONT_NOTES: Record<FontFamily, string> = {
   LXGWNeoZhiSong: '霞鹜新致宋 —— 现代宋，有编辑部/杂志那种「这是一篇文章」的味道',
   LXGWWenKai: '霞鹜文楷 —— 楷体，手写感、亲切，最不像 PPT 的一套。教学、面向大众',
   LXGWNeoXiHei: '霞鹜新晰黑 —— 清晰易读的黑体，偏长文阅读，比思源黑多一点性格',
+  ZhuQueFangSong: '朱雀仿宋 —— 仿宋体，古典、雅致，文化/古籍/品牌叙事类标题的利器。**拉丁字符偏窄**（实测 0.447），长英文标题会明显紧凑',
+  WenDingPLKaiTi: '文鼎PL楷体 —— 传统楷体，比霞鹜文楷更「书法字帖」。**拉丁字符是半角等宽 0.5em**，数字和字母宽度均一',
 }
 
 /** 给 prompt 用的字体清单 —— 模型自己配对时的唯一依据 */

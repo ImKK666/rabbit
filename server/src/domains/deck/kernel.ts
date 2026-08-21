@@ -13,7 +13,7 @@ import { ANIMATION_DEFS, TURNING_MODES } from '@/configs/animation'
 import { buildShapeGeometry, getCatalogShape, SHAPE_CATALOG_KEYS } from '@/configs/shapeCatalog'
 import { lintSlideAnimationOrder } from './animationOrder'
 import {
-  buildPalette, CANVAS_WIDTH as DESIGN_W, CANVAS_HEIGHT as DESIGN_H, DEFAULT_BODY_FONT,
+  buildPalette, parseHex, CANVAS_WIDTH as DESIGN_W, CANVAS_HEIGHT as DESIGN_H, DEFAULT_BODY_FONT,
   TYPOGRAPHY_PAIRS, PALETTE_FORMALITY, FORMALITY_GAP_LIMIT,
   type PaletteStyle, type TypographyPair, type FontFamily,
 } from './design'
@@ -38,6 +38,55 @@ const BACKDROP_AREA_RATIO = 0.6
 
 /** 交集面积占较小元素的比例超过这个值，才算「压住了」 */
 const OVERLAP_RATIO_THRESHOLD = 0.6
+
+/**
+ * 内置默认主题 —— lint ⑨ 判断「颜色真的被改过」时的参照物。
+ *
+ * ## 为什么需要一个常量参照物（R-60）
+ *
+ * 判据 ⑨ 原本只查 `designNote` 非空。实测数据库里躺着一份反例
+ * （「星耀影视」）：designNote 写了一长串点茶取色的理由，而主题仍是
+ * 出厂默认的白底 + `#5b9bd5` 蓝 + `#ed7d31` 橙 —— **写了说明，没做决定**。
+ * 之前「不拿默认主题当参照物」的理由是「默认主题一改判据就悄悄失准」；
+ * 把默认值收成**一个代码常量**、两处共用（这里和 `pipeline.ts`），
+ * 失准问题就不存在了 —— 它不再是散落两处的魔法值。
+ */
+export const DEFAULT_THEME: SlideTheme = {
+  themeColors: ['#5b9bd5', '#ed7d31', '#a5a5a5', '#ffc000', '#4472c4', '#70ad47'],
+  fontColor: '#333',
+  fontName: '',
+  backgroundColor: '#fff',
+  shadow: { h: 3, v: 3, blur: 2, color: '#808080' },
+  outline: { width: 2, color: '#525252', style: 'solid' },
+}
+
+/**
+ * 规范化 hex 比较（`#fff` ≡ `#FFFFFF` ≡ `#FFF`）。
+ *
+ * 第一版手写「去 # + 小写」比较，`#fff` 与 `#FFFFFF` 被当场判成不同 ——
+ * 是「同色异写不构成改过」那条测试抓出来的。改走 `parseHex`，
+ * 三位的短写法先展开成三位 RGB 再比，语义交给已经在用的解析器。
+ */
+const sameHex = (a?: string, b?: string): boolean => {
+  if (!a || !b) return false
+  const ra = parseHex(a), rb = parseHex(b)
+  return !!ra && !!rb && ra[0] === rb[0] && ra[1] === rb[1] && ra[2] === rb[2]
+}
+
+/**
+ * 主题的三个锚点（底色 / 主色 / 强调色）是不是仍与内置默认完全一致。
+ *
+ * 只比前两个 themeColors：默认主题的第三项起是图表用的灰/黄/蓝/绿，
+ * 那部分与「这份稿子的配色设计」无关。
+ */
+const themeAnchorsChanged = (theme?: SlideTheme): boolean => {
+  if (!theme) return false
+  const changed = !sameHex(theme.backgroundColor, DEFAULT_THEME.backgroundColor)
+    || !sameHex(theme.themeColors?.[0], DEFAULT_THEME.themeColors[0])
+    || !sameHex(theme.themeColors?.[1], DEFAULT_THEME.themeColors[1])
+    || !sameHex(theme.fontColor, DEFAULT_THEME.fontColor)
+  return changed
+}
 
 // ---------------------------------------------------------------------------
 // Zod Schemas（agent 产出的 JSON 运行时校验）
@@ -355,6 +404,7 @@ export const slideSchema = z.object({
   turningMode: z.enum(TURNING_MODES as [TurningMode, ...TurningMode[]]).optional(),
   type: z.enum(['cover', 'contents', 'transition', 'content', 'end']).optional(),
   layout: z.string().optional(),
+  layoutVariant: z.string().optional(),
   paletteStyle: z.string().optional(),
   typography: z.string().optional(),
   paletteAnchors: z.array(z.string()).optional(),
@@ -368,6 +418,7 @@ export const themeSchema = z.object({
   outline: elementOutlineSchema,
   shadow: elementShadowSchema,
   designNote: z.string().optional(),
+  artDirection: z.string().optional(),
 })
 
 // ---------------------------------------------------------------------------
@@ -610,13 +661,19 @@ export const lintDeckDesign = (slides: Slide[], theme?: SlideTheme): LintIssue[]
   const issues: LintIssue[] = []
   if (slides.length === 0) return issues
 
-  // ① 版式多样性：相邻页不得用同一版式
+  // ① 版式多样性：相邻页不得用同一版式（同一变体）
+  //
+  // R-60：键从「版式名」扩成「版式名 + 变体」—— cards A / cards B 是两种
+  // 明显不同的结构，并排放并不雷同；真正雷同的是「同版式且同变体」。
   for (let i = 1; i < slides.length; i++) {
     const prev = slides[i - 1]
     const cur = slides[i]
 
-    const prevKey = prev.layout ?? structuralSignature(prev)
-    const curKey = cur.layout ?? structuralSignature(cur)
+    const keyOf = (s: Slide): string => s.layout
+      ? `${s.layout}|${s.layoutVariant ?? 'A'}`
+      : structuralSignature(s)
+    const prevKey = keyOf(prev)
+    const curKey = keyOf(cur)
     // 空页之间的雷同没有意义
     if (!prev.elements.length || !cur.elements.length) continue
 
@@ -625,7 +682,7 @@ export const lintDeckDesign = (slides: Slide[], theme?: SlideTheme): LintIssue[]
         level: 'warning',
         slideId: cur.id,
         message: cur.layout
-          ? `第 ${i + 1} 页与上一页用了同一个版式 "${cur.layout}"，换一个（applyLayout 有 10 种）`
+          ? `第 ${i + 1} 页与上一页用了同一个版式 "${cur.layout}"（同变体），换一个（applyLayout 有 ${LAYOUT_PATTERNS.length} 种，cards / bullets / title-center 还有 B 变体）`
           : `第 ${i + 1} 页与上一页结构完全相同，读者会觉得在原地踏步 —— 换个版式或换个信息组织方式`,
       })
     }
@@ -757,7 +814,8 @@ export const lintDeckDesign = (slides: Slide[], theme?: SlideTheme): LintIssue[]
           message: `${laidOut.length} 页里有 ${n} 页用了「${label}」`
             + `（${Math.round((n / laidOut.length) * 100)}%）—— 相邻页没重复不等于整份有变化。`
             + `版式库有 ${LAYOUT_PATTERNS.length} 种，按内容挑：有对比用 compare，`
-            + `有先后用 timeline，有图用 split-figure / image-grid`,
+            + `有先后用 timeline，有图用 split-figure / image-grid`
+            + `（cards / bullets / title-center 还有 B 变体可换）`,
         })
       }
     }
@@ -810,7 +868,7 @@ export const lintDeckDesign = (slides: Slide[], theme?: SlideTheme): LintIssue[]
   //
   // `applyLayout` 一直收 `primaryColor` / `accentColor` / `backgroundColor`，
   // 也就是说「模型自己设计配色」这条路**早就通了**。但 prompt 里提到这三个参数的
-  // 次数是 0，反而教它「不给你调色盘，只给四个名字」。于是模型永远走那四个名字，
+  // 次数是 0，反而教它「不给你调色盘，只给几个名字」。于是模型永远走那几个名字，
   // 而不传 `style` 时又落到 `?? 'business'` —— **每一份 deck 都是同一套配色**。
   //
   // 这和第十八轮那个图片 bug 是同一个形状（见 `LAYOUT_META.image` 的注释）：
@@ -837,29 +895,44 @@ export const lintDeckDesign = (slides: Slide[], theme?: SlideTheme): LintIssue[]
   // 现在判 `theme.designNote` —— 模型自己写的一句「这套色是被什么驱动的」。
   // 它本来就该答（prompt 一直这么要求），只是以前没地方写。
   // `paletteAnchors` 留作第二信号：个别页真的要覆盖时，那也是做了决定。
+  //
+  // ## R-60 补上的洞：写了说明 ≠ 做了决定
+  //
+  // 旧判据只看 designNote 非空，而库里实测出一份反例：designNote 写满
+  // 点茶取色，主题仍是出厂默认的白底蓝橙。所以现在**必须两条同时成立**：
+  // 说了（note 非空）而且做了（锚点色偏离内置 `DEFAULT_THEME`）。
+  // 参照物是代码常量而非「哪一次启动时的默认」，旧注释担心的失准不成立。
   {
     const laidOut = slides.filter(s => s.layout && s.elements.length)
     const declared = !!theme?.designNote?.trim()
+    const changed = themeAnchorsChanged(theme)
     const anchored = laidOut.some(s => (s.paletteAnchors ?? []).length > 0)
-    if (laidOut.length >= DESIGN_INTENT_MIN_SLIDES && !declared && !anchored) {
+    // 设计过的判据 = 说了（designNote）**而且**做了（锚点色真的偏离默认）。
+    // 只说没做的那一半是「星耀影视」实测抓出来的：note 写满一页、颜色一个没动。
+    const designed = anchored || (declared && changed)
+    if (laidOut.length >= DESIGN_INTENT_MIN_SLIDES && !designed) {
       issues.push({
         level: 'warning',
         slideId: slides[0].id,
-        message: '整份稿子的配色没有被设计过 —— 这不是「选了默认」，是没有选。'
-          + '用 setTheme 把 backgroundColor / themeColors 定成这份稿子该有的颜色'
-          + '（讲什么就从什么里取色），并在 designNote 里写一句它是被什么驱动的。'
-          + 'setTheme 走一次，形状 / 图表 / 表格全都跟着走；'
-          + '每页传 applyLayout 的覆盖色只改得动版式那一层，其余还留在旧主题上',
+        message: declared
+          ? 'designNote 写了，但主题的锚点色仍是内置默认（白底 + 蓝 + 橙）—— '
+            + '写说明不等于做了决定。用 setTheme 把 backgroundColor / themeColors / fontColor '
+            + '改成这份稿子该有的颜色，让写下的理由落在颜色上'
+          : '整份稿子的配色没有被设计过 —— 这不是「选了默认」，是没有选。'
+            + '用 setTheme 把 backgroundColor / themeColors 定成这份稿子该有的颜色'
+            + '（讲什么就从什么里取色），并在 designNote 里写一句它是被什么驱动的。'
+            + 'setTheme 走一次，形状 / 图表 / 表格全都跟着走；'
+            + '每页传 applyLayout 的覆盖色只改得动版式那一层，其余还留在旧主题上',
       })
     }
   }
 
   // ⑩ 标题和正文用了同一个字族
   //
-  // 六套预设里没有一套这样（最接近的 `scholarly` 也是思源宋 + 思源黑）——
+  // 预设配对里没有一套这样（最接近的 `scholarly` 也是思源宋 + 思源黑）——
   // 字族对比是排版层级的第一道，两边同字就只剩字号在扛。
   // 只有自配一对字（`applyLayout` 的 `displayFont` / `bodyFont`）之后才可能出现，
-  // 所以这条**只对自配的情况有意义**，六套预设永远不会踩。
+  // 所以这条**只对自配的情况有意义**，预设配对永远不会踩。
   for (const slide of slides) {
     const typ = slide.typography
     if (!typ?.startsWith('custom:')) continue
@@ -1673,19 +1746,21 @@ export const applyLayoutToSlide = (
     /** 配色风格。选哪个是内容决策（模型定），风格里的色值是排版决策（代码定） */
     style?: PaletteStyle
     /**
-     * 字体配对。六套预设之一，当作**起点**用 —— 见 `design.ts` 的
+     * 字体配对。预设之一，当作**起点**用 —— 见 `design.ts` 的
      * `TYPOGRAPHY_PAIRS` 头注释。想自己配就用下面的 `fonts`。
      */
     typography?: TypographyPair
     /**
      * R-55: 自己配一对字，优先级高于 `typography`。
      *
-     * **只能从 `CHAR_WIDTH_BY_FONT` 那八个里挑，这是硬约束不是偏好** ——
+     * **只能从 `CHAR_WIDTH_BY_FONT` 登记过的字族里挑，这是硬约束不是偏好** ——
      * 表外的字体没有实测字宽，`estimateTextHeight` 会退回「取全部字体里最宽的」
      * 兜底表（`WIDEST`），于是每一行都按最坏情况估，白白浪费版面。
-     * 八个里自由配对是 8×8，比六套预设宽得多，已经够用了。
+     * 自由配对是 N×N，比预设宽得多，已经够用了。
      */
     fonts?: { display: FontFamily, body: FontFamily }
+    /** R-60: 结构变体。A 是默认构图，B 是另一种成熟结构（见 layouts.ts 的 LAYOUT_VARIANTS） */
+    variant?: 'A' | 'B'
   } = {},
 ): KernelOutcome => {
   const slideIndex = slides.findIndex(s => s.id === slideId)
@@ -1702,7 +1777,7 @@ export const applyLayoutToSlide = (
    * 自配的一对字合成一个 `TypeRecipe`。
    *
    * `formality` 给 `-1`：它只服务 lint ⑤（配色与字体的正式度差太远），
-   * 而自配的一对**没有正式度可言** —— 那个分是给六套预设人工标的。
+   * 而自配的一对**没有正式度可言** —— 那个分是给预设配对人工标的。
    * 给个假分会让 lint ⑤ 拿一个编出来的数去判，比不判更糟；
    * 下面记 `slide.typography` 时也不会写成预设名，⑤ 那边的
    * `typ in TYPOGRAPHY_PAIRS` 自然就跳过了。
@@ -1717,6 +1792,7 @@ export const applyLayoutToSlide = (
     animate: opts.animate,
     typography: recipe,
     style: opts.style,
+    variant: opts.variant,
   })
 
   const elemError = validateElements(result.elements)
@@ -1730,6 +1806,7 @@ export const applyLayoutToSlide = (
   slide.background = result.background
   slide.type = result.slideType
   slide.layout = pattern
+  slide.layoutVariant = opts.variant ?? 'A'
   // 落盘只为让 lint 看得见 —— 见 types/slides.ts 上的说明
   slide.paletteStyle = opts.style ?? 'business'
   slide.typography = opts.fonts

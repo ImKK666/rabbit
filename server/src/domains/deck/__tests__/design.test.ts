@@ -435,3 +435,64 @@ describe('design · 配色风格包', () => {
     }
   })
 })
+
+// ---------------------------------------------------------------------------
+// R-60 · 风格菜单扩容：editorial / soft 两档质感 + 两个新字体 + 一对新配对
+// ---------------------------------------------------------------------------
+
+describe('design · R-60 风格菜单扩容', () => {
+  it('六档质感都有完整的配方字段', () => {
+    for (const [name, recipe] of Object.entries(PALETTE_STYLES)) {
+      expect(recipe.label, name).toBeTruthy()
+      expect(recipe.usage, name).toBeTruthy()
+      expect(recipe.tint, name).toMatch(/^#/)
+      expect(recipe.tintAmount, name).toBeGreaterThan(0)
+      expect(recipe.surfaceLift, name).toHaveLength(2)
+      expect(recipe.borderAmount, name).toBeGreaterThan(0)
+      expect(recipe.mutedAmount, name).toBeGreaterThan(0)
+    }
+  })
+
+  it('editorial 的描边最重、soft 的描边最轻 —— 两档确实站在两端', () => {
+    const borders = Object.entries(PALETTE_STYLES)
+      .map(([k, v]) => [k, v.borderAmount] as const)
+      .sort((a, b) => b[1] - a[1])
+    expect(borders[0][0]).toBe('editorial')
+    expect(borders[borders.length - 1][0]).toBe('soft')
+  })
+
+  it('每档质感都有默认艺术流派（ART_DIRECTIONS）', async () => {
+    const { ART_DIRECTIONS } = await import('../design')
+    for (const key of Object.keys(PALETTE_STYLES)) {
+      expect(ART_DIRECTIONS[key as keyof typeof ART_DIRECTIONS], key).toBeTruthy()
+    }
+    expect(ART_DIRECTIONS.editorial).toContain('contrast')
+    expect(ART_DIRECTIONS.soft).toContain('pastel')
+  })
+
+  it('artDirectionFor：模型写了用模型的，没写回落质感档位默认', async () => {
+    const { ART_DIRECTIONS, artDirectionFor } = await import('../design')
+    expect(artDirectionFor({ artDirection: 'mid-century editorial' }, 'business')).toBe('mid-century editorial')
+    expect(artDirectionFor({ artDirection: '  swiss grid  ' }, 'business')).toBe('swiss grid')
+    expect(artDirectionFor(undefined, 'vivid')).toBe(ART_DIRECTIONS.vivid)
+    expect(artDirectionFor(undefined, 'editorial')).toBe(ART_DIRECTIONS.editorial)
+    expect(artDirectionFor(undefined, '不存在的档位')).toBe(ART_DIRECTIONS.business)
+  })
+
+  it('describePaletteStyles 自动带上新档位 —— 加风格不用改 prompt', () => {
+    const text = describePaletteStyles()
+    expect(text).toContain('editorial')
+    expect(text).toContain('soft')
+    expect(text).toContain('编辑风')
+    expect(text).toContain('柔和')
+  })
+
+  it('新字体进了字宽表，且新配对 heritage 用的字族都登记过', async () => {
+    const { CHAR_WIDTH_BY_FONT, TYPOGRAPHY_PAIRS, FONT_NOTES } = await import('../design')
+    expect(CHAR_WIDTH_BY_FONT.ZhuQueFangSong.cjk).toBe(1)
+    expect(CHAR_WIDTH_BY_FONT.WenDingPLKaiTi.digit).toBe(0.5)
+    expect(FONT_NOTES.ZhuQueFangSong).toContain('仿宋')
+    expect(TYPOGRAPHY_PAIRS.heritage.display).toBe('ZhuQueFangSong')
+    expect(TYPOGRAPHY_PAIRS.heritage.body).toBe('SourceHanSans')
+  })
+})

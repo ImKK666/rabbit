@@ -142,5 +142,37 @@
     "digitSpread": 0,
     "orphanPunct": 0.55015625,
     "probeWidth": 5365.4375
+  },
+  {
+    "font": "ZhuQueFangSong",
+    "loaded": true,
+    "widths": {
+      "cjk": 1,
+      "cjkPunct": 1,
+      "upper": 0.5973856608072917,
+      "digit": 0.446703125,
+      "lower": 0.44688372269417476,
+      "asciiPunct": 0.331701171875,
+      "space": 0.19999999999999996
+    },
+    "digitSpread": 0.17898437499999997,
+    "orphanPunct": 0.4040011160714286,
+    "probeWidth": 4809.609375
+  },
+  {
+    "font": "WenDingPLKaiTi",
+    "loaded": true,
+    "widths": {
+      "cjk": 1,
+      "cjkPunct": 1,
+      "upper": 0.5,
+      "digit": 0.5,
+      "lower": 0.5,
+      "asciiPunct": 0.5,
+      "space": 0.5
+    },
+    "digitSpread": 0,
+    "orphanPunct": 1,
+    "probeWidth": 4400
   }
 ]

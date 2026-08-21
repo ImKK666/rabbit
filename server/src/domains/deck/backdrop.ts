@@ -56,6 +56,14 @@ export interface BackdropPromptInput {
   rects: OccupiedRect[]
   /** 从 theme 来的锚点色。第一个当页面底色 */
   colors: string[]
+  /**
+   * R-60: 艺术流派。theme 里模型写的 `artDirection`，没写时回落
+   * 质感档位的默认（`design.ts` 的 `ART_DIRECTIONS`）。
+   *
+   * 缺省时保持旧措辞（`flat vector / editorial print`）—— 那是拿真样本
+   * 标定过安静区阈值的版本，默认路径一个字都不许漂。
+   */
+  artDirection?: string
 }
 
 /**
@@ -63,12 +71,21 @@ export interface BackdropPromptInput {
  *
  * 措辞是实测收敛的（2026-08-21）：文字区亮度跨度 **0.048 / 0.128**，
  * 而非文字区 **0.814** —— 分离度 6~17 倍，`lintBackdropCalm` 的阈值就落在中间。
+ *
+ * R-60：原来 Style 行是写死的 `flat vector / editorial print` ——
+ * 每份稿子的底图都长同一张脸，是风格趋同的最大一档来源。
+ * 现在由 `artDirection` 注入；结构约束（安静区、禁文字）一律不动，
+ * 因为阈值是照着那套结构标定的。
  */
-export const buildBackdropPrompt = ({ rects, colors }: BackdropPromptInput): string => {
+export const buildBackdropPrompt = ({ rects, colors, artDirection }: BackdropPromptInput): string => {
   const [base, ...accents] = colors
   const zones = rects.length
     ? rects.map(r => `  - ${describeRegion(r)}`).join('\n')
     : '  - the left half of the page'
+
+  const styleLine = artDirection?.trim()
+    ? `ART DIRECTION — the artwork must follow this design language: ${artDirection.trim()}. Abstract only, not photographic, not 3D.`
+    : 'Style: flat vector / editorial print design. Not photographic. Not 3D.'
 
   // NO TEXT 放在**最前面**。放末尾时模型已经把画面想完了，再禁就晚了
   return `Design the BACKGROUND ARTWORK for a 16:9 presentation slide.
@@ -98,7 +115,7 @@ little beyond the area on every side. A panel that covers only part of the zone 
 the leftover strip would fall on the darker artwork and text there would be unreadable.
 Put all the visual interest OUTSIDE those areas — the opposite side, the bottom band, the corners.
 
-Style: flat vector / editorial print design. Not photographic. Not 3D.
+${styleLine}
 Remember: absolutely no text, letters or numbers anywhere in the image.`
 }
 

@@ -193,6 +193,8 @@ const TARGETS: { font: string, family: string }[] = [
   ...[
     'SourceHanSans', 'SourceHanSerif', 'AlibabaPuHuiTi', 'MiSans',
     'DeYiHei', 'LXGWNeoZhiSong', 'LXGWWenKai', 'LXGWNeoXiHei',
+    // R-60: 新进登记的两支 —— 朱雀仿宋（仿宋体标题）与文鼎楷体
+    'ZhuQueFangSong', 'WenDingPLKaiTi',
   ].map(f => ({ font: f, family: `"${f}"` })),
 ]
 

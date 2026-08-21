@@ -44,6 +44,7 @@ import {
 import {
   calmZonesOf, buildBackdropPrompt, lintBackdropCalm, describeCalmIssues,
 } from './backdrop'
+import { artDirectionFor } from './design'
 
 export interface OrnamentToolContext {
   userId: number
@@ -58,6 +59,11 @@ export interface OrnamentToolContext {
   getSlides: () => Slide[]
   /** 三个锚点色。由装配层从 theme 取，工具不自己碰主题 */
   getAnchorColors: () => string[]
+  /**
+   * R-60: 模型在 setTheme 里写的艺术流派（英文短语）。
+   * 由装配层从 theme 取；工具按页回落（`artDirectionFor`）到质感档位的默认。
+   */
+  getArtDirection: () => string | undefined
   emit: (msg: ServerMessage) => void
 }
 
@@ -92,11 +98,12 @@ const MAX_ATTEMPTS = 2
 const attemptOnce = async (
   slide: Slide,
   colors: string[],
+  artDirection: string,
   model: ImageModelRuntime,
   store: NonNullable<Awaited<ReturnType<typeof openAssetStorage>>>,
 ): Promise<OrnamentOutcome & { retriable?: boolean }> => {
   const rects = occupiedRectsOf(slide)
-  const prompt = buildOrnamentPrompt({ rects, colors })
+  const prompt = buildOrnamentPrompt({ rects, colors, artDirection })
 
   // 限流在**打上游之前**，超限不消耗名额。和 assetTools 走同一个限流器和同一个键 ——
   // 两条路打的是同一个模型，各算各的等于把配额翻倍，实测会撞上游 429
@@ -151,6 +158,7 @@ const attemptOnce = async (
 const runOne = async (
   slide: Slide,
   colors: string[],
+  artDirection: string,
   model: ImageModelRuntime,
   store: NonNullable<Awaited<ReturnType<typeof openAssetStorage>>>,
 ): Promise<OrnamentOutcome> => {
@@ -158,7 +166,7 @@ const runOne = async (
     slideId: slide.id, ok: false, reason: '没有尝试',
   }
   for (let i = 0; i < MAX_ATTEMPTS; i++) {
-    last = await attemptOnce(slide, colors, model, store)
+    last = await attemptOnce(slide, colors, artDirection, model, store)
     if (last.ok || !last.retriable) break
     console.log(`[ornament] ${slide.id} 第 ${i + 1} 次判据不过，重抽：${last.reason?.split('\n')[0]}`)
   }
@@ -181,11 +189,12 @@ const runOne = async (
 const attemptBackdrop = async (
   slide: Slide,
   colors: string[],
+  artDirection: string,
   model: ImageModelRuntime,
   store: NonNullable<Awaited<ReturnType<typeof openAssetStorage>>>,
 ): Promise<OrnamentOutcome & { retriable?: boolean }> => {
   const zones = calmZonesOf(slide)
-  const prompt = buildBackdropPrompt({ rects: zones, colors })
+  const prompt = buildBackdropPrompt({ rects: zones, colors, artDirection })
 
   const decision = imageRateLimiter.tryAcquire(
     modelRateKey(model.modelConfigId), model.rateLimitPerMin,
@@ -227,12 +236,13 @@ const attemptBackdrop = async (
 const runBackdrop = async (
   slide: Slide,
   colors: string[],
+  artDirection: string,
   model: ImageModelRuntime,
   store: NonNullable<Awaited<ReturnType<typeof openAssetStorage>>>,
 ): Promise<OrnamentOutcome> => {
   let last: OrnamentOutcome & { retriable?: boolean } = { slideId: slide.id, ok: false, reason: '没有尝试' }
   for (let i = 0; i < MAX_ATTEMPTS; i++) {
-    last = await attemptBackdrop(slide, colors, model, store)
+    last = await attemptBackdrop(slide, colors, artDirection, model, store)
     if (last.ok || !last.retriable) break
     console.log(`[backdrop] ${slide.id} 第 ${i + 1} 次判据不过，重抽`)
   }
@@ -259,6 +269,9 @@ export const createOrnamentTools = (ctx: OrnamentToolContext) => ({
       '构图不用你决定：工具会读这一页已有元素的坐标，自动告诉生图模型「哪些矩形必须留空」，',
       '配色也自动用当前主题的锚点色。**所以排完版之后再调它**，排版没定的话装饰会躲错地方。',
       '',
+      '纹样的艺术流派跟着主题走：你在 setTheme 里写过的 artDirection 会被注入提示词，',
+      '没写就按这一页的质感档位用默认流派。',
+      '',
       '返回每页一个 asset:// 地址。拿到之后用 addElement 加成图片元素，',
       '位置铺满整页（left 0, top 0, width 1000, height 562.5），并放在最上层。',
       '',
@@ -281,7 +294,9 @@ export const createOrnamentTools = (ctx: OrnamentToolContext) => ({
       const results: OrnamentOutcome[] = []
       for (const slide of targets) {
         ctx.emit({ type: 'agent.status', status: 'tool_call', message: `生成第 ${slides.indexOf(slide) + 1} 页的装饰层…` })
-        results.push(await runOne(slide, colors, model, store))
+        // R-60：艺术流派按页回落 —— theme 里模型写的优先，否则该页质感档位的默认
+        const art = artDirectionFor({ artDirection: ctx.getArtDirection() }, slide.paletteStyle)
+        results.push(await runOne(slide, colors, art, model, store))
       }
 
       const ok = results.filter(r => r.ok)
@@ -304,6 +319,9 @@ export const createOrnamentTools = (ctx: OrnamentToolContext) => ({
       '画的是：带阴影的面板、色块分区、极淡的网格纹理、细装饰线、渐变。**不含任何文字**。',
       '工具会读这一页已有元素的坐标，自动要求「内容所在的区域保持安静（均匀浅色）」，',
       '并在生成后**实测**那几块的亮度跨度 —— 太花就重抽，绝不交一张会让文字看不见的底图。',
+      '',
+      '艺术流派跟着主题走：你在 setTheme 里写过的 artDirection 会被注入提示词，',
+      '没写就按这一页的质感档位用默认流派。',
       '',
       '返回每页一个 asset:// 地址。拿到之后用 setSlideBackground 设成',
       '`{ type: "image", image: { src, size: "cover" } }`。',
@@ -328,7 +346,8 @@ export const createOrnamentTools = (ctx: OrnamentToolContext) => ({
       const results: OrnamentOutcome[] = []
       for (const slide of targets) {
         ctx.emit({ type: 'agent.status', status: 'tool_call', message: `生成第 ${slides.indexOf(slide) + 1} 页的底图…` })
-        results.push(await runBackdrop(slide, colors, model, store))
+        const art = artDirectionFor({ artDirection: ctx.getArtDirection() }, slide.paletteStyle)
+        results.push(await runBackdrop(slide, colors, art, model, store))
       }
 
       const ok = results.filter(r => r.ok)

@@ -834,6 +834,16 @@ export interface Slide {
    */
   layout?: string
   /**
+   * R-60: 本页 applyLayout 时选的结构变体（`'A' | 'B'`）。
+   *
+   * 和 `layout` 同一性质的编辑期元数据。lint ① 判「相邻两页雷同」时
+   * 拿它当键的一部分：同版式**不同变体**是两种结构，不算雷同。
+   * 只有 cards / bullets / title-center 有 B 变体，其余恒为 'A'。
+   *
+   * PPTist 本体不读，导出也不带。
+   */
+  layoutVariant?: string
+  /**
    * R-53: 本页 applyLayout 时选的配色风格与字体配对
    *（`server/src/domains/deck/design.ts` 的 `PaletteStyle` / `TypographyPair`）。
    *
@@ -896,12 +906,31 @@ export interface SlideTheme {
    * 或者让模型自己说。前者是**代码在猜**，而且默认主题一改判据就悄悄失准。
    * 后者是模型在答 —— 它本来就该答，只是以前没地方写。
    *
+   * **R-60 修订**：两条路现在**一起走** —— designNote 非空**且**锚点色
+   * 偏离内置默认主题（默认值已收成 `kernel.ts` 的 `DEFAULT_THEME` 常量，
+   * 不再是散落的魔法值）。理由是库里实测出「note 写满一页、颜色一个没动」的稿子：
+   * 只说没做，不算设计。
+   *
    * 判据只看它有没有写，写得好不好判不了（和 `ensureContrast` 的分工一样：
    * 判据管「有没有做决定」，兜底管「决定得能不能读」）。
    *
    * 跟着 `themeJson` 整块存，不用迁移。PPTist 本体不读，导出也不带。
    */
   designNote?: string
+  /**
+   * R-60: 模型写的一个**英文短语** —— 这份稿子的艺术流派，
+   * 由代码注入生成底图 / 装饰层的生图提示词。
+   *
+   * ## 为什么是英文、为什么要单独一个字段
+   *
+   * 生图模型对英文风格词的遵守远好于中文；而 designNote 是给人和 lint 看的
+   * 中文句子，直接拼进生图提示词会带进一堆模型不吃的措辞。
+   * 两个用途各写各的，单独一个字段。
+   *
+   * 没写时的回落是「按质感档位的默认流派」（`design.ts` 的 `ART_DIRECTIONS`）。
+   * 跟着 `themeJson` 整块存，不用迁移。PPTist 本体不读，导出也不带。
+   */
+  artDirection?: string
 }
 
 export interface SlideTemplate {

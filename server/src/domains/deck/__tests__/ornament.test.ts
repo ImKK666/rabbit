@@ -129,6 +129,25 @@ describe('buildOrnamentPrompt · 构图决策留在代码里', () => {
     expect(() => buildOrnamentPrompt({ rects: [], colors })).not.toThrow()
     expect(buildOrnamentPrompt({ rects: [], colors })).toContain('(none)')
   })
+
+  // ── R-60：纹样语言跟着稿子的艺术流派走，但 (A)(B) 两条硬约束不许动
+  it('传了 artDirection 就注入 MOTIF LANGUAGE', () => {
+    const art = 'japanese textile pattern'
+    const p = buildOrnamentPrompt({ rects, colors, artDirection: art })
+    expect(p).toContain('MOTIF LANGUAGE')
+    expect(p).toContain(art)
+  })
+
+  it('不传 artDirection 不带 MOTIF 行 —— 覆盖密度是照旧措辞标定的', () => {
+    expect(buildOrnamentPrompt({ rects, colors })).not.toContain('MOTIF LANGUAGE')
+  })
+
+  it('artDirection 注入后 (A)(B) 约束原样保留', () => {
+    const p = buildOrnamentPrompt({ rects, colors, artDirection: 'art deco line work' })
+    expect(p).toContain('(A) STROKE QUALITY')
+    expect(p).toContain('(B) COVERAGE')
+    expect(p).toContain('AT MOST 12%')
+  })
 })
 
 describe('O1 · 占用矩形内不许有墨', () => {

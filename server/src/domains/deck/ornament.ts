@@ -72,6 +72,12 @@ export interface OrnamentPromptInput {
   colors: string[]
   /** 键色，默认纯绿。撞色时换 */
   keyHex?: string
+  /**
+   * R-60: 艺术流派（theme 的 `artDirection`，没写时回落质感档位默认）。
+   * 只调「纹样长什么样」，不碰 (A)(B) 两条硬约束 —— 覆盖密度和实心度
+   * 是拿真样本标定的，默认路径一个字都不许漂。
+   */
+  artDirection?: string
 }
 
 /**
@@ -115,12 +121,17 @@ const pct = (v: number) => `${Math.round(v * 100)}%`
  * 上一版把它们混在一句话里（"bold flat vector shapes and thick bars"），
  * 结果要到实心的同时把覆盖密度也拉满了。
  */
-export const buildOrnamentPrompt = ({ rects, colors, keyHex = '#00FF00' }: OrnamentPromptInput): string => {
+export const buildOrnamentPrompt = ({ rects, colors, keyHex = '#00FF00', artDirection }: OrnamentPromptInput): string => {
   const occupied = rects.length
     ? rects.map(r => `  - x ${pct(r.x)}, y ${pct(r.y)}, w ${pct(r.w)}, h ${pct(r.h)}`).join('\n')
     : '  (none)'
 
   const keyName = keyColorName(keyHex)
+
+  // R-60：纹样语言跟着稿子的艺术流派走，但必须钉死在 (A)(B) 的约束之内
+  const motif = artDirection?.trim()
+    ? `\nMOTIF LANGUAGE — arrange the marks in this design language, within the stroke and coverage rules above: ${artDirection.trim()}.`
+    : ''
 
   return `Generate a decorative ornament layer for a 16:9 presentation slide,
 drawn on a COMPLETELY FLAT, UNIFORM ${keyName} background, hex ${keyHex}.
@@ -139,7 +150,7 @@ TWO SEPARATE REQUIREMENTS — satisfy BOTH:
     right-angle corner brackets, one narrow stack of parallel bars.
     Do NOT fill large areas. Do NOT create solid blocks or filled rectangles
     bigger than a small bar. This is line work, not poster graphics.
-
+${motif}
 Palette for the strokes (use only these): ${colors.join(', ')}.
 
 These rectangles are OCCUPIED and must stay COMPLETELY EMPTY:

@@ -199,14 +199,20 @@ export interface LayoutMeta {
    * 因为整页再压一张背景图会和三张小图打架。
    */
   itemImage?: boolean
+  /**
+   * R-60: 结构变体 B 的一句话说明。有 B 变体的版式，`applyLayout` 收
+   * `variant: 'A' | 'B'` —— 同版式的另一种成熟结构。说明自动进 prompt
+   * （`describeLayouts`），所以加变体时这里必须写。
+   */
+  variantB?: string
 }
 
 export const LAYOUT_META: Record<LayoutPattern, LayoutMeta> = {
-  'title-center': { pattern: 'title-center', name: '居中封面', usage: '封面：标题居中，上下留白最大，最正式', pace: 'structural', items: null, requires: ['title'], image: 'backdrop' },
+  'title-center': { pattern: 'title-center', name: '居中封面', usage: '封面：标题居中，上下留白最大，最正式', pace: 'structural', items: null, requires: ['title'], image: 'backdrop', variantB: '左对齐封面：文字靠左、右侧大色块装饰，比居中更有刊物感' },
   'title-split': { pattern: 'title-split', name: '分栏封面', usage: '封面：左文右色块，比居中封面更现代、更有版面感', pace: 'structural', items: null, requires: ['title'], image: 'panel' },
   'section': { pattern: 'section', name: '章节转场', usage: '章节之间的过渡页：大章节号 + 章节名', pace: 'rhythm', items: null, requires: ['title'], image: 'backdrop' },
-  'bullets': { pattern: 'bullets', name: '要点列表', usage: '内容页：3~5 条并列要点，每条一句话说明', pace: 'content', items: [2, 6], requires: ['title', 'items'], image: 'panel' },
-  'cards': { pattern: 'cards', name: '卡片网格', usage: '内容页：2~4 个并列概念，每个有独立底板，最通用', pace: 'content', items: [2, 4], requires: ['title', 'items'], image: null },
+  'bullets': { pattern: 'bullets', name: '要点列表', usage: '内容页：3~5 条并列要点，每条一句话说明', pace: 'content', items: [2, 6], requires: ['title', 'items'], image: 'panel', variantB: '大编号列表：序号换成大号数字、去圆点，更干净' },
+  'cards': { pattern: 'cards', name: '卡片网格', usage: '内容页：2~4 个并列概念，每个有独立底板，最通用', pace: 'content', items: [2, 4], requires: ['title', 'items'], image: null, variantB: '分栏无卡：去卡片底板，栏间竖线分隔，杂志分栏感' },
   'compare': { pattern: 'compare', name: '二栏对比', usage: '内容页：A vs B、优点 vs 缺点、现状 vs 目标', pace: 'content', items: [2, 2], requires: ['title', 'items'], image: null },
   'timeline': { pattern: 'timeline', name: '横向时间轴', usage: '内容页：时间顺序、流程步骤、演进过程', pace: 'content', items: [3, 5], requires: ['title', 'items'], image: null },
   'stat': { pattern: 'stat', name: '单点强调', usage: '内容页：一个超大数字或一句结论撑满整页，用来制造节奏停顿', pace: 'rhythm', items: null, requires: ['stat'], image: 'backdrop' },
@@ -614,21 +620,44 @@ const clampItems = (items: LayoutItem[] | undefined, min: number, max: number): 
  * business / academic 只到「几何母题」级别（一条线、一列刻度）；
  * tech / vivid 可以上大动作（点阵、通栏色条）。学术稿子配一条通栏亮色
  * 会和它「极简、去饱和、信息优先」的定位自相矛盾。
+ *
+ * ## R-60：每档风格两个变体，按主题的锚点色稳定选一个
+ *
+ * 改之前每档风格只有**一个**记号 —— 两份都用 tech 的稿子，
+ * 角框和点阵长得一模一样，签名没有为跨稿差异出任何力。
+ * 现在每档两个变体（`SIGNATURES[style][0|1]`），由主题锚点色的哈希决定：
+ * 同一份稿子里所有页稳定同一个记号，不同稿子按配色自然分散。
+ * **选变体是代码的事，模型照旧一个参数都不碰。**
  */
-const drawSignature = (b: Builder, style: PaletteStyle): void => {
-  const p = b.palette
-  // 每个 signature 元素都登记 id —— 见 Builder.signatureIds 的说明
-  const mark = (el: PPTShapeElement | null) => { if (el) b.signatureIds.push(el.id) }
-  switch (style) {
-    /** 商务：左边距一条贯通的细竖线。最克制的一种「这份稿子有人管过版面」 */
-    case 'business':
+type SignatureFn = (b: Builder, p: Palette, mark: (el: PPTShapeElement | null) => void) => void
+
+const SIGNATURES: Record<PaletteStyle, SignatureFn[]> = {
+  // 商务 v1：左边距一条贯通的细竖线。最克制的一种「这份稿子有人管过版面」
+  business: [
+    (b, p, mark) => {
       mark(b.shape('rect', { left: 40, top: SAFE.top, width: 2, height: SAFE.height }, {
         fill: p.accent, opacity: 0.55, name: '版式记号·边线',
       }))
-      break
+    },
+    // v2：左下角三条渐近横线 + 左上角一个小方点，同样是克制的几何母题。
+    // **只住左 / 上页边距**：吃图的版式里配图贴右出血（bullets / split-figure），
+    // 右页边距会被照片占满，记号压上去就是污渍 —— layoutImage.test.ts 钉着这条
+    (b, p, mark) => {
+      const y0 = 522
+      for (const [i, w] of [52, 36, 20].entries()) {
+        mark(b.shape('rect', {
+          left: 64 - w, top: y0 + i * 10, width: w, height: 2,
+        }, { fill: p.accent, opacity: 0.5, name: `版式记号·横线 ${i + 1}` }))
+      }
+      mark(b.shape('rect', { left: 24, top: 24, width: 8, height: 8 }, {
+        fill: p.primary, opacity: 0.35, name: '版式记号·角点',
+      }))
+    },
+  ],
 
-    /** 学术：左边距一列刻度短线，像书籍页边的标尺。无彩色，只用描边色 */
-    case 'academic': {
+  // 学术 v1：左边距一列刻度短线，像书籍页边的标尺。无彩色，只用描边色
+  academic: [
+    (b, p, mark) => {
       const n = 5
       const gap = SAFE.height / (n - 1)
       for (let i = 0; i < n; i++) {
@@ -636,11 +665,24 @@ const drawSignature = (b: Builder, style: PaletteStyle): void => {
           fill: p.border, name: `版式记号·刻度 ${i + 1}`,
         }))
       }
-      break
-    }
+    },
+    // v2：页边双线（细 + 粗）+ 左下角一段书脊线。同样只住左页边距（配图贴右出血）
+    (b, p, mark) => {
+      mark(b.shape('rect', { left: 36, top: SAFE.top, width: 2, height: SAFE.height }, {
+        fill: p.border, opacity: 0.5, name: '版式记号·细线',
+      }))
+      mark(b.shape('rect', { left: 44, top: SAFE.top, width: 6, height: SAFE.height }, {
+        fill: p.border, opacity: 0.8, name: '版式记号·粗线',
+      }))
+      mark(b.shape('rect', { left: 36, top: 530, width: 240, height: 2 }, {
+        fill: p.border, opacity: 0.6, name: '版式记号·书脊线',
+      }))
+    },
+  ],
 
-    /** 科技：左上角一个 L 形角框 + 右下角一片点阵。两处呼应，够显眼又不吵 */
-    case 'tech': {
+  // 科技 v1：左上角一个 L 形角框 + 右下角一片点阵。两处呼应，够显眼又不吵
+  tech: [
+    (b, p, mark) => {
       mark(b.shape('corner', { left: 28, top: 16, width: 30, height: 30 }, {
         fill: p.accent, opacity: 0.8, name: '版式记号·角框',
       }))
@@ -652,19 +694,122 @@ const drawSignature = (b: Builder, style: PaletteStyle): void => {
           }, { fill: p.accent, opacity: 0.45, name: '版式记号·点阵' }))
         }
       }
-      break
-    }
+    },
+    // v2：左上角两条平行短横 + 左下角一列三个小方点，更安静的「信号条」母题。
+    // 只住左 / 上页边距 —— 配图贴右出血时右页边距是照片（同上一条理由）
+    (b, p, mark) => {
+      for (const [i, top] of [16, 26].entries()) {
+        mark(b.shape('rect', { left: 28, top, width: 28, height: 3 }, {
+          fill: p.primary, opacity: 0.8, name: `版式记号·信号条 ${i + 1}`,
+        }))
+      }
+      ;[522, 532, 542].forEach((top, i) => {
+        mark(b.shape('rect', { left: 40 + i * 16, top, width: 4, height: 4 }, {
+          fill: p.accent, opacity: 0.6, name: `版式记号·方点 ${i + 1}`,
+        }))
+      })
+    },
+  ],
 
-    /** 活泼：底部通栏色条 + 右上角一个实心圆。最外放的一套 */
-    case 'vivid':
+  // 活泼 v1：底部通栏色条 + 右上角一个实心圆。最外放的一套
+  vivid: [
+    (b, p, mark) => {
       mark(b.shape('rect', { left: 0, top: CANVAS_HEIGHT - 10, width: CANVAS_WIDTH, height: 10 }, {
         fill: p.accent, name: '版式记号·底栏',
       }))
       mark(b.shape('ellipse', { left: 952, top: 20, width: 20, height: 20 }, {
         fill: p.accent, opacity: 0.85, name: '版式记号·角点',
       }))
-      break
+    },
+    // v2：左上角 L 形色块 + 左下角三个渐变色点。只住左 / 上页边距（配图贴右出血）
+    (b, p, mark) => {
+      mark(b.shape('rect', { left: 0, top: 16, width: 64, height: 8 }, {
+        fill: p.accent, opacity: 0.8, name: '版式记号·L 横',
+      }))
+      mark(b.shape('rect', { left: 16, top: 0, width: 8, height: 64 }, {
+        fill: p.accent, opacity: 0.8, name: '版式记号·L 竖',
+      }))
+      const dots: Array<[string, number]> = [[p.accent, 0.85], [p.primary, 0.7], [p.accent, 0.45]]
+      dots.forEach(([fill, opacity], i) => {
+        mark(b.shape('ellipse', { left: 16 + i * 20, top: 534, width: 12, height: 12 }, {
+          fill, opacity, name: `版式记号·色点 ${i + 1}`,
+        }))
+      })
+    },
+  ],
+
+  // 编辑风（R-60 新增）：记号用墨色（正文色），高对比本身就是它的表达
+  editorial: [
+    // v1：左边距一条 3px 的墨线 + 左上角一个墨方块
+    (b, p, mark) => {
+      mark(b.shape('rect', { left: 40, top: SAFE.top, width: 3, height: SAFE.height }, {
+        fill: p.text, opacity: 0.8, name: '版式记号·墨线',
+      }))
+      mark(b.shape('rect', { left: 24, top: 24, width: 10, height: 10 }, {
+        fill: p.text, opacity: 0.35, name: '版式记号·墨块',
+      }))
+    },
+    // v2：左上角两条平行墨横 + 左下角一段粗墨线
+    (b, p, mark) => {
+      for (const [i, top] of [16, 26].entries()) {
+        mark(b.shape('rect', { left: 24, top, width: 32, height: 4 }, {
+          fill: p.text, opacity: 0.8, name: `版式记号·墨横 ${i + 1}`,
+        }))
+      }
+      mark(b.shape('rect', { left: 24, top: 528, width: 180, height: 4 }, {
+        fill: p.text, opacity: 0.55, name: '版式记号·墨底线',
+      }))
+    },
+  ],
+
+  // 柔和（R-60 新增）：记号也跟着柔 —— 低饱和、小尺寸、淡透明度
+  soft: [
+    // v1：左上角一个小圆 + 左边距一条淡竖线
+    (b, p, mark) => {
+      mark(b.shape('ellipse', { left: 28, top: 24, width: 16, height: 16 }, {
+        fill: p.accent, opacity: 0.25, name: '版式记号·柔圆',
+      }))
+      mark(b.shape('rect', { left: 44, top: SAFE.top, width: 2, height: SAFE.height }, {
+        fill: p.accent, opacity: 0.16, name: '版式记号·淡线',
+      }))
+    },
+    // v2：左上角两个渐淡圆点 + 左下角一段淡横线
+    (b, p, mark) => {
+      for (const [i, opacity] of [0.3, 0.18].entries()) {
+        mark(b.shape('ellipse', { left: 24 + i * 20, top: 24, width: 12, height: 12 }, {
+          fill: p.accent, opacity, name: `版式记号·柔点 ${i + 1}`,
+        }))
+      }
+      mark(b.shape('rect', { left: 36, top: 532, width: 160, height: 2 }, {
+        fill: p.border, opacity: 0.5, name: '版式记号·淡底线',
+      }))
+    },
+  ],
+}
+
+/**
+ * 按主题锚点色稳定选一个 signature 变体。
+ *
+ * 哈希的是这一页调色板里**模型定的那三个锚点**（background / primary / accent，
+ * 再带上 text 做扰动）—— 同一份稿子每页传同一套主题，变体必然稳定；
+ * 两份不同配色的稿子自然分散。djb2 就够：这里要的是确定性不是密码学。
+ */
+export const signatureVariant = (p: Palette): number => {
+  let h = 5381
+  for (const s of [p.background, p.primary, p.accent, p.text]) {
+    for (const ch of s) h = ((h << 5) + h + ch.charCodeAt(0)) | 0
   }
+  return Math.abs(h) % 2
+}
+
+const drawSignature = (b: Builder, style: PaletteStyle, variant: number): void => {
+  const p = b.palette
+  // 每个 signature 元素都登记 id —— 见 Builder.signatureIds 的说明
+  const mark = (el: PPTShapeElement | null) => {
+    if (el) b.signatureIds.push(el.id)
+  }
+  const variants = SIGNATURES[style]
+  variants[Math.abs(variant) % variants.length](b, p, mark)
 }
 
 /**
@@ -679,6 +824,282 @@ const wantsSignature = (pattern: LayoutPattern, c: LayoutContent): boolean => {
 }
 
 type LayoutFn = (b: Builder, c: LayoutContent) => { background: SlideBackground, slideType: SlideType }
+
+/**
+ * R-60: 版式的**结构变体 B**。
+ *
+ * 改之前一个版式只有一种构图 —— 两份不同稿子用同一个版式，
+ * 页面的几何结构一模一样，换的只有字和颜色。变体给最高频的三个版式
+ * 加第二种结构（封面左对齐 / 大编号列表 / 分栏无卡），模型用
+ * `applyLayout` 的 `variant` 参数选，构图仍然全由代码算 ——
+ * 红线（不往排版层加自由度）不动。
+ *
+ * 只有 A / B 两档：变体不是「无限风格」，是同版式的另一种成熟结构。
+ * 每个 B 变体都必须过同一套判据（最大条数不溢出、动画全覆盖、栅格对齐）。
+ */
+const LAYOUT_VARIANTS: Partial<Record<LayoutPattern, LayoutFn>> = {
+  // 左对齐封面（B）：文字靠左，右侧大色块装饰。比居中的 A 更「刊物」，
+  // 又和 title-split 不一样 —— 那一个是右半页实色栏，这里是留白上的浮饰
+  'title-center': (b, c) => {
+    const p = b.palette
+
+    const colW = 600
+    // 有照片就不放装饰块 —— 半透明色块叠在照片上像污渍（R-48 判过的同一条）
+    const hasImage = !!c.image?.src
+    const [bgImage, scrim] = b.backdrop(c.image, 'left', (SAFE.left + colW + 40) / CANVAS_WIDTH)
+
+    const disc = hasImage ? null : b.shape('ellipse', {
+      left: SAFE.left + colW + 40, top: 120, width: 240, height: 240,
+    }, { fill: p.primary, opacity: 0.1, name: '装饰圆' })
+    const dot = hasImage ? null : b.shape('ellipse', {
+      left: 940, top: 60, width: 28, height: 28,
+    }, { fill: p.accent, opacity: 0.8, name: '装饰角点' })
+
+    const titleSize = b.fit(c.title ?? '', colW, 220, DISPLAY_STEPS)
+    const titleH = b.measure(c.title ?? '', titleSize, colW, LINE_HEIGHT.heading, true)
+    const eyebrowH = b.measure(c.eyebrow ?? '', TYPE_SCALE.eyebrow, colW, LINE_HEIGHT.tight, true)
+    const subH = b.measure(c.subtitle ?? '', TYPE_SCALE.subtitle, colW - 80)
+
+    const rows = stack([
+      ...(c.eyebrow ? [{ height: eyebrowH }] : []),
+      { height: titleH, gap: c.eyebrow ? SPACING.paragraphGap : 0 },
+      { height: 12, gap: SPACING.headingGap },
+      ...(c.subtitle ? [{ height: subH, gap: SPACING.headingGap }] : []),
+    ], SAFE, 'middle')
+
+    let i = 0
+    const eyebrow = c.eyebrow
+      ? b.text({ left: SAFE.left, top: rows.tops[i++], width: colW, height: eyebrowH }, c.eyebrow, {
+        size: TYPE_SCALE.eyebrow, color: b.onPhoto(p.accent), bold: true, letterSpacing: 2,
+        lineHeight: LINE_HEIGHT.tight, textType: 'header',
+      })
+      : null
+
+    const title = b.text({ left: SAFE.left, top: rows.tops[i++], width: colW, height: titleH }, c.title ?? '', {
+      size: titleSize, color: p.text, bold: true, lineHeight: LINE_HEIGHT.heading, textType: 'title',
+    })
+
+    const bar = b.shape('bar', { left: SAFE.left, top: rows.tops[i++], width: 72, height: 12 }, {
+      fill: p.accent, name: '强调条',
+    })
+
+    const subtitle = c.subtitle
+      ? b.text(
+        { left: SAFE.left, top: rows.tops[i++], width: colW - 80, height: subH },
+        c.subtitle,
+        { size: TYPE_SCALE.subtitle, color: b.onPhoto(p.textMuted), textType: 'subtitle' },
+      )
+      : null
+
+    // 装饰块和标题同步出场，不单独占一步；背景图是舞台，同样同步铺开
+    b.animate(title, 'fade-left', 'click', 600)
+    b.animate(eyebrow, 'fade-left', 'meantime', 400)
+    b.animate(disc, 'scale-in', 'meantime', 900)
+    b.animate(dot, 'zoom-in', 'meantime', 600)
+    b.animate(bar, 'wipe', 'auto', 400)
+    b.animate(subtitle, 'fade-left', 'auto', 500)
+    b.animate(bgImage, 'fade', 'meantime', 800)
+    b.animate(scrim, 'fade', 'meantime', 800)
+
+    return { background: { type: 'solid', color: p.background }, slideType: 'cover' }
+  },
+
+  // 大编号列表（B）：序号从「圆点 + 小数字」换成大号数字 ——
+  // 去掉图形标记之后版面更干净，靠数字本身撑起「第几条」的结构感
+  'bullets': (b, c) => {
+    const p = b.palette
+    const items = clampItems(c.items, 2, 6)
+
+    const hasImage = !!c.image?.src
+    const figureW = Math.round(CANVAS_WIDTH * 0.4)
+    const colW = hasImage ? CANVAS_WIDTH - figureW - SAFE.left - SPACING.gutter : SAFE.width
+
+    const figure = hasImage
+      ? b.image(
+        { left: CANVAS_WIDTH - figureW, top: 0, width: figureW, height: CANVAS_HEIGHT },
+        c.image!,
+        { imageType: 'pageFigure', name: '配图' },
+      )
+      : null
+
+    const titleH = b.measure(c.title ?? '', TYPE_SCALE.title, colW - 28, LINE_HEIGHT.heading, true)
+    const accentBar = b.shape('bar', { left: SAFE.left, top: SAFE.top + 8, width: 8, height: Math.min(44, titleH - 16) }, {
+      fill: p.accent, name: '标题强调条',
+    })
+    const title = b.text(
+      { left: SAFE.left + 28, top: SAFE.top, width: colW - 28, height: titleH },
+      c.title ?? '', { size: TYPE_SCALE.title, color: p.text, bold: true, lineHeight: LINE_HEIGHT.heading, textType: 'title' },
+    )
+
+    let y = snapY(SAFE.top + titleH + SPACING.headingGap)
+    let subtitle: PPTElement | null = null
+    if (c.subtitle) {
+      const h = b.measure(c.subtitle, TYPE_SCALE.body, colW - 28)
+      subtitle = b.text({ left: SAFE.left + 28, top: y, width: colW - 28, height: h }, c.subtitle, {
+        size: TYPE_SCALE.body, color: b.onPhoto(p.textMuted), textType: 'content',
+      })
+      y = snapY(y + h + SPACING.paragraphGap)
+    }
+
+    // B 变体的核心差异：没有圆点，序号是 30px 的大数字
+    const numW = 56
+    const numH = 40
+    const textLeft = SAFE.left + numW + SPACING.paragraphGap
+    const textWidth = colW - numW - SPACING.paragraphGap
+
+    // 降级策略和 A 变体同一条：字号成组降 + 行距压缩，降到放得下为止
+    const budget = SAFE.bottom - y
+    const step = fitSteps(
+      [
+        { head: TYPE_SCALE.itemTitle, body: TYPE_SCALE.body, gap: SPACING.paragraphGap, lh: LINE_HEIGHT.body },
+        { head: TYPE_SCALE.itemTitle, body: TYPE_SCALE.body, gap: 12, lh: 1.45 },
+        { head: 17, body: 14, gap: UNIT, lh: 1.35 },
+        { head: 16, body: TYPE_SCALE.caption, gap: UNIT, lh: LINE_HEIGHT.tight },
+      ],
+      s => items.reduce((sum, it, i) => {
+        const h = b.measure(it.title ?? '', s.head, textWidth, LINE_HEIGHT.heading, true)
+        const bh = it.body ? b.measure(it.body, s.body, textWidth, s.lh) : 0
+        return sum + Math.max(numH + 8, h + bh) + (i === 0 ? 0 : s.gap)
+      }, 0),
+      budget,
+    )
+
+    const headHs = items.map(it => b.measure(it.title ?? '', step.head, textWidth, LINE_HEIGHT.heading, true))
+    const bodyHs = items.map(it => (it.body ? b.measure(it.body, step.body, textWidth, step.lh) : 0))
+    const rowHs = items.map((_, i) => Math.max(numH + 8, headHs[i] + bodyHs[i]))
+
+    const rows = stack(
+      rowHs.map((h, i) => ({ height: h, gap: i === 0 ? 0 : step.gap })),
+      { top: y, bottom: SAFE.bottom },
+      'spread',
+      { maxGapFactor: 2.2 },
+    )
+
+    b.animate(title, 'fade-left', 'click', 500)
+    b.animate(accentBar, 'wipe-down', 'meantime', 400)
+    b.animate(figure, 'wipe-right', 'meantime', 700)
+    b.animate(subtitle, 'fade-up', 'auto', 400)
+
+    items.forEach((item, i) => {
+      const top = rows.tops[i]
+      // 大数字和条目标题第一行基线对齐
+      const numTop = snapY(top + 2)
+      const markerNum = b.text(
+        { left: SAFE.left, top: numTop, width: numW, height: numH },
+        String(i + 1).padStart(2, '0'),
+        {
+          size: 30, color: b.onPhoto(i === 0 ? p.accent : p.primary), bold: true,
+          lineHeight: LINE_HEIGHT.tight, vAlign: 'middle', textType: 'itemNumber',
+        },
+      )
+
+      const head = b.text({ left: textLeft, top, width: textWidth, height: headHs[i] }, item.title ?? '', {
+        size: step.head, color: p.text, bold: true, lineHeight: LINE_HEIGHT.heading, textType: 'itemTitle',
+      })
+      const body = item.body
+        ? b.text(
+          { left: textLeft, top: snapY(top + headHs[i]), width: textWidth, height: bodyHs[i] },
+          item.body,
+          { size: step.body, color: b.onPhoto(p.textMuted), lineHeight: step.lh, textType: 'item' },
+        )
+        : null
+
+      b.animate(markerNum, 'fade-left', i === 0 ? 'click' : 'auto', 400)
+      b.animate(head, 'fade-left', 'meantime', 400)
+      b.animate(body, 'fade-left', 'meantime', 400)
+    })
+
+    return { background: { type: 'solid', color: p.background }, slideType: 'content' }
+  },
+
+  // 分栏无卡（B）：去卡片底板和编号胶囊，栏间竖线分隔 —— 杂志分栏感。
+  // 和 bullets 的区别是**并排**而非纵向列表，栏数是它的结构
+  'cards': (b, c) => {
+    const p = b.palette
+    const items = clampItems(c.items, 2, 4)
+    const n = items.length
+
+    const titleH = b.measure(c.title ?? '', TYPE_SCALE.title, SAFE.width, LINE_HEIGHT.heading, true)
+    const title = b.text({ left: SAFE.left, top: SAFE.top, width: SAFE.width, height: titleH }, c.title ?? '', {
+      size: TYPE_SCALE.title, color: p.text, bold: true, lineHeight: LINE_HEIGHT.heading, textType: 'title',
+    })
+    const bar = b.shape('bar', { left: SAFE.left, top: snapY(SAFE.top + titleH + 4), width: 64, height: 10 }, {
+      fill: p.accent, name: '强调条',
+    })
+
+    let y = snapY(SAFE.top + titleH + 14 + SPACING.headingGap)
+    let subtitle: PPTElement | null = null
+    if (c.subtitle) {
+      const h = b.measure(c.subtitle, TYPE_SCALE.body, SAFE.width)
+      subtitle = b.text({ left: SAFE.left, top: y, width: SAFE.width, height: h }, c.subtitle, {
+        size: TYPE_SCALE.body, color: b.onPhoto(p.textMuted), textType: 'content',
+      })
+      y = snapY(y + h + SPACING.paragraphGap)
+    }
+
+    const gap = SPACING.gutter
+    const colW = (SAFE.width - gap * (n - 1)) / n
+    const available = SAFE.bottom - y
+
+    // 没有卡片底板兜着，放不下就得真的降级（行距压缩），不能靠底板截断
+    const bodySize = n >= 4 ? TYPE_SCALE.caption : TYPE_SCALE.body
+    const step = fitSteps(
+      [
+        { body: bodySize, lh: LINE_HEIGHT.body },
+        { body: TYPE_SCALE.caption, lh: 1.45 },
+        { body: TYPE_SCALE.caption, lh: LINE_HEIGHT.tight },
+      ],
+      s => Math.max(...items.map(it => {
+        const hh = b.measure(it.title ?? '', TYPE_SCALE.itemTitle, colW, LINE_HEIGHT.heading, true)
+        const bh = it.body ? b.measure(it.body, s.body, colW, s.lh) : 0
+        return 16 + SPACING.paragraphGap + hh + bh
+      })),
+      available,
+    )
+
+    const headHs = items.map(it => b.measure(it.title ?? '', TYPE_SCALE.itemTitle, colW, LINE_HEIGHT.heading, true))
+    const bodyHs = items.map(it => (it.body ? b.measure(it.body, step.body, colW, step.lh) : 0))
+
+    // 栏间竖线：结构线随第一栏同步画出
+    const dividers = Array.from({ length: n - 1 }, (_, i) =>
+      b.line(
+        [0, 0], [0, SAFE.bottom - y],
+        SAFE.left + (i + 1) * colW + i * gap + gap / 2, y,
+        p.border, 1,
+      ),
+    )
+
+    b.animate(title, 'fade-down', 'click', 500)
+    b.animate(bar, 'wipe', 'meantime', 400)
+    b.animate(subtitle, 'fade-up', 'auto', 400)
+    dividers.forEach(d => b.animate(d, 'wipe-down', 'meantime', 500))
+
+    items.forEach((item, i) => {
+      const left = SAFE.left + i * (colW + gap)
+      const num = b.text({ left, top: y, width: colW, height: 16 }, String(i + 1).padStart(2, '0'), {
+        size: TYPE_SCALE.eyebrow, color: b.onPhoto(p.accent), bold: true,
+        lineHeight: LINE_HEIGHT.tight, textType: 'itemNumber',
+      })
+      const headTop = snapY(y + 16 + SPACING.paragraphGap)
+      const head = b.text({ left, top: headTop, width: colW, height: headHs[i] }, item.title ?? '', {
+        size: TYPE_SCALE.itemTitle, color: p.text, bold: true, lineHeight: LINE_HEIGHT.heading, textType: 'itemTitle',
+      })
+      const body = item.body
+        ? b.text(
+          { left, top: snapY(headTop + headHs[i]), width: colW, height: bodyHs[i] },
+          item.body,
+          { size: step.body, color: b.onPhoto(p.textMuted), lineHeight: step.lh, textType: 'item' },
+        )
+        : null
+
+      b.animate(num, 'fade-up', i === 0 ? 'click' : 'auto', 400)
+      b.animate(head, 'fade-up', 'meantime', 400)
+      b.animate(body, 'fade-up', 'meantime', 400)
+    })
+
+    return { background: { type: 'solid', color: p.background }, slideType: 'content' }
+  },
+}
 
 const LAYOUTS: Record<LayoutPattern, LayoutFn> = {
   // 居中封面：装饰性斜切块压在角落，标题居中，下方一道强调条
@@ -1837,7 +2258,11 @@ export const buildLayout = (
   content: LayoutContent,
   palette: Palette,
   idPrefix: string,
-  options: { animate?: boolean, typography?: TypeRecipe, style?: PaletteStyle } = {},
+  options: {
+    animate?: boolean, typography?: TypeRecipe, style?: PaletteStyle,
+    /** R-60: 结构变体。'B' 且有变体的版式走 `LAYOUT_VARIANTS`，其余一律 A */
+    variant?: 'A' | 'B',
+  } = {},
 ): LayoutResult => {
   /**
    * 没传字体配对时用「宋黑经典」。
@@ -1855,9 +2280,17 @@ export const buildLayout = (
    * 它**刻意不挂动画**：记忆点应该一开场就在那儿，而不是跟着内容一起飞进来。
    * `lintSlideAnimationOrder` 只管文本有没有挂动画，形状没挂不会被报。
    */
-  if (wantsSignature(pattern, content)) drawSignature(builder, options.style ?? 'business')
+  if (wantsSignature(pattern, content)) {
+    // R-60：变体由主题锚点色的哈希决定 —— 同一份稿子稳定、不同稿子分散
+    drawSignature(builder, options.style ?? 'business', signatureVariant(palette))
+  }
 
-  const { background, slideType } = LAYOUTS[pattern](builder, content)
+  // R-60：B 变体走 LAYOUT_VARIANTS（没有变体的版式传了 B 也落回 A ——
+  // 变体是「同版式的另一种结构」，不是随便一个字母）
+  const layoutFn = options.variant === 'B' && LAYOUT_VARIANTS[pattern]
+    ? LAYOUT_VARIANTS[pattern]!
+    : LAYOUTS[pattern]
+  const { background, slideType } = layoutFn(builder, content)
 
   return {
     elements: builder.elements,
@@ -1889,5 +2322,6 @@ export const describeLayouts = (): string =>
           : m.itemImage
             ? '，**每条各配一张图**（填 items[].image，不是 content.image）'
             : ''
-    return `- ${p}（${m.name}）：${m.usage}${items}${image}`
+    const variantB = m.variantB ? `，**变体 B**：${m.variantB}` : ''
+    return `- ${p}（${m.name}）：${m.usage}${items}${image}${variantB}`
   }).join('\n')

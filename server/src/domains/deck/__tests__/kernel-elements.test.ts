@@ -5,7 +5,7 @@ import {
   validateElement, lintDeck, lintDeckDesign, lintSlide,
   applyAddShape, applyAddChart, applyAddTable, applyAddLine,
   applyArrangeElements, applyLayoutToSlide, applySetSlideTransition,
-  mintElementId,
+  mintElementId, DEFAULT_THEME,
 } from '../kernel'
 import { lintSlideAnimationOrder } from '../animationOrder'
 
@@ -501,6 +501,38 @@ describe('kernel · deck-level design lint', () => {
     expect(issues.some(i => i.message.includes('版式'))).toBe(false)
   })
 
+  // ── R-60：变体参与相邻判重 —— 同版式不同变体是两种结构，不算雷同
+  it('同版式不同变体不算相邻雷同', () => {
+    const a = ok(applyLayoutToSlide(
+      [{ id: 's1', elements: [] }], 's1', THEME, 'cards', contentFor('cards'), { variant: 'A' },
+    ))[0] as Slide
+    const b = ok(applyLayoutToSlide(
+      [{ id: 's2', elements: [] }], 's2', THEME, 'cards', contentFor('cards'), { variant: 'B' },
+    ))[0] as Slide
+    expect(a.layoutVariant).toBe('A')
+    expect(b.layoutVariant).toBe('B')
+    expect(lintDeckDesign([a, b]).some(i => i.message.includes('同一个版式'))).toBe(false)
+  })
+
+  it('同版式同变体照样报，且提示里有变体的出路', () => {
+    const a = ok(applyLayoutToSlide(
+      [{ id: 's1', elements: [] }], 's1', THEME, 'cards', contentFor('cards'), { variant: 'B' },
+    ))[0] as Slide
+    const b = ok(applyLayoutToSlide(
+      [{ id: 's2', elements: [] }], 's2', THEME, 'cards', contentFor('cards'), { variant: 'B' },
+    ))[0] as Slide
+    const issue = lintDeckDesign([a, b]).find(i => i.message.includes('同一个版式'))
+    expect(issue).toBeTruthy()
+    expect(issue!.message).toContain('B 变体')
+  })
+
+  it('不传 variant 落盘为 A', () => {
+    const [slide] = ok(applyLayoutToSlide(
+      [{ id: 's1', elements: [] }], 's1', THEME, 'cards', contentFor('cards'),
+    )) as Slide[]
+    expect(slide.layoutVariant).toBe('A')
+  })
+
   // 没有 layout 标记的页（手工搭的）靠结构指纹判重
   it('falls back to a structural signature when layout is unset', () => {
     const page = (id: string): Slide => ({
@@ -706,6 +738,41 @@ describe('kernel · 设计意图与字体配对', () => {
     it('designNote 是空白字符串不算数', () => {
       expect(lintDeckDesign(build(['cards', 'compare', 'timeline']), themed('   '))
         .some(i => i.message.includes('配色没有被设计过'))).toBe(true)
+    })
+
+    // ── R-60：写了说明 ≠ 做了决定。库里实测出一份「星耀影视」——
+    // designNote 写满点茶取色，主题仍是出厂默认的白底蓝橙。
+    it('designNote 写了但主题仍是内置默认 → 报「写说明不等于做了决定」', () => {
+      const slides = build(['cards', 'compare', 'timeline'])
+      const complaints = lintDeckDesign(slides, { ...DEFAULT_THEME, designNote: NOTE })
+        .filter(i => /配色|锚点|设计过|designNote/.test(i.message))
+      expect(complaints).toHaveLength(1)
+      expect(complaints[0].message).toContain('写说明不等于做了决定')
+    })
+
+    it('designNote 写了 + 锚点色真的偏离默认 → 放过', () => {
+      const slides = build(['cards', 'compare', 'timeline'])
+      const changed = [
+        { ...DEFAULT_THEME, designNote: NOTE, backgroundColor: '#F4EFE3' },
+        { ...DEFAULT_THEME, designNote: NOTE, themeColors: ['#3A2C24', '#4F7C6B', '#a5a5a5', '#ffc000', '#4472c4', '#70ad47'] },
+        { ...DEFAULT_THEME, designNote: NOTE, fontColor: '#2B241E' },
+      ]
+      for (const theme of changed) {
+        const complaints = lintDeckDesign(slides, theme)
+          .filter(i => /配色|锚点|设计过|designNote/.test(i.message))
+        expect(complaints, JSON.stringify(theme)).toEqual([])
+      }
+    })
+
+    it('默认主题的同色异写（#fff vs #FFFFFF）不构成「改过」', () => {
+      const slides = build(['cards', 'compare', 'timeline'])
+      const complaints = lintDeckDesign(slides, {
+        ...DEFAULT_THEME,
+        designNote: NOTE,
+        backgroundColor: '#FFFFFF',
+        themeColors: ['#5B9BD5', '#ED7D31', '#a5a5a5', '#ffc000', '#4472c4', '#70ad47'],
+      }).filter(i => /配色|锚点|设计过|designNote/.test(i.message))
+      expect(complaints).toHaveLength(1)
     })
 
     it('个别页覆盖色仍算做了决定 —— 第二信号', () => {
