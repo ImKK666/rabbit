@@ -11,7 +11,7 @@ import '@/assets/styles/global.scss'
 import '@/assets/styles/font.scss'
 
 import Directive from '@/directive'
-import { recordCrash, readCrashLog, clearCrashLog, CRASH_LOG_KEY } from '@/utils/crashLog'
+import { recordCrash, readCrashLog, clearCrashLog, showCrashBanner, CRASH_LOG_KEY } from '@/utils/crashLog'
 
 const app = createApp(App)
 
@@ -40,6 +40,9 @@ if (previous.length > 0) {
     previous,
     `\n清掉：localStorage.removeItem('${CRASH_LOG_KEY}')`,
   )
+  // 控制台那份不是所有人都够得着（Safari 的开发者菜单默认关着），
+  // 所以页面上也挂一条，带一键复制
+  showCrashBanner(previous)
 }
 ;(window as unknown as Record<string, unknown>).__crashLog = { read: readCrashLog, clear: clearCrashLog }
 

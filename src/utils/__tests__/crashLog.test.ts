@@ -7,7 +7,7 @@
 
 import { describe, it, expect, vi } from 'vitest'
 import {
-  formatCrash, pushCrash, readCrashLog, writeCrashLog, clearCrashLog,
+  formatCrash, pushCrash, readCrashLog, writeCrashLog, clearCrashLog, showCrashBanner,
   CRASH_LOG_KEY, MAX_CRASHES, type CrashRecord,
 } from '../crashLog'
 
@@ -112,5 +112,103 @@ describe('读写 · 存储坏了也不能抛', () => {
   it('removeItem 抛异常时也不冒', () => {
     const s = { removeItem: () => { throw new Error('nope') } }
     expect(() => clearCrashLog(s)).not.toThrow()
+  })
+})
+
+
+/**
+ * 假 document —— **不装 jsdom**，照 `useStickToBottom.test.ts` 那条既有规矩。
+ * 横幅只用到 createElement / append / style / textContent 这几样，假一份就够。
+ */
+const fakeDoc = () => {
+  const mk = (tag: string) => {
+    const el = {
+      tag,
+      style: { cssText: '' },
+      textContent: '',
+      children: [] as unknown[],
+      onclick: null as unknown,
+      append(...cs: unknown[]) { el.children.push(...cs) },
+      appendChild(c: unknown) { el.children.push(c); return c },
+      remove() {},
+      select() {},
+      /** 只支持按 tag 名找，够用 */
+      querySelectorAll(sel: string) {
+        const out: unknown[] = []
+        const walk = (n: { tag?: string, children?: unknown[] }) => {
+          if (n.tag === sel) out.push(n)
+          for (const c of n.children ?? []) walk(c as never)
+        }
+        for (const c of el.children) walk(c as never)
+        return out
+      },
+    }
+    return el
+  }
+  const body = mk('body')
+  return {
+    createElement: mk,
+    body,
+    execCommand: () => true,
+  } as unknown as Document & { body: ReturnType<typeof mk> }
+}
+
+/** 把一棵假树上的文字拼起来 —— 假元素没有真正的 textContent 继承 */
+const textOf = (n: { textContent?: string, children?: unknown[] }): string =>
+  (n.textContent ?? '') + (n.children ?? []).map(c => textOf(c as never)).join(' ')
+
+describe('崩溃横幅 · 它自己不能成为第二个故障点', () => {
+  /**
+   * 横幅存在的理由：**「打开控制台」不是所有人都做得到。**
+   * Safari 的开发者菜单默认是关的，要先进设置勾「显示网页开发者功能」——
+   * 一个排查步骤如果要求用户先改浏览器设置，现实里它就是不会被执行的。
+   */
+  it('没有记录时什么都不挂', () => {
+    const doc = fakeDoc()
+    expect(showCrashBanner([], doc)).toBeNull()
+    expect(doc.body.children).toHaveLength(0)
+  })
+
+  /**
+   * **断言用的字符串必须不可能和界面文案撞车。**
+   *
+   * 第一版拿「根因 / 余波1」当消息内容，而横幅自己的标题里就写着
+   * 「下面是第一条 —— 它才是根因」—— 于是 `toContain('根因')`
+   * 匹配的是**界面文案**而不是数据，把 `records[0]` 改成 `records.at(-1)`
+   * 测试照样绿。负对照当场抓住。
+   */
+  it('有记录时挂上，且显示的是**第一条**', () => {
+    const doc = fakeDoc()
+    const bar = showCrashBanner(
+      [rec('ZZ_FIRST_ONLY'), rec('ZZ_SECOND'), rec('ZZ_THIRD')], doc)
+    expect(bar).not.toBeNull()
+    const t = textOf(bar as never)
+    expect(t).toContain('ZZ_FIRST_ONLY')
+    expect(t).toContain('3 条')
+    // 只显示第一条 —— 连环崩溃里后面全是余波
+    expect(t).not.toContain('ZZ_SECOND')
+    expect(t).not.toContain('ZZ_THIRD')
+    expect(doc.body.children).toHaveLength(1)
+  })
+
+  it('两个按钮都在', () => {
+    const doc = fakeDoc()
+    const bar = showCrashBanner([rec('x')], doc)!
+    const labels = (bar.querySelectorAll('button') as unknown as { textContent: string }[])
+      .map(b => b.textContent)
+    expect(labels).toEqual(['复制全部', '清除'])
+  })
+
+  /** 记录里带 undefined 字段、奇怪内容，拼字符串时不能炸 */
+  it('字段缺一半也不抛', () => {
+    const doc = fakeDoc()
+    const partial = { at: '', source: 'window', message: 'only message' } as CrashRecord
+    expect(() => showCrashBanner([partial], doc)).not.toThrow()
+  })
+
+  it('传进来一个坏 document 也只是返回 null，不往外抛', () => {
+    const broken = { createElement: () => { throw new Error('nope') } } as unknown as Document
+    expect(() => showCrashBanner([rec('x')], broken)).not.toThrow()
+    expect(showCrashBanner([rec('x')], broken)).toBeNull()
   })
 })
