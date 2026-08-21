@@ -15,11 +15,11 @@ import { lintSlideAnimationOrder } from './animationOrder'
 import {
   buildPalette, CANVAS_WIDTH as DESIGN_W, CANVAS_HEIGHT as DESIGN_H, DEFAULT_BODY_FONT,
   TYPOGRAPHY_PAIRS, PALETTE_FORMALITY, FORMALITY_GAP_LIMIT,
-  type PaletteStyle, type TypographyPair,
+  type PaletteStyle, type TypographyPair, type FontFamily,
 } from './design'
 import {
-  buildLayout, validateLayoutContent, isLayoutPattern,
-  type LayoutPattern, type LayoutContent,
+  buildLayout, validateLayoutContent, isLayoutPattern, LAYOUT_META, LAYOUT_PATTERNS,
+  type LayoutPattern, type LayoutContent, type LayoutPace,
 } from './layouts'
 
 // ---------------------------------------------------------------------------
@@ -357,6 +357,7 @@ export const slideSchema = z.object({
   layout: z.string().optional(),
   paletteStyle: z.string().optional(),
   typography: z.string().optional(),
+  paletteAnchors: z.array(z.string()).optional(),
 })
 
 export const themeSchema = z.object({
@@ -366,6 +367,7 @@ export const themeSchema = z.object({
   fontName: z.string(),
   outline: elementOutlineSchema,
   shadow: elementShadowSchema,
+  designNote: z.string().optional(),
 })
 
 // ---------------------------------------------------------------------------
@@ -534,18 +536,77 @@ const NON_TEXT_TYPES = new Set(['shape', 'chart', 'table', 'line', 'image', 'lat
 const hasNonTextElement = (slide: Slide): boolean =>
   slide.elements.some(el => NON_TEXT_TYPES.has(el.type))
 
+/**
+ * 一页在整份稿子的节奏里扮演什么角色。
+ *
+ * 手工搭的页（没有 `layout` 标记）返回 `undefined` —— lint 不知道它长什么样，
+ * 既不该把它算成内容页，也不该让它冒充节奏页去打断一串 cards。
+ */
+const paceOf = (slide: Slide): LayoutPace | undefined =>
+  slide.layout && isLayoutPattern(slide.layout) ? LAYOUT_META[slide.layout].pace : undefined
+
 /** 单页元素太少，基本等同于「一个标题一段正文」 */
 const MIN_ELEMENTS_PER_SLIDE = 3
 
 /** 一份 deck 至少该用到几种不同的动画效果 */
 const MIN_EFFECT_VARIETY = 3
 
+/**
+ * 版式分布判据的起查页数。
+ *
+ * 四页以下谈「分布」没有意义 —— 封面 + 两页内容 + 结尾，本来就没有多少可分布的。
+ */
+const SPREAD_MIN_SLIDES = 5
+
+/**
+ * 单个版式占全篇的比例上限。
+ *
+ * 取 0.4 而不是更严：十页的稿子里四页 cards 仍在合理区间（cards 本来就是
+ * `LAYOUT_META` 里标着「最通用」的那个），五页才开始像是「一个模板填了五遍」。
+ */
+const SPREAD_TOP_RATIO = 0.4
+
+/**
+ * 触发分布告警的最少页数。
+ *
+ * 光有比例不够：五页的稿子里 `0.4 × 5 = 2`，于是两页 cards 就会报 ——
+ * 而相邻页判据已经保证了这两页不挨着，两页同版式在五页里完全正常。
+ * 加这条下限之后，**至少三页同版式**才可能触发。
+ */
+const SPREAD_MIN_COUNT = 2
+
+/**
+ * 连续多少页内容页没有节奏页就告警。
+ *
+ * prompt（`roles.ts`）写的是「每 3~4 页内容页插一页节奏页」。判据取 5 而不是 4：
+ * **护栏要比指导宽一档** —— 指导说的是「怎么做才好」，判据说的是「这样已经不行了」，
+ * 两者取同一个数会让「按指导做到边界」的稿子也变红。
+ */
+const MAX_CONTENT_RUN = 5
+
+/**
+ * 「这份稿子被设计过吗」这条判据的起查页数。
+ *
+ * 取 3 是为了把**生成一份稿子**和**改一页**分开：用户说「这页重排一下」时
+ * agent 只会调一次 `applyLayout`，那一次它没有义务重新设计整份的配色 ——
+ * 在那里报「你没有设计」是纯噪音。
+ */
+const DESIGN_INTENT_MIN_SLIDES = 3
+
 export interface DeckLintOptions {
   /** 关掉设计类检查，只留几何 —— 用户明确要极简风格时 */
   designChecks?: boolean
+  /** 判据 ⑨ 要看 `theme.designNote`。生产路径必须传，见 `lintDeckDesign` 的说明 */
+  theme?: SlideTheme
 }
 
-export const lintDeckDesign = (slides: Slide[]): LintIssue[] => {
+/**
+ * `theme` 是可选的：判据 ⑨（这份稿子被设计过吗）要看 `theme.designNote`，
+ * 而 deck 级的主题不在 `slides` 里。不传就退回只看 `paletteAnchors` ——
+ * **少了一个信号会让 ⑨ 偏严**（走 setTheme 的稿子会被误报），
+ * 所以生产路径（`lintDeck` 工具）必须传，不传只出现在只关心几何的单测里。
+ */
+export const lintDeckDesign = (slides: Slide[], theme?: SlideTheme): LintIssue[] => {
   const issues: LintIssue[] = []
   if (slides.length === 0) return issues
 
@@ -671,13 +732,156 @@ export const lintDeckDesign = (slides: Slide[]): LintIssue[] => {
     issues.push(...lintSlideAnimationOrder(slide, i))
   }
 
+  // ⑦ 版式分布：一份稿子不该被一个版式占满
+  //
+  // ① 只比相邻两页。它挡得住「连着两页 cards」，**挡不住 cards / compare 交替二十页** ——
+  // 每一对相邻页都不同，全绿，而读者看到的是同两张脸轮流出现。
+  //
+  // 判据按「最多的那个版式占了多少」算，不按「一共用了几种」：
+  // 二十页里十四页是 cards 才是真的雷同，而「只用了三种版式」在一份五页的稿子里
+  // 完全正常 —— 种类数会把短稿子一律判负，占比不会。
+  {
+    const laidOut = slides.filter(
+      (s): s is Slide & { layout: string } => !!s.layout && s.elements.length > 0,
+    )
+    if (laidOut.length >= SPREAD_MIN_SLIDES) {
+      const counts = new Map<string, number>()
+      for (const s of laidOut) counts.set(s.layout, (counts.get(s.layout) ?? 0) + 1)
+
+      const [top, n] = [...counts].sort((a, b) => b[1] - a[1])[0]
+      if (n > Math.max(SPREAD_MIN_COUNT, laidOut.length * SPREAD_TOP_RATIO)) {
+        const label = isLayoutPattern(top) ? LAYOUT_META[top].name : top
+        issues.push({
+          level: 'warning',
+          slideId: slides[0].id,
+          message: `${laidOut.length} 页里有 ${n} 页用了「${label}」`
+            + `（${Math.round((n / laidOut.length) * 100)}%）—— 相邻页没重复不等于整份有变化。`
+            + `版式库有 ${LAYOUT_PATTERNS.length} 种，按内容挑：有对比用 compare，`
+            + `有先后用 timeline，有图用 split-figure / image-grid`,
+        })
+      }
+    }
+  }
+
+  // ⑧ 节奏：连着太多页内容页，中间没有喘气的地方
+  //
+  // prompt（`roles.ts`）写着「每 3~4 页内容页插一页节奏页」，而在这条之前
+  // **没有任何东西在验** —— 和 ④ 那条配色/字体统一的处境逐字相同：
+  // 写在 prompt 里的规矩，模型照做与否无人知晓，而所有检查都是绿的。
+  //
+  // **封面 / 结尾（`pace: 'structural'`）和节奏页一样能打断连续段**，这是对的：
+  // 它们本来就是低密度大留白的页，视觉上确实让人喘了一口气。把它们归成
+  // `structural` 而不是 `rhythm`，只是因为它们的位置是固定的 ——
+  // agent 不能靠多加两页封面来凑节奏，一份稿子里它们只会出现在两头。
+  //
+  // 手工页（没有 `layout`）则**既不算内容页也不打断**：lint 不知道它长什么样，
+  // 让它冒充节奏页去截断一串 cards 是在放过真问题。
+  {
+    const runs: number[][] = []
+    let cur: number[] = []
+    for (const [i, slide] of slides.entries()) {
+      const pace = paceOf(slide)
+      if (pace === 'content') {
+        cur.push(i + 1)
+        continue
+      }
+      // 手工页：既不算内容页，也不打断连续段
+      if (pace === undefined) continue
+      if (cur.length) runs.push(cur)
+      cur = []
+    }
+    if (cur.length) runs.push(cur)
+
+    for (const run of runs) {
+      if (run.length <= MAX_CONTENT_RUN) continue
+      issues.push({
+        level: 'warning',
+        slideId: slides[run[0] - 1].id,
+        message: `第 ${run[0]}~${run[run.length - 1]} 页连着 ${run.length} 页都是内容页，`
+          + `中间一页喘气的地方都没有 —— 每 3~4 页插一页 section / stat / quote / full-figure，`
+          + `一路平铺读者会走神`,
+      })
+    }
+  }
+
+  // ⑨ 这份稿子被设计过吗
+  //
+  // ## 它解的是什么
+  //
+  // `applyLayout` 一直收 `primaryColor` / `accentColor` / `backgroundColor`，
+  // 也就是说「模型自己设计配色」这条路**早就通了**。但 prompt 里提到这三个参数的
+  // 次数是 0，反而教它「不给你调色盘，只给四个名字」。于是模型永远走那四个名字，
+  // 而不传 `style` 时又落到 `?? 'business'` —— **每一份 deck 都是同一套配色**。
+  //
+  // 这和第十八轮那个图片 bug 是同一个形状（见 `LAYOUT_META.image` 的注释）：
+  // 能力存在但没有任何路径够得着，等于不存在。
+  //
+  // ## 为什么这条能顺手解掉「跨份雷同」
+  //
+  // 一开始我以为跨份雷同要存历史（这个用户上一份用了什么），落点在 DB。
+  // 不用 —— **那个问题的根子从来不是「两份撞色」，是「模型压根没做决定」**。
+  // 只要判「有没有做决定」，多样性是白送的：真设计过的两份稿子撞成
+  // 一模一样的概率本来就极低，而没设计过的一百份必然全等。
+  //
+  // ## 怎么判「做了决定」—— 让模型自己说，不让代码去猜
+  //
+  // 第一版判的是 `paletteAnchors`（applyLayout 显式传了哪几个覆盖色）。
+  // **那一版把正确做法判成了错的**：颜色的正路是 `setTheme` 一次定死
+  // （形状 / 图表 / 表格 / getDesignTokens 全读 `state.theme`，
+  // 只有 applyLayout 的 paletteOverride 绕开它），而走 setTheme 时
+  // `paletteAnchors` 恰恰是空的 —— 判据于是奖励了会把稿子配色劈成两半的那条路。
+  //
+  // 第二个念头是拿 `store/slides.ts` 的默认色当参照物比对。也不行：
+  // 那是**代码在猜**，而且默认主题一改，判据就悄悄失准。
+  //
+  // 现在判 `theme.designNote` —— 模型自己写的一句「这套色是被什么驱动的」。
+  // 它本来就该答（prompt 一直这么要求），只是以前没地方写。
+  // `paletteAnchors` 留作第二信号：个别页真的要覆盖时，那也是做了决定。
+  {
+    const laidOut = slides.filter(s => s.layout && s.elements.length)
+    const declared = !!theme?.designNote?.trim()
+    const anchored = laidOut.some(s => (s.paletteAnchors ?? []).length > 0)
+    if (laidOut.length >= DESIGN_INTENT_MIN_SLIDES && !declared && !anchored) {
+      issues.push({
+        level: 'warning',
+        slideId: slides[0].id,
+        message: '整份稿子的配色没有被设计过 —— 这不是「选了默认」，是没有选。'
+          + '用 setTheme 把 backgroundColor / themeColors 定成这份稿子该有的颜色'
+          + '（讲什么就从什么里取色），并在 designNote 里写一句它是被什么驱动的。'
+          + 'setTheme 走一次，形状 / 图表 / 表格全都跟着走；'
+          + '每页传 applyLayout 的覆盖色只改得动版式那一层，其余还留在旧主题上',
+      })
+    }
+  }
+
+  // ⑩ 标题和正文用了同一个字族
+  //
+  // 六套预设里没有一套这样（最接近的 `scholarly` 也是思源宋 + 思源黑）——
+  // 字族对比是排版层级的第一道，两边同字就只剩字号在扛。
+  // 只有自配一对字（`applyLayout` 的 `displayFont` / `bodyFont`）之后才可能出现，
+  // 所以这条**只对自配的情况有意义**，六套预设永远不会踩。
+  for (const slide of slides) {
+    const typ = slide.typography
+    if (!typ?.startsWith('custom:')) continue
+    const [display, body] = typ.slice('custom:'.length).split('+')
+    if (display && display === body) {
+      issues.push({
+        level: 'warning',
+        slideId: slide.id,
+        message: `标题和正文都用了 ${display} —— 字族对比是层级的第一道，`
+          + '两边同字就只剩字号在扛。挑一个和它性格不同的做正文（衬线配非衬线是最稳的一组）',
+      })
+      break
+    }
+  }
+
   return issues
 }
 
 export const lintDeck = (slides: Slide[], opts: DeckLintOptions = {}): LintIssue[] => {
   const geometry = slides.flatMap(lintSlide)
   if (opts.designChecks === false) return geometry
-  return [...geometry, ...lintDeckDesign(slides)]
+  return [...geometry, ...lintDeckDesign(slides, opts.theme)]
 }
 
 // ---------------------------------------------------------------------------
@@ -1469,11 +1673,19 @@ export const applyLayoutToSlide = (
     /** 配色风格。选哪个是内容决策（模型定），风格里的色值是排版决策（代码定） */
     style?: PaletteStyle
     /**
-     * 字体配对。和 `style` 完全同构的一条分工 —— 选哪套字是内容决策，
-     * display 配哪个 body、字宽表是多少是排版决策，见 `design.ts` 的
-     * `TYPOGRAPHY_PAIRS` 头注释。
+     * 字体配对。六套预设之一，当作**起点**用 —— 见 `design.ts` 的
+     * `TYPOGRAPHY_PAIRS` 头注释。想自己配就用下面的 `fonts`。
      */
     typography?: TypographyPair
+    /**
+     * R-55: 自己配一对字，优先级高于 `typography`。
+     *
+     * **只能从 `CHAR_WIDTH_BY_FONT` 那八个里挑，这是硬约束不是偏好** ——
+     * 表外的字体没有实测字宽，`estimateTextHeight` 会退回「取全部字体里最宽的」
+     * 兜底表（`WIDEST`），于是每一行都按最坏情况估，白白浪费版面。
+     * 八个里自由配对是 8×8，比六套预设宽得多，已经够用了。
+     */
+    fonts?: { display: FontFamily, body: FontFamily }
   } = {},
 ): KernelOutcome => {
   const slideIndex = slides.findIndex(s => s.id === slideId)
@@ -1486,11 +1698,24 @@ export const applyLayoutToSlide = (
 
   const palette = buildPalette(theme, opts.paletteOverride, opts.style)
 
+  /**
+   * 自配的一对字合成一个 `TypeRecipe`。
+   *
+   * `formality` 给 `-1`：它只服务 lint ⑤（配色与字体的正式度差太远），
+   * 而自配的一对**没有正式度可言** —— 那个分是给六套预设人工标的。
+   * 给个假分会让 lint ⑤ 拿一个编出来的数去判，比不判更糟；
+   * 下面记 `slide.typography` 时也不会写成预设名，⑤ 那边的
+   * `typ in TYPOGRAPHY_PAIRS` 自然就跳过了。
+   */
+  const recipe = opts.fonts
+    ? { label: '自定义', usage: '', display: opts.fonts.display, body: opts.fonts.body, formality: -1 }
+    : opts.typography ? TYPOGRAPHY_PAIRS[opts.typography] : undefined
+
   // id 前缀带上页序号和当前元素数，重复套版式不会撞 id
   const prefix = `ly${slideIndex + 1}x${slides[slideIndex].elements.length}`
   const result = buildLayout(pattern as LayoutPattern, content, palette, prefix, {
     animate: opts.animate,
-    typography: opts.typography ? TYPOGRAPHY_PAIRS[opts.typography] : undefined,
+    typography: recipe,
     style: opts.style,
   })
 
@@ -1507,7 +1732,12 @@ export const applyLayoutToSlide = (
   slide.layout = pattern
   // 落盘只为让 lint 看得见 —— 见 types/slides.ts 上的说明
   slide.paletteStyle = opts.style ?? 'business'
-  slide.typography = opts.typography ?? 'classic'
+  slide.typography = opts.fonts
+    ? `custom:${opts.fonts.display}+${opts.fonts.body}`
+    : opts.typography ?? 'classic'
+  // 记的是**显式给了哪几个**，不是最终用了什么颜色 —— 见 types/slides.ts 上的说明。
+  // 排过序，好让 lint ④ 的「整份是不是同一套」用字符串相等就能判
+  slide.paletteAnchors = Object.keys(opts.paletteOverride ?? {}).sort()
 
   return { ok: true, data: newSlides, issues: lintSlide(slide) }
 }

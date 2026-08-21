@@ -661,6 +661,31 @@ export const isFontFamily = (v: unknown): v is FontFamily =>
   typeof v === 'string' && v in CHAR_WIDTH_BY_FONT
 
 /**
+ * R-55: 每个字体的性格，进 prompt。
+ *
+ * 单独一张表而不是并进 `CHAR_WIDTH_BY_FONT`：那张表**由 `npm run char-width`
+ * 在真浏览器里量出、勿手改**，掺进手写文案就没法整表覆盖了。
+ *
+ * 类型写成 `Record<FontFamily, string>` 是故意的 —— 往 `CHAR_WIDTH_BY_FONT`
+ * 加一个字体而忘了写性格，这里会当场编译不过。六套预设配对能覆盖的组合有限，
+ * 模型自己配对时**唯一的依据就是这段文案**，漏一个等于那个字体不存在。
+ */
+export const FONT_NOTES: Record<FontFamily, string> = {
+  SourceHanSans: '思源黑体 —— 最中性的一个，信息优先、不抢内容。当正文几乎不会错',
+  SourceHanSerif: '思源宋体 —— 开源宋体，标题有分量、正式。中文标题最稳的选择',
+  AlibabaPuHuiTi: '阿里普惠体 —— 字面方正的商务黑体，比思源黑更硬一点',
+  MiSans: '小米 MiSans —— 几何感强的现代黑体，科技、产品、数据看板',
+  DeYiHei: '得意黑 —— 紧凑展示体，冲击力最强。**字身比别家窄两成**，同样字号看着小一圈，适合大标题不适合正文',
+  LXGWNeoZhiSong: '霞鹜新致宋 —— 现代宋，有编辑部/杂志那种「这是一篇文章」的味道',
+  LXGWWenKai: '霞鹜文楷 —— 楷体，手写感、亲切，最不像 PPT 的一套。教学、面向大众',
+  LXGWNeoXiHei: '霞鹜新晰黑 —— 清晰易读的黑体，偏长文阅读，比思源黑多一点性格',
+}
+
+/** 给 prompt 用的字体清单 —— 模型自己配对时的唯一依据 */
+export const describeFontFamilies = (): string =>
+  FONT_FAMILIES.map(f => `- ${f}：${FONT_NOTES[f]}`).join('\n')
+
+/**
  * 字宽安全余量，只乘在**非 CJK** 分量上。
  *
  * CJK 不乘：汉字是 em 方块，1.000 就是 1.000，加余量纯浪费版面。

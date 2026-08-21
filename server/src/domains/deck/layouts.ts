@@ -158,11 +158,26 @@ export interface LayoutResult {
   signatureIds: string[]
 }
 
+/**
+ * 这个版式在**整份稿子的节奏**里扮演什么角色。
+ *
+ * - `structural` 封面 / 结尾：每份固定有一两页，不参与节奏计算
+ * - `rhythm`     节奏页：章节转场、单点强调、引用、满屏图 —— 让读者喘一口气的地方
+ * - `content`    内容页：并列要点、卡片、对比、时间轴 —— 信息密集，连着看会累
+ *
+ * **必填而不是可选**，是为了让「新加一个版式」这件事必须停下来想一次它属于哪类。
+ * 给成可选的话，漏标就默认落进 `content`，而漏标的表现是节奏判据悄悄失准 ——
+ * 和头注释里 `signatureIds` 那条「用 id 不用名字前缀」是同一个理由。
+ */
+export type LayoutPace = 'structural' | 'rhythm' | 'content'
+
 export interface LayoutMeta {
   pattern: LayoutPattern
   name: string
   /** 什么场合用 —— 进 prompt */
   usage: string
+  /** 在整份稿子的节奏里扮演什么角色，`lintDeckDesign` 的节奏判据按它算 */
+  pace: LayoutPace
   /** items 数量要求，[min, max]；不吃 items 的版式为 null */
   items: [number, number] | null
   /** 除 title 外必须提供的字段 */
@@ -187,19 +202,19 @@ export interface LayoutMeta {
 }
 
 export const LAYOUT_META: Record<LayoutPattern, LayoutMeta> = {
-  'title-center': { pattern: 'title-center', name: '居中封面', usage: '封面：标题居中，上下留白最大，最正式', items: null, requires: ['title'], image: 'backdrop' },
-  'title-split': { pattern: 'title-split', name: '分栏封面', usage: '封面：左文右色块，比居中封面更现代、更有版面感', items: null, requires: ['title'], image: 'panel' },
-  'section': { pattern: 'section', name: '章节转场', usage: '章节之间的过渡页：大章节号 + 章节名', items: null, requires: ['title'], image: 'backdrop' },
-  'bullets': { pattern: 'bullets', name: '要点列表', usage: '内容页：3~5 条并列要点，每条一句话说明', items: [2, 6], requires: ['title', 'items'], image: 'panel' },
-  'cards': { pattern: 'cards', name: '卡片网格', usage: '内容页：2~4 个并列概念，每个有独立底板，最通用', items: [2, 4], requires: ['title', 'items'], image: null },
-  'compare': { pattern: 'compare', name: '二栏对比', usage: '内容页：A vs B、优点 vs 缺点、现状 vs 目标', items: [2, 2], requires: ['title', 'items'], image: null },
-  'timeline': { pattern: 'timeline', name: '横向时间轴', usage: '内容页：时间顺序、流程步骤、演进过程', items: [3, 5], requires: ['title', 'items'], image: null },
-  'stat': { pattern: 'stat', name: '单点强调', usage: '内容页：一个超大数字或一句结论撑满整页，用来制造节奏停顿', items: null, requires: ['stat'], image: 'backdrop' },
-  'quote': { pattern: 'quote', name: '引用语', usage: '内容页：引述一段话 + 出处，同样用来制造节奏', items: null, requires: ['quote'], image: 'backdrop' },
-  'end': { pattern: 'end', name: '结尾页', usage: '最后一页：致谢 / 联系方式', items: null, requires: ['title'], image: 'backdrop' },
-  'image-grid': { pattern: 'image-grid', name: '图文网格', usage: '内容页：2~3 个概念**各配一张图**，图在上文字在下。产品特性、案例展示、团队介绍', items: [2, 3], requires: ['title', 'items'], image: null, itemImage: true },
-  'split-figure': { pattern: 'split-figure', name: '左图右列', usage: '内容页：左边一张大图，右边 2~4 条要点。既要配图又要讲清条目时用它，是 cards / bullets 的配图替身', items: [2, 4], requires: ['title', 'items'], image: 'panel' },
-  'full-figure': { pattern: 'full-figure', name: '满屏图 + 浮层卡片', usage: '内容页：整幅照片当背景，文字装在一块实心浮层卡片里。视觉冲击最强，适合章节开场、金句、单一论断', items: null, requires: ['title'], image: 'overlay' },
+  'title-center': { pattern: 'title-center', name: '居中封面', usage: '封面：标题居中，上下留白最大，最正式', pace: 'structural', items: null, requires: ['title'], image: 'backdrop' },
+  'title-split': { pattern: 'title-split', name: '分栏封面', usage: '封面：左文右色块，比居中封面更现代、更有版面感', pace: 'structural', items: null, requires: ['title'], image: 'panel' },
+  'section': { pattern: 'section', name: '章节转场', usage: '章节之间的过渡页：大章节号 + 章节名', pace: 'rhythm', items: null, requires: ['title'], image: 'backdrop' },
+  'bullets': { pattern: 'bullets', name: '要点列表', usage: '内容页：3~5 条并列要点，每条一句话说明', pace: 'content', items: [2, 6], requires: ['title', 'items'], image: 'panel' },
+  'cards': { pattern: 'cards', name: '卡片网格', usage: '内容页：2~4 个并列概念，每个有独立底板，最通用', pace: 'content', items: [2, 4], requires: ['title', 'items'], image: null },
+  'compare': { pattern: 'compare', name: '二栏对比', usage: '内容页：A vs B、优点 vs 缺点、现状 vs 目标', pace: 'content', items: [2, 2], requires: ['title', 'items'], image: null },
+  'timeline': { pattern: 'timeline', name: '横向时间轴', usage: '内容页：时间顺序、流程步骤、演进过程', pace: 'content', items: [3, 5], requires: ['title', 'items'], image: null },
+  'stat': { pattern: 'stat', name: '单点强调', usage: '内容页：一个超大数字或一句结论撑满整页，用来制造节奏停顿', pace: 'rhythm', items: null, requires: ['stat'], image: 'backdrop' },
+  'quote': { pattern: 'quote', name: '引用语', usage: '内容页：引述一段话 + 出处，同样用来制造节奏', pace: 'rhythm', items: null, requires: ['quote'], image: 'backdrop' },
+  'end': { pattern: 'end', name: '结尾页', usage: '最后一页：致谢 / 联系方式', pace: 'structural', items: null, requires: ['title'], image: 'backdrop' },
+  'image-grid': { pattern: 'image-grid', name: '图文网格', usage: '内容页：2~3 个概念**各配一张图**，图在上文字在下。产品特性、案例展示、团队介绍', pace: 'content', items: [2, 3], requires: ['title', 'items'], image: null, itemImage: true },
+  'split-figure': { pattern: 'split-figure', name: '左图右列', usage: '内容页：左边一张大图，右边 2~4 条要点。既要配图又要讲清条目时用它，是 cards / bullets 的配图替身', pace: 'content', items: [2, 4], requires: ['title', 'items'], image: 'panel' },
+  'full-figure': { pattern: 'full-figure', name: '满屏图 + 浮层卡片', usage: '内容页：整幅照片当背景，文字装在一块实心浮层卡片里。视觉冲击最强，适合章节开场、金句、单一论断', pace: 'rhythm', items: null, requires: ['title'], image: 'overlay' },
 }
 
 /**
