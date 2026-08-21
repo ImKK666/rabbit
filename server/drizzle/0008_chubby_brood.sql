@@ -1,0 +1,1 @@
+ALTER TABLE `asset_sources` ADD `image_api` text DEFAULT 'auto' NOT NULL;

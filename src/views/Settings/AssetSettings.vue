@@ -55,6 +55,17 @@
       </div>
 
       <div class="form-group">
+        <label>生图接口形状</label>
+        <Select v-model:value="form.imageApi" :options="imageApiOptions" style="width: 240px;" />
+        <div class="note">
+          <strong>自动</strong>：模型名含 gpt-image 走 OpenAI Images 形状（<code>/v1/images/generations</code>，
+          支持透明通道与 seed 风格锁定），其余走 Gemini 形状。存量配置选这个就不用动。
+          <strong>OpenAI Images</strong>：gpt-image-2 系中转站，装饰层会直接要原生透明 PNG（不再绿幕抠图）。
+          <strong>Gemini</strong>：<code>generateContent</code> 形状，装饰层走纯色底抠图。
+        </div>
+      </div>
+
+      <div class="form-group">
         <label>图片长边上限（像素）</label>
         <NumberInput v-model:value="form.maxEdgePx" :min="320" :max="4096" :step="80" style="width: 160px;" />
         <div class="note">
@@ -126,6 +137,7 @@ const form = reactive({
   searchEnabled: false,
   imageModelConfigId: null as number | null,
   generateEnabled: false,
+  imageApi: 'auto' as 'auto' | 'gemini' | 'openai',
   maxEdgePx: 1600,
 })
 const hasSearchApiKey = ref(false)
@@ -148,6 +160,12 @@ const imageModelOptions = computed(() => [
   ...models.value.filter(m => m.supportsImages && m.enabled).map(m => ({ label: m.displayName, value: m.id })),
 ])
 
+const imageApiOptions = [
+  { label: '自动（按模型名猜）', value: 'auto' },
+  { label: 'OpenAI Images（gpt-image 系中转）', value: 'openai' },
+  { label: 'Gemini（generateContent 形状）', value: 'gemini' },
+]
+
 // Select 组件的 value 不接受 null，用 0 当「未选择」的哨兵值在边界上转换
 const imageModelValue = computed({
   get: () => form.imageModelConfigId ?? 0,
@@ -161,6 +179,7 @@ const apply = (a: any) => {
   form.searchApiKey = '' // 永远不回显 key
   form.searchEnabled = a.searchEnabled
   form.imageModelConfigId = a.imageModelConfigId
+  form.imageApi = a.imageApi ?? 'auto'
   form.generateEnabled = a.generateEnabled
   form.maxEdgePx = a.maxEdgePx
   hasSearchApiKey.value = a.hasSearchApiKey

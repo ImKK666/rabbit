@@ -61,7 +61,7 @@ import { db } from '@server/db'
 import { assets, assetSearchCache, type AssetSearchProvider } from '@server/db/schema'
 import type { ServerMessage } from '@server/ws/handler'
 import { searchImages, detectLang, type ImageCandidate } from '@server/runtime/imageSearch'
-import { generateImage as callGenerateImage, IMAGE_ASPECT_RATIOS } from '@server/runtime/imageGenerate'
+import { generateImage as callGenerateImage, resolveImageApiFlavor, IMAGE_ASPECT_RATIOS } from '@server/runtime/imageGenerate'
 import { compressImage } from '@server/runtime/imageCodec'
 import { searchCacheKey, readCache } from '@server/runtime/searchCache'
 import { imageRateLimiter, modelRateKey } from '@server/runtime/rateLimiter'
@@ -432,6 +432,8 @@ const runGenerate = async (
 
   const outcome = await callGenerateImage({
     baseUrl: model.baseUrl, apiKey: model.apiKey, model: model.modelName, prompt, aspectRatio,
+    // R-62：内容配图也跟着配置走请求形状（openai 形状下 gpt-image-2 直连）
+    flavor: resolveImageApiFlavor(source.imageApi, model.modelName),
   })
 
   if (!outcome.ok || !outcome.bytes) {

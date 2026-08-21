@@ -93,6 +93,18 @@ export const storageConfigs = sqliteTable('storage_configs', {
 export type AssetSearchProvider = 'wikimedia' | 'pexels' | 'unsplash' | 'pixabay'
 
 /**
+ * R-62：生图接口的请求形状。
+ *
+ * - `auto`：按模型名猜（含 `gpt-image` → openai，否则 gemini）——
+ *   存量配置不用动
+ * - `gemini`：`/v1beta/models/{m}:generateContent`（Gemini wire 形状，
+ *   第十七轮起在用的那套）
+ * - `openai`：`/v1/images/generations`（OpenAI Images API 形状，
+ *   gpt-image-2 系中转站；支持 background=transparent / aspect_ratio / seed）
+ */
+export type ImageApiFlavor = 'auto' | 'gemini' | 'openai'
+
+/**
  * 素材来源配置 —— 图从哪来。
  *
  * 单行表（id=1）。生图和搜图**刻意分开配**：它们是两个独立的 agent 工具，
@@ -108,6 +120,8 @@ export const assetSources = sqliteTable('asset_sources', {
   /** 生图用哪个模型，指向 model_configs。为空则生图不可用 */
   imageModelConfigId: integer('image_model_config_id').references(() => modelConfigs.id),
   generateEnabled: integer('generate_enabled', { mode: 'boolean' }).notNull().default(false),
+  /** R-62：生图接口形状。`auto` 按模型名猜，存量配置零迁移 */
+  imageApi: text('image_api').$type<ImageApiFlavor>().notNull().default('auto'),
   /** 落库前把长边压到这个像素以内。实测生图单张 1~2MB，一份 deck 配 8 张就 16MB */
   maxEdgePx: integer('max_edge_px').notNull().default(1600),
   updatedAt: integer('updated_at', { mode: 'timestamp' }).notNull().$defaultFn(() => new Date()),

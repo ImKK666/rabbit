@@ -201,3 +201,40 @@ describe('O1 · 占用矩形内不许有墨', () => {
     expect(describeOrnamentIssues([])).toContain('没有压到')
   })
 })
+
+// ---------------------------------------------------------------------------
+// R-62 · 原生透明路径的提示词：键色句整个消失，(A)(B) 约束与负空间原样保留
+// ---------------------------------------------------------------------------
+
+describe('buildOrnamentPrompt · 原生透明（R-62）', () => {
+  const rects: OccupiedRect[] = [{ kind: 'text', x: 0.08, y: 0.12, w: 0.62, h: 0.18 }]
+  const colors = ['#1F3A5F', '#2F6FEB', '#E8A33D']
+
+  it('native 版要求真 alpha，且不再出现任何键色词', () => {
+    const p = buildOrnamentPrompt({ rects, colors, alpha: 'native' })
+    expect(p).toContain('FULLY TRANSPARENT')
+    expect(p).toContain('alpha')
+    expect(p).not.toContain('pure green')
+    expect(p).not.toContain('#00FF00')
+    expect(p).not.toContain('UNIFORM')
+  })
+
+  it('native 版 (A)(B) 两条硬约束原样保留 —— 阈值是标定过的', () => {
+    const p = buildOrnamentPrompt({ rects, colors, alpha: 'native' })
+    expect(p).toContain('(A) STROKE QUALITY')
+    expect(p).toContain('(B) COVERAGE')
+    expect(p).toContain('AT MOST 12%')
+  })
+
+  it('native 版负空间与禁文字原样保留', () => {
+    const p = buildOrnamentPrompt({ rects, colors, alpha: 'native' })
+    expect(p).toContain('COMPLETELY EMPTY')
+    expect(p).toContain('No text, no letters, no numbers, no icons')
+  })
+
+  it('默认仍是 keyed 路径 —— 存量行为一个字都不漂', () => {
+    const p = buildOrnamentPrompt({ rects, colors })
+    expect(p).toContain('pure green')
+    expect(p).not.toContain('FULLY TRANSPARENT')
+  })
+})

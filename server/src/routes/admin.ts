@@ -372,6 +372,7 @@ const publicAssetSource = (row: Awaited<ReturnType<typeof loadAssetSource>>) => 
   searchEnabled: row.searchEnabled,
   imageModelConfigId: row.imageModelConfigId,
   generateEnabled: row.generateEnabled,
+  imageApi: row.imageApi,
   maxEdgePx: row.maxEdgePx,
 })
 
@@ -381,6 +382,7 @@ const assetSourceSchema = z.object({
   searchEnabled: z.boolean().default(false),
   imageModelConfigId: z.number().int().positive().nullable().default(null),
   generateEnabled: z.boolean().default(false),
+  imageApi: z.enum(['auto', 'gemini', 'openai']).default('auto'),
   maxEdgePx: z.number().int().min(320).max(4096).default(1600),
 })
 

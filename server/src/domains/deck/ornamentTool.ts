@@ -31,7 +31,9 @@ import { tool } from 'ai'
 import { z } from 'zod'
 import type { Slide } from '@/types/slides'
 import type { ServerMessage } from '@server/ws/handler'
-import { generateImage as callGenerateImage } from '@server/runtime/imageGenerate'
+import {
+  generateImage as callGenerateImage, resolveImageApiFlavor, hashSeed,
+} from '@server/runtime/imageGenerate'
 import { decodeImage, encodeRgbaPng, compressImage } from '@server/runtime/imageCodec'
 import { chromaKey, keyedLooksUsable, MIN_TRANSPARENT_RATIO } from '@server/runtime/chromaKey'
 import { imageRateLimiter, modelRateKey } from '@server/runtime/rateLimiter'
@@ -99,11 +101,15 @@ const attemptOnce = async (
   slide: Slide,
   colors: string[],
   artDirection: string,
+  flavor: 'gemini' | 'openai',
   model: ImageModelRuntime,
   store: NonNullable<Awaited<ReturnType<typeof openAssetStorage>>>,
 ): Promise<OrnamentOutcome & { retriable?: boolean }> => {
   const rects = occupiedRectsOf(slide)
-  const prompt = buildOrnamentPrompt({ rects, colors, artDirection })
+  // R-62：openai 形状要原生透明（background=transparent），提示词跟着换；
+  // gemini 形状保持绿幕（阈值是拿真样本标定的，默认路径一个字都不许漂）
+  const alphaNative = flavor === 'openai'
+  const prompt = buildOrnamentPrompt({ rects, colors, artDirection, alpha: alphaNative ? 'native' : 'keyed' })
 
   // 限流在**打上游之前**，超限不消耗名额。和 assetTools 走同一个限流器和同一个键 ——
   // 两条路打的是同一个模型，各算各的等于把配额翻倍，实测会撞上游 429
@@ -114,9 +120,12 @@ const attemptOnce = async (
     return { slideId: slide.id, ok: false, reason: `被限流，${decision.retryAfterSec} 秒后再试` }
   }
 
+  // seed = 主题锚点色 + 艺术方向 + 层种 —— 同一份稿子所有页同 seed，
+  // 配合 artDirection 的风格词，跨页风格一致是确定性锁住的
+  const seed = hashSeed([...colors, artDirection, 'ornament'])
   const out = await callGenerateImage({
     baseUrl: model.baseUrl, apiKey: model.apiKey, model: model.modelName,
-    prompt, aspectRatio: '16:9',
+    prompt, aspectRatio: '16:9', flavor, alpha: alphaNative, seed,
   })
   if (!out.ok || !out.bytes) {
     if (out.rateLimited) imageRateLimiter.block(modelRateKey(model.modelConfigId), 60)
@@ -124,8 +133,47 @@ const attemptOnce = async (
   }
 
   let decoded
-  try { decoded = decodeImage(out.bytes) }
-  catch (err) { return { slideId: slide.id, ok: false, reason: `解码失败：${err instanceof Error ? err.message : err}` } }
+  try {
+    decoded = decodeImage(out.bytes)
+  }
+  catch (err) {
+    return { slideId: slide.id, ok: false, reason: `解码失败：${err instanceof Error ? err.message : err}` }
+  }
+
+  if (alphaNative) {
+    // R-62 原生透明路径：没有键色可抠，判的是「模型真的给了透明背景」。
+    // 装饰覆盖率约 5%，所以透明像素占比应当很高 —— 低于一半说明
+    // 模型画了个实底（白底/棋盘格那一类翻车），重抽
+    let transparent = 0
+    const total = decoded.width * decoded.height
+    for (let i = 0; i < total; i++) {
+      if (decoded.rgba[i * 4 + 3] < 250) transparent++
+    }
+    const ratio = transparent / total
+    if (ratio < 0.5) {
+      return {
+        slideId: slide.id, ok: false, retriable: true,
+        reason: `产物没有透明背景（透明像素只占 ${(ratio * 100).toFixed(1)}%，要求 ≥50%）—— 模型画了实底，重抽`,
+      }
+    }
+    // O1 照跑：压到文字/图片上的判据与通道来源无关
+    const issues = lintOrnament(
+      { rgba: decoded.rgba, width: decoded.width, height: decoded.height },
+      rects,
+    )
+    if (issues.length > 0) {
+      return { slideId: slide.id, ok: false, retriable: true, reason: describeOrnamentIssues(issues) }
+    }
+    const png = encodeRgbaPng(decoded.rgba, decoded.width, decoded.height)
+    try {
+      const put = await store.store.put(png, '', 'image/png')
+      const hash = put.key.split('/').pop() ?? ''
+      return { slideId: slide.id, ok: true, src: `asset://${hash}`, bytes: png.byteLength }
+    }
+    catch (err) {
+      return { slideId: slide.id, ok: false, reason: `上传失败：${err instanceof Error ? err.message : err}` }
+    }
+  }
 
   const keyed = chromaKey(decoded.rgba, decoded.width, decoded.height)
 
@@ -159,6 +207,7 @@ const runOne = async (
   slide: Slide,
   colors: string[],
   artDirection: string,
+  flavor: 'gemini' | 'openai',
   model: ImageModelRuntime,
   store: NonNullable<Awaited<ReturnType<typeof openAssetStorage>>>,
 ): Promise<OrnamentOutcome> => {
@@ -166,7 +215,7 @@ const runOne = async (
     slideId: slide.id, ok: false, reason: '没有尝试',
   }
   for (let i = 0; i < MAX_ATTEMPTS; i++) {
-    last = await attemptOnce(slide, colors, artDirection, model, store)
+    last = await attemptOnce(slide, colors, artDirection, flavor, model, store)
     if (last.ok || !last.retriable) break
     console.log(`[ornament] ${slide.id} 第 ${i + 1} 次判据不过，重抽：${last.reason?.split('\n')[0]}`)
   }
@@ -190,6 +239,7 @@ const attemptBackdrop = async (
   slide: Slide,
   colors: string[],
   artDirection: string,
+  flavor: 'gemini' | 'openai',
   model: ImageModelRuntime,
   store: NonNullable<Awaited<ReturnType<typeof openAssetStorage>>>,
 ): Promise<OrnamentOutcome & { retriable?: boolean }> => {
@@ -203,9 +253,11 @@ const attemptBackdrop = async (
     return { slideId: slide.id, ok: false, reason: `被限流，${decision.retryAfterSec} 秒后再试` }
   }
 
+  // 底图不透明（走 JPEG），但 seed 照锁 —— 跨页风格一致和装饰层同一条
+  const seed = hashSeed([...colors, artDirection, 'backdrop'])
   const out = await callGenerateImage({
     baseUrl: model.baseUrl, apiKey: model.apiKey, model: model.modelName,
-    prompt, aspectRatio: '16:9',
+    prompt, aspectRatio: '16:9', flavor, seed,
   })
   if (!out.ok || !out.bytes) {
     if (out.rateLimited) imageRateLimiter.block(modelRateKey(model.modelConfigId), 60)
@@ -237,12 +289,13 @@ const runBackdrop = async (
   slide: Slide,
   colors: string[],
   artDirection: string,
+  flavor: 'gemini' | 'openai',
   model: ImageModelRuntime,
   store: NonNullable<Awaited<ReturnType<typeof openAssetStorage>>>,
 ): Promise<OrnamentOutcome> => {
   let last: OrnamentOutcome & { retriable?: boolean } = { slideId: slide.id, ok: false, reason: '没有尝试' }
   for (let i = 0; i < MAX_ATTEMPTS; i++) {
-    last = await attemptBackdrop(slide, colors, artDirection, model, store)
+    last = await attemptBackdrop(slide, colors, artDirection, flavor, model, store)
     if (last.ok || !last.retriable) break
     console.log(`[backdrop] ${slide.id} 第 ${i + 1} 次判据不过，重抽`)
   }
@@ -258,7 +311,9 @@ const prepare = async () => {
   if (!resolved.ok) return { ok: false as const, reason: resolved.error }
   const store = await openAssetStorage()
   if (!store) return { ok: false as const, reason: '对象存储未装配' }
-  return { ok: true as const, model: resolved.model, store }
+  // R-62：请求形状按配置 + 模型名落定；openai 形状才有原生透明
+  const flavor = resolveImageApiFlavor(source.imageApi, resolved.model.modelName)
+  return { ok: true as const, model: resolved.model, store, flavor }
 }
 
 export const createOrnamentTools = (ctx: OrnamentToolContext) => ({
@@ -284,7 +339,7 @@ export const createOrnamentTools = (ctx: OrnamentToolContext) => ({
     execute: async ({ slideIds }) => {
       const prep = await prepare()
       if (!prep.ok) return JSON.stringify({ ok: false, reason: prep.reason })
-      const { model, store } = prep
+      const { model, store, flavor } = prep
 
       const slides = ctx.getSlides()
       const targets = slides.filter(s => slideIds.includes(s.id)).slice(0, MAX_SLIDES_PER_CALL)
@@ -296,7 +351,7 @@ export const createOrnamentTools = (ctx: OrnamentToolContext) => ({
         ctx.emit({ type: 'agent.status', status: 'tool_call', message: `生成第 ${slides.indexOf(slide) + 1} 页的装饰层…` })
         // R-60：艺术流派按页回落 —— theme 里模型写的优先，否则该页质感档位的默认
         const art = artDirectionFor({ artDirection: ctx.getArtDirection() }, slide.paletteStyle)
-        results.push(await runOne(slide, colors, art, model, store))
+        results.push(await runOne(slide, colors, art, flavor, model, store))
       }
 
       const ok = results.filter(r => r.ok)
@@ -336,7 +391,7 @@ export const createOrnamentTools = (ctx: OrnamentToolContext) => ({
     execute: async ({ slideIds }) => {
       const prep = await prepare()
       if (!prep.ok) return JSON.stringify({ ok: false, reason: prep.reason })
-      const { model, store } = prep
+      const { model, store, flavor } = prep
 
       const slides = ctx.getSlides()
       const targets = slides.filter(s => slideIds.includes(s.id)).slice(0, MAX_SLIDES_PER_CALL)
@@ -347,7 +402,7 @@ export const createOrnamentTools = (ctx: OrnamentToolContext) => ({
       for (const slide of targets) {
         ctx.emit({ type: 'agent.status', status: 'tool_call', message: `生成第 ${slides.indexOf(slide) + 1} 页的底图…` })
         const art = artDirectionFor({ artDirection: ctx.getArtDirection() }, slide.paletteStyle)
-        results.push(await runBackdrop(slide, colors, art, model, store))
+        results.push(await runBackdrop(slide, colors, art, flavor, model, store))
       }
 
       const ok = results.filter(r => r.ok)

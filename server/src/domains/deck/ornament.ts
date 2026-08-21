@@ -31,7 +31,9 @@
 
 import type { Slide, PPTElement } from '@/types/slides'
 import { VIEWPORT_WIDTH, VIEWPORT_HEIGHT } from './kernel'
-import type { ChromaKeyResult } from '@server/runtime/chromaKey'
+
+/** O1 只需要像素 —— 收窄成最小形状，绿幕产物与原生透明产物都能喂 */
+export type RgbaImage = { rgba: Uint8Array, width: number, height: number }
 
 /** 归一化到 0~1 的占用矩形 */
 export interface OccupiedRect {
@@ -70,7 +72,7 @@ export interface OrnamentPromptInput {
   rects: OccupiedRect[]
   /** 从 theme 来的三个锚点色，代码注入，不让模型每页重编 */
   colors: string[]
-  /** 键色，默认纯绿。撞色时换 */
+  /** 键色，默认纯绿。撞色时换（仅 keyed 路径用） */
   keyHex?: string
   /**
    * R-60: 艺术流派（theme 的 `artDirection`，没写时回落质感档位默认）。
@@ -78,6 +80,13 @@ export interface OrnamentPromptInput {
    * 是拿真样本标定的，默认路径一个字都不许漂。
    */
   artDirection?: string
+  /**
+   * R-62: 底图形式。
+   * - `keyed`（默认）：纯色键底 + 本地抠图 —— 绿幕阈值是拿真样本标定的，默认路径一个字都不许漂
+   * - `native`：模型原生透明背景（openai 形状 `background=transparent`），
+   *   不再需要键色，褪色/丢线/撞色三类风险从结构上消失
+   */
+  alpha?: 'keyed' | 'native'
 }
 
 /**
@@ -121,7 +130,7 @@ const pct = (v: number) => `${Math.round(v * 100)}%`
  * 上一版把它们混在一句话里（"bold flat vector shapes and thick bars"），
  * 结果要到实心的同时把覆盖密度也拉满了。
  */
-export const buildOrnamentPrompt = ({ rects, colors, keyHex = '#00FF00', artDirection }: OrnamentPromptInput): string => {
+export const buildOrnamentPrompt = ({ rects, colors, keyHex = '#00FF00', artDirection, alpha = 'keyed' }: OrnamentPromptInput): string => {
   const occupied = rects.length
     ? rects.map(r => `  - x ${pct(r.x)}, y ${pct(r.y)}, w ${pct(r.w)}, h ${pct(r.h)}`).join('\n')
     : '  (none)'
@@ -132,6 +141,36 @@ export const buildOrnamentPrompt = ({ rects, colors, keyHex = '#00FF00', artDire
   const motif = artDirection?.trim()
     ? `\nMOTIF LANGUAGE — arrange the marks in this design language, within the stroke and coverage rules above: ${artDirection.trim()}.`
     : ''
+
+  // R-62：原生透明版本 —— 键色句整个消失，(A)(B) 约束与负空间原样保留
+  if (alpha === 'native') {
+    return `Generate a decorative ornament layer for a 16:9 presentation slide,
+on a FULLY TRANSPARENT background. Output as a PNG image with a real alpha
+channel — the background must be completely transparent, not white, not black,
+not a solid colour.
+
+TWO SEPARATE REQUIREMENTS — satisfy BOTH:
+
+(A) STROKE QUALITY — every mark must be SOLID and fully saturated:
+    stroke width 4 to 8 pixels, hard edges, 100% opaque color.
+    No hairlines, no 1px lines, no thin grids, no semi-transparent or faded strokes,
+    no soft edges, no glow, no gradient fills.
+
+(B) COVERAGE — the ornament must stay SPARSE and RESTRAINED:
+    the marks must cover AT MOST 12% of the canvas. The rest stays fully transparent.
+    Use a small number of separate line elements: a few thick rules, a couple of
+    right-angle corner brackets, one narrow stack of parallel bars.
+    Do NOT fill large areas. Do NOT create solid blocks or filled rectangles
+    bigger than a small bar. This is line work, not poster graphics.
+${motif}
+Palette for the strokes (use only these): ${colors.join(', ')}.
+
+These rectangles are OCCUPIED and must stay COMPLETELY EMPTY:
+${occupied}
+Place the marks only in the margins, the bottom band, and the corners.
+
+No text, no letters, no numbers, no icons, no logos, no page numbers, no watermark.`
+  }
 
   return `Generate a decorative ornament layer for a 16:9 presentation slide,
 drawn on a COMPLETELY FLAT, UNIFORM ${keyName} background, hex ${keyHex}.
@@ -190,7 +229,7 @@ export interface OrnamentIssue {
  * 它挡掉绝大多数事故，贵的那层（合成后实测对比度，`renderContrast.ts`）兜底。
  */
 export const lintOrnament = (
-  keyed: ChromaKeyResult,
+  keyed: RgbaImage,
   rects: OccupiedRect[],
   maxMeanAlpha: number = MAX_MEAN_ALPHA_IN_RECT,
 ): OrnamentIssue[] => {
