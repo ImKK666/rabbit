@@ -80,8 +80,9 @@
       </div>
 
       <div class="note rate-hint">
-        生图的每分钟调用上限在「<strong>模型管理</strong>」里按模型配置。
-        实测 <code>gemini-3.1-flash-image</code> 连发第 4 张就会被上游 429，建议填 3。
+        生图的每分钟调用上限在「<strong>模型管理</strong>」里按模型配置，<strong>只对 Gemini 形状生效</strong>。
+        实测 <code>gemini-3.1-flash-image</code> 连发第 4 张就会被上游 429，建议填 3；
+        OpenAI 接口（image2）没有每分钟限流，本地限流器会自动跳过。
       </div>
     </div>
 

@@ -61,7 +61,10 @@ import { db } from '@server/db'
 import { assets, assetSearchCache, type AssetSearchProvider } from '@server/db/schema'
 import type { ServerMessage } from '@server/ws/handler'
 import { searchImages, detectLang, type ImageCandidate } from '@server/runtime/imageSearch'
-import { generateImage as callGenerateImage, resolveImageApiFlavor, IMAGE_ASPECT_RATIOS } from '@server/runtime/imageGenerate'
+import {
+  generateImage as callGenerateImage, resolveImageApiFlavor, effectiveImageRateLimit,
+  IMAGE_ASPECT_RATIOS,
+} from '@server/runtime/imageGenerate'
 import { compressImage } from '@server/runtime/imageCodec'
 import { searchCacheKey, readCache } from '@server/runtime/searchCache'
 import { imageRateLimiter, modelRateKey } from '@server/runtime/rateLimiter'
@@ -417,8 +420,10 @@ const runGenerate = async (
   const { model } = resolved
 
   // 限流在**打上游之前**。超限不消耗名额，见 runtime/rateLimiter.ts
+  // R-62 补充：openai 接口（image2）没有每分钟限流 → 限额落成 null（一律放行）
+  const flavor = resolveImageApiFlavor(source.imageApi, model.modelName)
   const decision = imageRateLimiter.tryAcquire(
-    modelRateKey(model.modelConfigId), model.rateLimitPerMin,
+    modelRateKey(model.modelConfigId), effectiveImageRateLimit(flavor, model.rateLimitPerMin),
   )
   if (!decision.allowed) {
     return rateLimitedResult({
@@ -433,7 +438,7 @@ const runGenerate = async (
   const outcome = await callGenerateImage({
     baseUrl: model.baseUrl, apiKey: model.apiKey, model: model.modelName, prompt, aspectRatio,
     // R-62：内容配图也跟着配置走请求形状（openai 形状下 gpt-image-2 直连）
-    flavor: resolveImageApiFlavor(source.imageApi, model.modelName),
+    flavor,
   })
 
   if (!outcome.ok || !outcome.bytes) {

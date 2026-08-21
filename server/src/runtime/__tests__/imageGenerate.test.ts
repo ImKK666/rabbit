@@ -9,6 +9,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   resolveImageApiFlavor, openAiImagesEndpoint, googleImageEndpoint, hashSeed,
+  effectiveImageRateLimit,
 } from '../imageGenerate'
 
 describe('resolveImageApiFlavor · 按模型名猜，显式配置优先', () => {
@@ -68,5 +69,17 @@ describe('hashSeed · 稳定、分散、正值', () => {
       expect(s).toBeGreaterThanOrEqual(0)
       expect(s).toBeLessThan(0x7fffffff)
     }
+  })
+})
+
+describe('effectiveImageRateLimit · openai 不限流，gemini 保留配置限额', () => {
+  it('openai（image2）一律不限流 —— 决策者实测确认', () => {
+    expect(effectiveImageRateLimit('openai', 3)).toBeNull()
+    expect(effectiveImageRateLimit('openai', null)).toBeNull()
+  })
+
+  it('gemini 保留库里配的限额（那个中转实测 2~3 次/分钟就 429）', () => {
+    expect(effectiveImageRateLimit('gemini', 3)).toBe(3)
+    expect(effectiveImageRateLimit('gemini', null)).toBeNull()
   })
 })

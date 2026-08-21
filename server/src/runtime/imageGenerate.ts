@@ -127,6 +127,19 @@ export const openAiImagesEndpoint = (baseUrl: string): string => {
 }
 
 /**
+ * R-62 补充：本地限流器该用的有效限额。
+ *
+ * **OpenAI 接口（image2）没有每分钟限流** —— 决策者实测确认。
+ * gemini 形状保留库里配的限额（那个中转实测 2~3 次/分钟就 429，
+ * 库里建议填 3）。限流器对 `null` 本来就「一律放行」（见 `rateLimiter.ts`），
+ * 所以这里只做「按形状落成 null 还是配置值」这一件事。
+ */
+export const effectiveImageRateLimit = (
+  flavor: 'gemini' | 'openai',
+  configured: number | null,
+): number | null => (flavor === 'openai' ? null : configured)
+
+/**
  * 从一组字符串推一个稳定的正整数 seed。
  *
  * R-62 用途：装饰层/底图按「主题锚点色 + 艺术方向 + 层种」算 seed ——

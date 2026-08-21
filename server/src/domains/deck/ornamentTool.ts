@@ -33,6 +33,7 @@ import type { Slide } from '@/types/slides'
 import type { ServerMessage } from '@server/ws/handler'
 import {
   generateImage as callGenerateImage, resolveImageApiFlavor, hashSeed,
+  effectiveImageRateLimit,
 } from '@server/runtime/imageGenerate'
 import { decodeImage, encodeRgbaPng, compressImage } from '@server/runtime/imageCodec'
 import { chromaKey, keyedLooksUsable, MIN_TRANSPARENT_RATIO } from '@server/runtime/chromaKey'
@@ -112,9 +113,10 @@ const attemptOnce = async (
   const prompt = buildOrnamentPrompt({ rects, colors, artDirection, alpha: alphaNative ? 'native' : 'keyed' })
 
   // 限流在**打上游之前**，超限不消耗名额。和 assetTools 走同一个限流器和同一个键 ——
-  // 两条路打的是同一个模型，各算各的等于把配额翻倍，实测会撞上游 429
+  // 两条路打的是同一个模型，各算各的等于把配额翻倍，实测会撞上游 429。
+  // R-62 补充：openai 接口（image2）没有每分钟限流 → 限额落成 null（一律放行）
   const decision = imageRateLimiter.tryAcquire(
-    modelRateKey(model.modelConfigId), model.rateLimitPerMin,
+    modelRateKey(model.modelConfigId), effectiveImageRateLimit(flavor, model.rateLimitPerMin),
   )
   if (!decision.allowed) {
     return { slideId: slide.id, ok: false, reason: `被限流，${decision.retryAfterSec} 秒后再试` }
@@ -246,8 +248,9 @@ const attemptBackdrop = async (
   const zones = calmZonesOf(slide)
   const prompt = buildBackdropPrompt({ rects: zones, colors, artDirection })
 
+  // R-62 补充：openai 接口（image2）没有每分钟限流 → 限额落成 null（一律放行）
   const decision = imageRateLimiter.tryAcquire(
-    modelRateKey(model.modelConfigId), model.rateLimitPerMin,
+    modelRateKey(model.modelConfigId), effectiveImageRateLimit(flavor, model.rateLimitPerMin),
   )
   if (!decision.allowed) {
     return { slideId: slide.id, ok: false, reason: `被限流，${decision.retryAfterSec} 秒后再试` }
