@@ -37,6 +37,14 @@ export type ClientMessage =
     measurements: { slideId: string, elementId: string, actualHeight: number }[]
     /** 截图，`data:image/png;base64,...`。只有请求里要了才有 */
     shots?: { slideId: string, dataUrl: string }[]
+    /**
+     * 每块文字实际的颜色 + 它底下（**去掉文字层之后**）实际的颜色。
+     * 只有请求里要了才有。判定在 `domains/deck/renderContrast.ts`
+     */
+    contrast?: {
+      slideId: string, elementId: string, textColor: string,
+      backdrop: [string, string], sampled: number,
+    }[]
     /** 前端这边出错了（渲染失败 / 页面找不到），后端据此回一句「没量到」而不是干等 */
     error?: string
   }
@@ -91,6 +99,10 @@ export type ServerMessage =
    *
    * `wantShots` 为真时还要截图，交给视觉复核那个**独立配置的**模型看。
    * 没配视觉模型时这一位一定是 false，前端也就不用白截一次图。
+   *
+   * `wantBackdrop` 为真时还要采「每块文字底下实际是什么颜色」。
+   * 它比截图便宜（不出 base64，只回几十个色值），但要多渲一份不含文字层的同一页 ——
+   * 判定在 `domains/deck/renderContrast.ts`，判据见 docs/14 的 O6。
    */
   | {
     type: 'agent.render.request'
@@ -98,6 +110,7 @@ export type ServerMessage =
     /** 要量哪几页。空表示全部 */
     slideIds: string[]
     wantShots: boolean
+    wantBackdrop?: boolean
   }
   | { type: 'agent.deck', slidesJson: string, version: number }
   /**
@@ -190,6 +203,7 @@ export const handleWsMessage = async (
         const accepted = settleRenderResult(msg.requestId, {
           measurements: msg.measurements,
           shots: msg.shots,
+          contrast: msg.contrast,
           error: msg.error,
         })
         if (!accepted) {

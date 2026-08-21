@@ -52,9 +52,27 @@ export interface SlideShot {
   dataUrl: string
 }
 
+/**
+ * 一块文字**实际**是什么颜色、它底下**实际**是什么颜色。
+ *
+ * 判定逻辑在服务端 `domains/deck/renderContrast.ts`（那儿有判据），
+ * 这里只负责采集 —— 而这三个数**只有浏览器知道**。
+ */
+export interface ContrastSample {
+  slideId: string
+  elementId: string
+  /** `getComputedStyle().color` 换算成 hex。不解析 HTML，见服务端那边的说明 */
+  textColor: string
+  /** 文字矩形下方（**不含文字层**）合成后的第 5 / 95 百分位颜色 */
+  backdrop: [string, string]
+  /** 采到了几个像素。0 表示这条不可信（画布被跨域图污染 / 矩形在画布外） */
+  sampled: number
+}
+
 export interface MeasureOutcome {
   measurements: TextMeasurement[]
   shots?: SlideShot[]
+  contrast?: ContrastSample[]
   error?: string
 }
 
@@ -104,6 +122,79 @@ const shoot = async (node: HTMLElement): Promise<string | null> => {
   }
 }
 
+const clamp255 = (v: number) => Math.max(0, Math.min(255, Math.round(v)))
+const toHex = (r: number, g: number, b: number) =>
+  `#${[r, g, b].map(v => clamp255(v).toString(16).padStart(2, '0')).join('')}`
+
+/** WCAG 相对亮度。和服务端 `design.ts` 的 `luminance` 逐字相同的公式 */
+const lumOf = (r: number, g: number, b: number) => {
+  const f = (v: number) => {
+    const c = v / 255
+    return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4
+  }
+  return 0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b)
+}
+
+/** 一个矩形里最多采这么多点。400×80 的框有 32000 像素，全采是白烧 */
+const MAX_SAMPLES_PER_RECT = 4096
+
+/**
+ * 把 `rgb(r, g, b)` / `rgba(...)` 换成 hex。
+ *
+ * `getComputedStyle().color` 在所有浏览器里都是这个形状 ——
+ * 拿不准的情况返回 null，让调用方把这条标成不可信，
+ * **而不是猜一个颜色**（猜错会变成一条看起来很正经的假告警）。
+ */
+const cssColorToHex = (css: string): string | null => {
+  const m = css.match(/rgba?\(\s*([\d.]+)[\s,]+([\d.]+)[\s,]+([\d.]+)/)
+  return m ? toHex(+m[1], +m[2], +m[3]) : null
+}
+
+/**
+ * 在一张已经画好的画布上，取 `rect` 区域的第 5 / 95 百分位颜色。
+ *
+ * **按亮度排序取百分位，返回那两个位置上的真实颜色** —— 不是平均色。
+ * 平均色会把「一半纯白一半纯黑」算成灰，而那正是最危险的一种背景：
+ * 白字在它的白半边上完全消失，平均值却显示对比度很好。
+ */
+const percentileColors = (
+  ctx: CanvasRenderingContext2D,
+  rect: { x: number, y: number, w: number, h: number },
+): { backdrop: [string, string], sampled: number } | null => {
+  const x = Math.max(0, Math.floor(rect.x))
+  const y = Math.max(0, Math.floor(rect.y))
+  const w = Math.min(ctx.canvas.width - x, Math.ceil(rect.w))
+  const h = Math.min(ctx.canvas.height - y, Math.ceil(rect.h))
+  if (w <= 0 || h <= 0) return null
+
+  let data: Uint8ClampedArray
+  try {
+    // 跨域图片（COS 上的配图）会污染画布，这里直接抛 SecurityError。
+    // 抛了就返回 null → 这条标成 sampled:0 → 服务端报「没判」。
+    // **绝不能吞掉当成「背景是白的」** —— 那会把所有深色主题误判成低对比度
+    data = ctx.getImageData(x, y, w, h).data
+  }
+  catch {
+    return null
+  }
+
+  const total = w * h
+  const stride = Math.max(1, Math.floor(total / MAX_SAMPLES_PER_RECT))
+  const px: { l: number, r: number, g: number, b: number }[] = []
+  for (let i = 0; i < total; i += stride) {
+    const o = i * 4
+    // 全透明的像素不算 —— 它代表这块画布上什么都没画，不是「黑色背景」
+    if (data[o + 3] < 8) continue
+    px.push({ l: lumOf(data[o], data[o + 1], data[o + 2]), r: data[o], g: data[o + 1], b: data[o + 2] })
+  }
+  if (px.length === 0) return null
+
+  px.sort((a, b) => a.l - b.l)
+  const at = (q: number) => px[Math.min(px.length - 1, Math.max(0, Math.round(q * (px.length - 1))))]
+  const lo = at(0.05), hi = at(0.95)
+  return { backdrop: [toHex(lo.r, lo.g, lo.b), toHex(hi.r, hi.g, hi.b)], sampled: px.length }
+}
+
 /**
  * 渲染指定的几页，量出每块文字实际画到哪儿。
  *
@@ -113,6 +204,7 @@ const shoot = async (node: HTMLElement): Promise<string | null> => {
 export const measureRenderedSlides = async (
   slideIds: string[],
   wantShots: boolean,
+  wantBackdrop = false,
 ): Promise<MeasureOutcome> => {
   const slidesStore = useSlidesStore()
   const all = slidesStore.slides as Slide[]
@@ -139,12 +231,26 @@ export const measureRenderedSlides = async (
     // 量高度其实不需要 scale 为 1（offsetHeight 不受 transform 影响），
     // 但截图需要
     const size = slidesStore.viewportSize
+
+    /**
+     * 「不含文字层」的同一页。
+     *
+     * 要量的是**文字底下是什么**，所以得把文字层拿掉再渲一份。
+     * 位置全是绝对定位，拿掉文字不影响其余元素的几何 ——
+     * 两份渲染在坐标上逐像素对齐。
+     */
+    const bare = (slide: Slide): Slide =>
+      ({ ...slide, elements: slide.elements.filter(el => el.type !== 'text') })
+
     app = createApp({
-      render: () => targets.map(slide => h(
-        'div',
-        { 'data-slide-id': slide.id, 'style': 'position:relative' },
-        [h(ThumbnailSlide, { slide, size, visible: true })],
-      )),
+      render: () => targets.flatMap(slide => [
+        h('div', { 'data-slide-id': slide.id, 'style': 'position:relative' },
+          [h(ThumbnailSlide, { slide, size, visible: true })]),
+        ...(wantBackdrop
+          ? [h('div', { 'data-bare-id': slide.id, 'style': 'position:relative' },
+            [h(ThumbnailSlide, { slide: bare(slide), size, visible: true })])]
+          : []),
+      ]),
     })
     app.use(pinia)
     app.mount(host)
@@ -153,10 +259,39 @@ export const measureRenderedSlides = async (
 
     const measurements: TextMeasurement[] = []
     const shots: SlideShot[] = []
+    const contrast: ContrastSample[] = []
 
     for (const wrap of Array.from(host.querySelectorAll('[data-slide-id]'))) {
       const slideId = wrap.getAttribute('data-slide-id')
       if (!slideId) continue
+
+      const slideNode = wrap.querySelector('.thumbnail-slide') as HTMLElement | null
+
+      /**
+       * 这一页「不含文字层」的画布。**一页只画一次**，所有文字块共用 ——
+       * `toCanvas` 是这条路上最贵的一步（几百毫秒一张），
+       * 每块文字各画一次的话，一页十块字就是十倍开销。
+       */
+      let bareCtx: CanvasRenderingContext2D | null = null
+      let bareScale = 1
+      if (wantBackdrop && slideNode) {
+        const bareWrap = host.querySelector(`[data-bare-id="${CSS.escape(slideId)}"]`)
+        const bareNode = bareWrap?.querySelector('.thumbnail-slide') as HTMLElement | null
+        if (bareNode) {
+          try {
+            const { toCanvas } = await import('html-to-image')
+            const canvas = await toCanvas(bareNode, { pixelRatio: 1, cacheBust: false })
+            bareCtx = canvas.getContext('2d')
+            // 画布像素 ÷ CSS 像素。ThumbnailSlide 内部有 transform: scale，
+            // 而 getBoundingClientRect 给的是**变换后**的尺寸 —— 两边都按同一个基准换算
+            bareScale = canvas.width / (bareNode.getBoundingClientRect().width || 1)
+          }
+          catch (err) {
+            console.warn('[reflect] 背景采样画布生成失败，这一页只给几何数据:', err)
+          }
+        }
+      }
+      const slideRect = slideNode?.getBoundingClientRect()
 
       for (const box of Array.from(wrap.querySelectorAll('.base-element-text'))) {
         // 元素 id 在**外层**那个 `.base-element base-element-<id>` 上
@@ -166,16 +301,37 @@ export const measureRenderedSlides = async (
         if (!elementId || !inner) continue
         // 和 scripts/measure-layout-text.mjs 逐字相同的量法
         measurements.push({ slideId, elementId, actualHeight: inner.offsetHeight })
+
+        if (!bareCtx || !slideRect) continue
+        const textColor = cssColorToHex(getComputedStyle(inner).color)
+        const r = inner.getBoundingClientRect()
+        // 拿不到颜色时**不猜** —— 标成 sampled:0，服务端会说「这条没判」
+        if (!textColor) {
+          contrast.push({ slideId, elementId, textColor: '#000000', backdrop: ['#000000', '#000000'], sampled: 0 })
+          continue
+        }
+        const picked = percentileColors(bareCtx, {
+          x: (r.left - slideRect.left) * bareScale,
+          y: (r.top - slideRect.top) * bareScale,
+          w: r.width * bareScale,
+          h: r.height * bareScale,
+        })
+        contrast.push(picked
+          ? { slideId, elementId, textColor, ...picked }
+          : { slideId, elementId, textColor, backdrop: ['#000000', '#000000'], sampled: 0 })
       }
 
-      if (wantShots) {
-        const node = wrap.querySelector('.thumbnail-slide') as HTMLElement | null
-        const dataUrl = node ? await shoot(node) : null
+      if (wantShots && slideNode) {
+        const dataUrl = await shoot(slideNode)
         if (dataUrl) shots.push({ slideId, dataUrl })
       }
     }
 
-    return wantShots ? { measurements, shots } : { measurements }
+    return {
+      measurements,
+      ...(wantShots ? { shots } : {}),
+      ...(wantBackdrop ? { contrast } : {}),
+    }
   }
   catch (err) {
     return { measurements: [], error: err instanceof Error ? err.message : String(err) }

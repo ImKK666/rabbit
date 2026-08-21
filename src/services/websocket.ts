@@ -22,6 +22,11 @@ export type ClientMessage =
     requestId: string
     measurements: { slideId: string, elementId: string, actualHeight: number }[]
     shots?: { slideId: string, dataUrl: string }[]
+    /** 每块文字实际的颜色 + 它底下实际的颜色。只有请求里要了才有 */
+    contrast?: {
+      slideId: string, elementId: string, textColor: string,
+      backdrop: [string, string], sampled: number,
+    }[]
     error?: string
   }
 
@@ -60,7 +65,7 @@ export type ServerMessage =
    * 后端要我们量一次真实渲染。**这是唯一一条后端会挂起等回答的下行消息** ——
    * 不回答的话它会耗到超时（20 秒）才继续，所以出错也要回一条带 error 的。
    */
-  | { type: 'agent.render.request', requestId: string, slideIds: string[], wantShots: boolean }
+  | { type: 'agent.render.request', requestId: string, slideIds: string[], wantShots: boolean, wantBackdrop?: boolean }
   | { type: 'agent.deck', slidesJson: string, version: number }
   /**
    * 图片资产的进度叙事。**这三条不改画布** —— 后端的图片工具是同步等图的，

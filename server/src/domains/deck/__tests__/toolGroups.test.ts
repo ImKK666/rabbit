@@ -19,6 +19,7 @@ import { DECK_TOOL_GROUPS, DECK_ROLE_TOOL_GROUPS, deckRoleGroups } from '../tool
 import { ASSET_TOOL_NAMES } from '../assetResults'
 import type { AssetTools } from '../assetTools'
 import type { ReflectTools } from '../reflectTool'
+import type { OrnamentTools } from '../ornamentTool'
 
 const makeDeckTools = () => {
   let state: DeckState = { slides: [], theme: undefined as never, version: 0 }
@@ -41,11 +42,11 @@ const makeDeckTools = () => {
  */
 const makeTools = () => {
   const stub = Object.fromEntries(
-    [...ASSET_TOOL_NAMES, ...REFLECT_TOOL_NAMES].map(n => [n, {}]),
+    [...ASSET_TOOL_NAMES, ...REFLECT_TOOL_NAMES, ...ORNAMENT_TOOL_NAMES].map(n => [n, {}]),
   )
   // 占位物在运行时不是真工具，但这一组只读 `Object.keys` 和对象同一性，够用
   return { ...makeDeckTools(), ...stub } as
-    ReturnType<typeof makeDeckTools> & AssetTools & ReflectTools
+    ReturnType<typeof makeDeckTools> & AssetTools & ReflectTools & OrnamentTools
 }
 
 /**
@@ -74,7 +75,12 @@ const IMAGE_TOOL_NAMES = ['searchImage', 'generateImage']
 /** R-52 加的一个：渲染后反思 */
 const REFLECT_TOOL_NAMES = ['reflectRender']
 
-const ALL_TOOL_NAMES = [...DECK_TOOL_NAMES, ...IMAGE_TOOL_NAMES, ...REFLECT_TOOL_NAMES].sort()
+/** R-58 加的两个：装饰层压在上面，底图垫在下面（docs/14） */
+const ORNAMENT_TOOL_NAMES = ['addOrnament', 'generateBackdrop']
+
+const ALL_TOOL_NAMES = [
+  ...DECK_TOOL_NAMES, ...IMAGE_TOOL_NAMES, ...REFLECT_TOOL_NAMES, ...ORNAMENT_TOOL_NAMES,
+].sort()
 
 /** 拆层前 planner / reviewer 那个 switch 分支里硬列的 5 个 */
 const READONLY_TOOL_NAMES = [
@@ -82,11 +88,11 @@ const READONLY_TOOL_NAMES = [
 ].sort()
 
 describe('工具总集', () => {
-  it('是 26 个（23 个 deck + 2 个图片 + 1 个反思），键名与实现一致', () => {
+  it('是 28 个（23 个 deck + 2 个图片 + 1 个反思 + 2 个生成图层），键名与实现一致', () => {
     // 这条同时是上面几份硬编码清单的锚：工具增删时这里先红，
     // 提醒去更新清单，而不是让清单悄悄和现实脱节
     expect(Object.keys(makeTools()).sort()).toEqual(ALL_TOOL_NAMES)
-    expect(ALL_TOOL_NAMES).toHaveLength(26)
+    expect(ALL_TOOL_NAMES).toHaveLength(28)
   })
 
   it('原有 23 个 deck 工具一个没少、一个没改名', () => {
@@ -111,7 +117,7 @@ describe('判据 7 · 单 agent 的配额与合并前的 generator 逐键相等'
    * `ALL_TOOL_NAMES` 是本文件顶上**独立抄的一份**，不从 `DECK_TOOL_GROUPS` 反推：
    * 从新数据反推的期望值，在数据本身写错时也会绿。
    */
-  it('deck agent 拿全部 26 个', () => {
+  it('deck agent 拿全部 28 个', () => {
     expect(Object.keys(getToolSubset('deck', tools, withAssets)).sort()).toEqual(ALL_TOOL_NAMES)
   })
 
@@ -139,7 +145,9 @@ describe('图片能力关着时整组不注册', () => {
    */
   const tools = makeTools()
 
-  it('拿到的正好是 23 个 deck 工具 + 反思工具 —— 只摘掉图片那一组', () => {
+  it('拿到的正好是 23 个 deck 工具 + 反思工具 —— 图片和装饰两组一起摘掉', () => {
+    // 装饰层也要打生图模型，所以 `assets: false` 时它一定不可用。
+    // **这条是 R-58 改过的**：加装饰组时它先红了，红得对 —— 那是一次真实的配额变更
     expect(Object.keys(getToolSubset('deck', tools, { assets: false })).sort())
       .toEqual([...DECK_TOOL_NAMES, ...REFLECT_TOOL_NAMES].sort())
   })
@@ -149,11 +157,25 @@ describe('图片能力关着时整组不注册', () => {
     for (const n of IMAGE_TOOL_NAMES) expect(names).not.toContain(n)
   })
 
-  it('deckRoleGroups 只摘掉 asset 一组，别的组一个不少', () => {
+  it('assets 关着时 asset 和 ornament 一起摘掉，别的组一个不少', () => {
     expect(deckRoleGroups('deck', { assets: false }))
-      .toEqual(DECK_ROLE_TOOL_GROUPS.deck.filter(g => g !== 'asset'))
+      .toEqual(DECK_ROLE_TOOL_GROUPS.deck.filter(g => g !== 'asset' && g !== 'ornament'))
     expect(deckRoleGroups('deck', { assets: true }))
       .toEqual(DECK_ROLE_TOOL_GROUPS.deck)
+  })
+
+  /**
+   * **开着配图、单独关掉装饰**是合法配置 —— 而且大概率是第一个会提的要求，
+   * 因为装饰每页多花 15 秒。这条钉住那个方向是通的。
+   */
+  it('可以只关装饰、留着配图', () => {
+    const groups = deckRoleGroups('deck', { assets: true, ornament: false })
+    expect(groups).toContain('asset')
+    expect(groups).not.toContain('ornament')
+  })
+
+  it('反过来不成立 —— 没有生图能力时 ornament:true 也给不出装饰', () => {
+    expect(deckRoleGroups('deck', { assets: false, ornament: true })).not.toContain('ornament')
   })
 })
 

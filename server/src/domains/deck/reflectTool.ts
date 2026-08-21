@@ -47,12 +47,14 @@ import type { ServerMessage } from '@server/ws/handler'
 import { createPendingRequests, type PendingRequests } from '@server/runtime/pendingRequests'
 import { resolveModelForRole, inspectRoleModel } from '@server/runtime/llm'
 import { reflectOnRender, describeReflection, type TextMeasurement } from './renderReflect'
+import { reflectOnContrast, describeContrast, type ContrastSample } from './renderContrast'
 import { getSystemPrompt } from './roles'
 
 /** 前端回来的那一包 */
 export interface RenderResult {
   measurements: TextMeasurement[]
   shots?: { slideId: string, dataUrl: string }[]
+  contrast?: ContrastSample[]
   error?: string
 }
 
@@ -147,13 +149,13 @@ export const createReflectTools = (
     if (n > 0) console.log(`[reflect] 任务取消，作废 ${n} 次在等的测量`)
   })
 
-  const askFrontend = async (slideIds: string[], wantShots: boolean) => {
+  const askFrontend = async (slideIds: string[], wantShots: boolean, wantBackdrop: boolean) => {
     const { id, wait } = pending.open()
     // 登记与注销成对做。漏掉 finally 就是一条永远留在表里的记录 ——
     // 一次泄漏不影响功能，但它会一直攒
     waitingByRequest.set(id, pending)
     try {
-      ctx.emit({ type: 'agent.render.request', requestId: id, slideIds, wantShots })
+      ctx.emit({ type: 'agent.render.request', requestId: id, slideIds, wantShots, wantBackdrop })
       return await wait
     }
     finally {
@@ -217,6 +219,9 @@ export const createReflectTools = (
       '',
       '这是 lintDeck 查不到的一类问题：版式引擎的文本高度是**估**出来的，估小了文字会画到框外面，',
       '而 lintDeck 比的是声明的框，所以它永远看不见。整份稿子做完之后跑一次。',
+      '',
+      '同时会量**每块文字底下实际是什么颜色**，报出真正读不出来的那些。',
+      '遮罩浓度是照着背景图的亮度算的，它不知道装饰、色块、装饰层盖在了文字上面 —— 这一条专抓那个。',
       visual
         ? '同时会有一个视觉复核模型看一眼渲染结果，指出套话、该画图表却排成文字、视觉失衡这类问题。'
         : '',
@@ -236,7 +241,9 @@ export const createReflectTools = (
         return { ok: false, reason: '没有找到要检查的页' }
       }
 
-      const outcome = await askFrontend(targets.map(s => s.id), visual)
+      // 背景采样**永远要**：它不依赖任何配置（和几何那档一样），
+      // 而它专抓的那类问题特征是「所有断言都是绿的」，可选就等于不做
+      const outcome = await askFrontend(targets.map(s => s.id), visual, true)
 
       if (!outcome.ok) {
         // **这里绝不抛异常。** 抛了会变成一次工具调用失败，
@@ -262,10 +269,22 @@ export const createReflectTools = (
       const report = reflectOnRender(slides, outcome.value.measurements)
       const geometry = describeReflection(report)
 
-      const shots = outcome.value.shots ?? []
-      if (!visual || shots.length === 0) {
-        return { ok: true, geometry, overflowCount: report.overflows.length }
+      /**
+       * 对比度那一档。**和几何一样是代码判的，每次结果一样，能当判据** ——
+       * 和下面视觉复核那档的性质完全不同（见文件头那张表）。
+       */
+      const contrastReport = reflectOnContrast(slides, outcome.value.contrast ?? [])
+      const contrast = describeContrast(contrastReport)
+      const base = {
+        ok: true as const,
+        geometry,
+        overflowCount: report.overflows.length,
+        contrast,
+        lowContrastCount: contrastReport.issues.length,
       }
+
+      const shots = outcome.value.shots ?? []
+      if (!visual || shots.length === 0) return base
 
       // 页码要按整份 deck 算，不是按这次检查的子集算 —— 用户看到的是页码
       const indexOf = new Map(slides.map((s, i) => [s.id, i + 1]))
@@ -291,18 +310,16 @@ export const createReflectTools = (
       const visualText = failures.length === outcomes.length
         ? `视觉复核**一页都没跑成**（${failures.length}/${outcomes.length}）：${failures[0].reason}`
         : [
-            findings.length === 0
-              ? '视觉复核：看过的这几页没挑出问题。'
-              : ['视觉复核意见：', ...findings.map(o => `【第 ${o.slideIndex} 页】\n${o.text}`)].join('\n'),
-            ...(failures.length
-              ? [`（另有 ${failures.length} 页没复核成：${failures[0].reason}）`]
-              : []),
-          ].join('\n')
+          findings.length === 0
+            ? '视觉复核：看过的这几页没挑出问题。'
+            : ['视觉复核意见：', ...findings.map(o => `【第 ${o.slideIndex} 页】\n${o.text}`)].join('\n'),
+          ...(failures.length
+            ? [`（另有 ${failures.length} 页没复核成：${failures[0].reason}）`]
+            : []),
+        ].join('\n')
 
       return {
-        ok: true,
-        geometry,
-        overflowCount: report.overflows.length,
+        ...base,
         visual: visualText,
         /** 看过几页、成了几页。数字比一句话更难被读漏 */
         visualReviewed: outcomes.length - failures.length,

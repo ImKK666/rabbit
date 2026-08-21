@@ -29,6 +29,7 @@ import type { AgentTools } from './tools'
 import type { AssetTools } from './assetTools'
 // 同上，必须 `import type`：`reflectTool.ts` 经 `runtime/llm.ts` 拉 `bun:sqlite`
 import type { ReflectTools } from './reflectTool'
+import type { OrnamentTools } from './ornamentTool'
 import { DECK_TOOL_GROUPS, deckRoleGroups, type DeckTools } from './toolGroups'
 import { describeShapeCatalog } from '@/configs/shapeCatalog'
 import { describeLayouts } from './layouts'
@@ -194,6 +195,8 @@ defaultFontName 和 defaultColor 必填。字号从设计规范的阶梯里取�
 
 用 setSlideBackground 设纯色或渐变。想要「大色块构图」（比如右半页整块主色）
 就用 addShape 加一个 rect —— 那是版面元素，不是背景。
+想要**有层次的版面底图**（面板 + 纹理 + 色块分区）用 generateBackdrop 生成一张，
+再用 setSlideBackground 设成 image，见「生成图层」那节。
 注意：渐变导出 PPTX 时会被压平成一个平均色，重要的视觉不要只靠渐变承载。
 `.trim()
 
@@ -299,8 +302,14 @@ ${ANIMATION_GUIDE}
 3. 每页：addSlide 建空页（elements 给 []）→ applyLayout 排版 → 需要时补 addShape / addChart / addTable。
    要往中间插页用 addSlide 的 afterIndex
 4. 全部做完跑一次 lintDeck，把 errors 全部修掉，warnings 逐条判断
-5. **再跑一次 reflectRender。** lintDeck 比的是声明的框，而文本高度是估出来的 ——
-   估小了字会画到框外面，那一类问题只有真渲染一遍才看得见。拿不到测量结果时它会明说，
+5. **给整份加生成图层**（如果你手上有 generateBackdrop / addOrnament）——
+   见下面「生成图层」那节。**这一步必须在排版定稿之后、reflectRender 之前**：
+   它要读已定的元素坐标才知道哪儿要留安静，而底图会改变文字背后的颜色，
+   放到第 6 步之后的话对比度就白量了
+6. **最后跑一次 reflectRender。** lintDeck 比的是声明的框，而文本高度是估出来的 ——
+   估小了字会画到框外面，那一类问题只有真渲染一遍才看得见。
+   它同时会量**每块文字底下实际是什么颜色**，报出真正读不出来的那些 ——
+   加了底图之后这一条尤其要跑。拿不到测量结果时它会明说，
    那就按自己的判断收尾，不要重试
 
 ## 内容
@@ -331,6 +340,31 @@ ${ANIMATION_GUIDE}
   那时**改用 searchImage**，不要重试
 - 不是每页都要图。**满篇配图和满篇没图一样廉价** —— 封面、章节页、
   单点强调、引用这类"呼吸页"配图收益最大，密集的列表页和对比页不配也罢
+
+## 生成图层（如果你手上有 generateBackdrop / addOrnament）
+
+两个工具，**两件不同的事，可以只用一个**：
+
+| | generateBackdrop | addOrnament |
+|---|---|---|
+| 位置 | 铺满整页，垫在所有内容**下面** | 压在内容**上面** |
+| 画什么 | 面板、色块分区、网格纹理、斜带、渐变 | 细线、角标、平行条 |
+| 收益 | **大** —— 页面从「干净但平」变成有层次 | 小，锦上添花 |
+| 落回去 | setSlideBackground 设成 type:image、size:cover | addElement 成铺满整页的图片元素，放最上层 |
+
+**默认给整份都做 generateBackdrop。** 一次最多 6 页，分批调完。
+addOrnament 是可选的，想要更足的质感时再叠。
+
+要点：
+
+- **排版定稿之后再调。** 工具会读这一页已有元素的坐标，自动要求那些区域保持安静；
+  排版还在变的话安静区会留错地方
+- 构图和配色**不用你写提示词** —— 工具自己从版面和主题拼。你只给 slideId
+- 每页约 15 秒且吃生图配额。**某一页失败会说明原因并跳过，不要重试**，
+  整份稿子照常交付；用户明说要快就整个跳过这一步
+- 生成的底图**不含任何文字**，它只是背景。内容仍然全部由文本元素承载
+- 加完底图后第 6 步的 reflectRender 会实测文字在新背景上还读不读得出来 ——
+  它报低对比度时，优先换页面的文字颜色或换版式，**不要把整份稿子洗成黑白**
 
 ## 硬要求
 
@@ -421,7 +455,7 @@ export const getSystemPrompt = (role: AgentRole): string => SYSTEM_PROMPTS[role]
  */
 export const getToolSubset = (
   role: AgentRole,
-  allTools: AgentTools & Partial<AssetTools> & Partial<ReflectTools>,
+  allTools: AgentTools & Partial<AssetTools> & Partial<ReflectTools> & Partial<OrnamentTools>,
   { assets = false }: { assets?: boolean } = {},
 ): RoleToolset =>
   selectToolGroups(allTools, DECK_TOOL_GROUPS, deckRoleGroups(role, { assets }))

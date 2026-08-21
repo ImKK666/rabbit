@@ -284,7 +284,7 @@ export const useAgentStore = defineStore('agent', {
            * 而且**必须回一条**：后端那边挂着等，不回它只能耗到超时。
            * 所以异常也要变成一条带 error 的答复，而不是一个没人接的 rejection。
            */
-          measureRenderedSlides(msg.slideIds, msg.wantShots)
+          measureRenderedSlides(msg.slideIds, msg.wantShots, msg.wantBackdrop ?? false)
             .then(out => send({ type: 'agent.render.result', requestId: msg.requestId, ...out }))
             .catch(err => send({
               type: 'agent.render.result',
