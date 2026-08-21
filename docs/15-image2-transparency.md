@@ -85,9 +85,14 @@ id 稳定；`layoutImage.test.ts` 的图片位表同步更新。
 
 | 模型 | 透明通道 | 说明 |
 |---|---|---|
-| `gpt-image-2` | ❌ 不支持 `background=transparent` | 最新旗舰；支持 3840×2160；edit 恒定 high fidelity |
-| **`gpt-image-1.5`** | ✅ **`background: transparent` + `output_format: png/webp`** | 官方指定透明输出的模型；`input_fidelity` 可切；1024² high ≈ $0.133/张（Image 2 ≈ $0.211） |
-| `gpt-image-1` / `gpt-image-1-mini` | 见 API 文档，1.5 是当前推荐 | 旧档 / 轻量档 |
+| **`gpt-image-2`** | ✅ **generations 与 edits 都支持 `background: transparent`** | 最新旗舰；`aspect_ratio` 直出（16:9/21:9…）、`seed` 固定风格、`mask` alpha 局部重绘、`stream` 中间帧；1024² high ≈ $0.211 |
+| `gpt-image-1.5` | ✅ `background: transparent` + `output_format: png/webp` | `input_fidelity` 可切；1024² high ≈ $0.133/张 |
+| `gpt-image-1` / `gpt-image-1-mini` | 见 API 文档 | 旧档 / 轻量档 |
+
+> **修订（2026-08-21）**：`gpt-image-2` 一行按决策者提供的官方接口总结重写 ——
+> 它**支持** `background: transparent`（generations 与 edits 双侧），且 edits 的
+> `mask` 是 alpha 通道语义（透明区域 = 要修改的区域）。之前「image-2 不支持透明」
+> 的结论来自 Codex skill 的 CLI 说明，已过期。
 
 ### Generations 端点（`POST /v1/images/generations`）
 
@@ -103,8 +108,9 @@ id 稳定；`layoutImage.test.ts` 的图片位表同步更新。
 - `mask` 可选，**提示词引导、形状不保证精确**
 - `input_fidelity`：low（默认）/ high；high 显著增加输入 token
 - 输入图与 mask 均须 < 50MB
-- 文档未见 edits 输出的 `background: transparent`（编辑通常保留原背景）——
-  **"提取式"出透明层仍要绿幕，原生透明只覆盖"从零生成"这一侧**
+- **按官方接口总结（2026-08-21）：edits 也支持 `background: transparent`**
+  （结合 png/webp 输出做无背景主体切割），`mask` 是透明 PNG、alpha 区域=要改的区域 ——
+  **"提取式"出透明层不再必须绿幕**；不透明 provider 仍走 `chromaKey.ts`
 
 ### 对 Rabbit 的三个直接结论
 
@@ -132,7 +138,10 @@ id 稳定；`layoutImage.test.ts` 的图片位表同步更新。
 
 ### 三个落地形态（按顺序）
 
-**① 装饰层升级（改动最小，收益直接）**
+**① 装饰层升级 —— ✅ R-62 已实现**
+（实现见 04-changes R-62 节；本节保留原始设计作对照。）
+
+**①（原始设计）装饰层升级（改动最小，收益直接）**
 `generateBackdrop` / `addOrnament` 的提示词删掉纯色底要求，改为
 「transparent background, output PNG with alpha」；provider 为
 gpt-image-1.5 时请求带 `background:'transparent'`、`output_format:'png'`；

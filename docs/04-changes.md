@@ -3020,6 +3020,47 @@ alpha 连通域切片，Rabbit 目前完全没有的能力）→ ③框架/质�
 
 ---
 
+## R-62 · 生图接入双请求形状 + 装饰层原生透明通道
+
+接 15 号文档 §四的 ①。决策者提供了 gpt-image-2 官方接口总结：
+**generations 与 edits 双侧都支持 `background: transparent`**，
+另有 `aspect_ratio`（16:9 直出）、`seed`（固定风格）、`mask`（alpha 局部重绘）。
+
+### 双请求形状（flavor）
+
+存量生图走 Gemini wire 形状（`generateContent`，经中转）；gpt-image-2 系走
+OpenAI Images 形状（`/v1/images/generations` + Bearer）。两条路共用
+`runtime/imageGenerate.ts` 一个入口，按 flavor 分发：
+
+- `asset_sources` 加 `image_api` 列（`auto`/`gemini`/`openai`，迁移 0008）；
+  **auto 按模型名猜（含 gpt-image → openai），存量配置零迁移**
+- openai 形状发：`aspect_ratio`（16:9 直出，不再 1376/768 那种近似）、
+  `background: transparent` + `output_format: png`（透明通道）、
+  `seed`（风格锁定）；响应兼容 `b64_json` 与 `url` 两种回法
+- gemini 形状一个字节没动（回归保护有测试钉着）
+- 设置页「素材来源」加接口形状选择；admin 路由同步
+
+### 装饰层原生 alpha（docs/15 §四-①）
+
+`addOrnament` 在 openai 形状下：提示词换成「FULLY TRANSPARENT + real alpha
+channel」版本（键色句整个消失，(A)(B) 约束与负空间原样保留），生成后
+**跳过 chromaKey 与 O2**，判「透明像素占比 ≥50%」（模型画实底 = 重抽），
+O1（不压文字）照跑。gemini 形状保持绿幕全套 —— 阈值是拿真样本标定的，
+默认路径一个字都不许漂。
+
+### seed 锁风格
+
+装饰层与底图按「主题锚点色 + artDirection + 层种」哈希出 seed ——
+同一份稿子所有页同 seed，配合 R-60 的艺术方向词，跨页风格一致性
+从「靠模型自觉」变成「确定性锁住」。
+
+### 判据
+
+新增 15 条（flavor 路由 3 组 + 端点拼接 3 + seed 派生 3 + 原生透明提示词 4）。
+全量测试与双类型检查见下轮记录。
+
+---
+
 ## 待完成
 
 > 下面这张表是**当前**的权威清单。其中 agent 相关的多项已被
@@ -3043,7 +3084,8 @@ alpha 连通域切片，Rabbit 目前完全没有的能力）→ ③框架/质�
 | ~~并发控制~~ | ~~agent 跑时用户手改画布会被整份 `agent.deck` 覆盖~~ —— **第十六轮已修**（单一权威写者，画布锁 + 接管） | ✅ |
 | **乐观并发从没生效过** | `routes/deck.ts:60` 的 `version < existing.version → 409` 实现了，但前端 `saveDeck`（`App.vue:99`）**从来不传 `version`**，那道检查一次都没跑过。表现是两个标签页开同一份文稿会互相静默覆盖。和 agent 无关，是独立的老毛病 | 中 |
 | ~~图片资产存储~~ | ~~对象存储（S3/R2）~~ —— **第十七轮已完成**：腾讯云 COS，桶 / CORS / 内容寻址全部实测通过 | ✅ |
-| **生图接入 gpt-image-1.5 原生透明通道** | docs/15 §四：①asset_sources 加 `supportsAlpha`、generations 请求带 `background/output_format`；②装饰层去键色（O2 退役）；③新工具 `generateIconSet`（透明图标表 + alpha 连通域切片）。调研结论：generations 支持 `background=transparent`，edits 不支持透明输出 | 高 |
+| **generateIconSet 图标表工具** | docs/15 §四-②：语义清单 → 透明底 N×N 图标表 → alpha 连通域切片 → 图标资产。R-62 已通透明通道与请求形状，只差这个工具和切片纯函数 | 中 |
+| **edits 提取式剥层（image2 逆向）** | docs/15 §四-③：从渲染截图提取框架/图标层。官方总结说 edits 双侧支持 `background: transparent` + alpha `mask` —— 绿幕不再是必要条件，但「框架图承载结构 vs 质感」的红线边界仍需先定 | 低 |
 | **调研摄入** | 方案已定，见 [13-queue-reflect-ingest.md](./13-queue-reflect-ingest.md) §四§五。**摄入的验收标准是「几乎所有材料都能吃」**（pdf / txt / 图片 / word / md / json / 网页 url），按「解析在哪」分三档：浏览器侧（jszip 已在树里 + pdfjs）/ 服务端（URL 抓取）/ 模型（图片与扫描件）。搜索照抄 `imageSearch.ts` 那套：付费 provider 首选 + 一档免 key 兜底 | **高** |
 | ~~**`agent.confirm` 接上去**~~ | **R-61 已完成**：`askUser` 确认闸门全链路（后端工具 + ws + 面板「是/否」按钮 + 90 秒超时），prompt 有「确认闸门」节 | ✅ |
 | ~~渲染后反思~~ | 11 号 D3。**R-52 已完成**：`reflectRender` 工具 + 离屏测量 + 独立配置的视觉复核模型。判据与负对照见 13 号文档 §三 | ✅ |
