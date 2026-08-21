@@ -233,22 +233,35 @@ export const measureRenderedSlides = async (
     const size = slidesStore.viewportSize
 
     /**
-     * 「不含文字层」的同一页。
+     * 「不含文字层」的同一页 —— 要量的是**文字底下是什么**，所以得把文字层拿掉再渲一份。
+     * 位置全是绝对定位，拿掉文字不影响其余元素的几何，两份渲染在坐标上逐像素对齐。
      *
-     * 要量的是**文字底下是什么**，所以得把文字层拿掉再渲一份。
-     * 位置全是绝对定位，拿掉文字不影响其余元素的几何 ——
-     * 两份渲染在坐标上逐像素对齐。
+     * ## 必须在 `render()` **外面**算好，这一条是踩出来的
+     *
+     * 第一版把 `bare(slide)` 写在 `render()` 里，结果是**白屏**：
+     *
+     * 1. 每次重渲染都产生一个**全新对象**，Vue 看到 `slide` prop 变了就重渲整棵子树
+     * 2. 而 `bare()` 读的 `slide.elements` 是 pinia 的响应式代理 ——
+     *    这一读就把它注册成了这个渲染副作用的依赖
+     * 3. 于是「渲染 → 造新对象 → 依赖变化 → 再渲染」自激，主线程卡死
+     *
+     * **而这种卡死外层的 try/catch 抓不到** —— 它不抛异常，是根本不返回。
+     * 所以这个文件头注释里「永不抛异常」那道防线，在这条路上是失效的：
+     * 唯一的防法是不制造这个循环。
+     *
+     * `structuredClone` 之类的深拷贝也不行，一样是新身份。要的就是**算一次、存下来**。
      */
-    const bare = (slide: Slide): Slide =>
-      ({ ...slide, elements: slide.elements.filter(el => el.type !== 'text') })
+    const bareSlides: Slide[] = wantBackdrop
+      ? targets.map(s => ({ ...s, elements: s.elements.filter(el => el.type !== 'text') }))
+      : []
 
     app = createApp({
-      render: () => targets.flatMap(slide => [
+      render: () => targets.flatMap((slide, i) => [
         h('div', { 'data-slide-id': slide.id, 'style': 'position:relative' },
           [h(ThumbnailSlide, { slide, size, visible: true })]),
         ...(wantBackdrop
           ? [h('div', { 'data-bare-id': slide.id, 'style': 'position:relative' },
-            [h(ThumbnailSlide, { slide: bare(slide), size, visible: true })])]
+            [h(ThumbnailSlide, { slide: bareSlides[i], size, visible: true })])]
           : []),
       ]),
     })
