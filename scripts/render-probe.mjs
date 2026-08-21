@@ -64,6 +64,9 @@ console.log(`${pad('对不上的', 22)}${result.mismatched} 个`)
 console.log(`${pad('离屏没量到的', 20)}${result.missing} 个`)
 console.log(`${pad('离屏全是 0', 21)}${result.allZero ? '是 ← 离屏那条路坏了' : '否'}`)
 console.log(`${pad('截图（视觉复核的输入）', 14)}${result.shotOk ? `✅ ${(result.shotBytes / 1024).toFixed(0)} KB` : '❌ 截不出来'}`)
+console.log(`${pad('背景采样（R-57）', 17)}${result.backdropCount > 0
+  ? `✅ 跑完了，采到 ${result.backdropSampled}/${result.backdropCount} 块，${result.backdropMs}ms`
+  : '❌ 一块都没采到'}`)
 
 // --shot-out <path>：把第一页的截图存下来，给视觉复核的端到端实测当输入
 const shotOut = argOf('--shot-out', '')

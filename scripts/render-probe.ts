@@ -149,6 +149,34 @@ const Probe = defineComponent({
       const shotRun = await measureRenderedSlides([slides[0].id], true)
       const firstShot = shotRun.shots?.[0]?.dataUrl ?? null
 
+      /**
+       * 背景采样那条路（R-57）。上面那两次调用的 `wantBackdrop` 都是默认的 false，
+       * 所以这条路在这个探针里原本**一行都没被覆盖过**。
+       */
+      /**
+       * **测量进行中改写 store** —— 探针原来覆盖不到的那个差异。
+       *
+       * 真实环境里 agent 一直在跑，`agent.deck` 不断推过来、
+       * `slidesStore.setSlides()` 不断替换 slides。而离屏那份渲染是挂在同一个
+       * pinia 上的，store 一换它就要重渲 —— 此时若正在 `toCanvas`，
+       * 操作的就是一棵正在被拆掉的树。
+       *
+       * 这里在测量启动后立刻连推三次，模拟那个时序。
+       */
+      const churn = (async () => {
+        for (let i = 0; i < 3; i++) {
+          await new Promise<void>(r => setTimeout(r, 60))
+          store.setSlides(JSON.parse(JSON.stringify(slides)) as Slide[])
+        }
+      })()
+
+      const backdropStart = performance.now()
+      const backdropRun = await measureRenderedSlides([], false, true)
+      await churn
+      const backdropMs = Math.round(performance.now() - backdropStart)
+      const contrast = backdropRun.contrast ?? []
+      const sampledOk = contrast.filter(c => c.sampled >= 64).length
+
       const key = (m: { slideId: string, elementId: string }) => `${m.slideId}|${m.elementId}`
       const byKey = new Map(offscreen.map(m => [key(m), m.actualHeight]))
 
@@ -173,6 +201,10 @@ const Probe = defineComponent({
         mismatchSamples: mismatched.slice(0, 5),
         /** 截图这条路通不通。视觉复核的输入全靠它 */
         shotOk: !!firstShot,
+        /** 背景采样这条路：跑完了没有（白屏那次是根本跑不完）、采到几块、耗时 */
+        backdropCount: contrast.length,
+        backdropSampled: sampledOk,
+        backdropMs,
         shotBytes: firstShot ? firstShot.length : 0,
         shotDataUrl: firstShot,
         /** 被截那一页的 slide JSON。和截图一起吐出去，两边就不可能对不上 */
@@ -181,7 +213,10 @@ const Probe = defineComponent({
           && offscreen.length === onscreen.length
           && missing.length === 0
           && mismatched.length === 0
-          && !allZero,
+          && !allZero
+          // 背景采样这条路必须跑得完、且真采到东西。
+          // 白屏那次它根本走不到这里，但万一以后是「跑完了却全是 0」，这条能抓住
+          && sampledOk > 0,
       };
 
       (window as unknown as { __probeResult: unknown }).__probeResult = result
@@ -195,6 +230,9 @@ const Probe = defineComponent({
         `离屏没量到的    ${result.missing} 个`,
         `离屏全是 0      ${result.allZero ? '是 ← 离屏那条路坏了' : '否'}`,
         `截图（视觉复核的输入）  ${result.shotOk ? `✅ ${(result.shotBytes / 1024).toFixed(0)} KB` : '❌ 截不出来'}`,
+        `背景采样（R-57）        ${result.backdropCount > 0
+          ? `✅ 跑完了，采到 ${result.backdropSampled}/${result.backdropCount} 块，${result.backdropMs}ms`
+          : '❌ 一块都没采到'}`,
         '',
         `顺带：版式引擎估小的（溢出 >4px） ${result.overflowing} 处`,
         '',
@@ -205,7 +243,7 @@ const Probe = defineComponent({
           `  ${s.slideId} ${s.elementId}  ${s.declared.toFixed(0)} / ${s.actualHeight} / ${s.offscreen}`),
         ...(mismatched.length
           ? ['', '对不上的：', ...result.mismatchSamples.map(s =>
-              `  ${s.slideId} ${s.elementId}  onscreen=${s.actualHeight} offscreen=${s.offscreen}`)]
+            `  ${s.slideId} ${s.elementId}  onscreen=${s.actualHeight} offscreen=${s.offscreen}`)]
           : []),
       ].join('\n')
       out.className = result.ok ? 'ok' : 'bad'
