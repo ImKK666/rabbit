@@ -316,3 +316,33 @@ export const compressImage = (
     luminance,
   }
 }
+
+// ---------------------------------------------------------------------------
+// RGBA → PNG（装饰层专用）
+// ---------------------------------------------------------------------------
+
+/**
+ * 把一份 RGBA 编成**无损** PNG（ctype=6）。
+ *
+ * ## 为什么装饰层不能走 `compressImage`
+ *
+ * 那条路对透明图走 `kept-transparent` 分支：**原样返回，不压不缩**，
+ * 连 `maxEdgePx` 都绕过。抠完的装饰层是 RGBA，走那条会把 1 MB+ 原样落库。
+ *
+ * ## 为什么不用调色板（cnum > 0）
+ *
+ * 实测调色板能把同一张图压到 74 KB（无损是 207 KB），但两条都不行：
+ * 1. `decodeImage` 在 `:160` **显式拒收 ctype=3**，产线读不回来
+ * 2. 它是有损的 —— 实测 RGB 最大偏差 58（cnum=64 是 98），细线装饰上看得见
+ *
+ * ## 无损为什么也够小
+ *
+ * 因为 `chromaKey` **把全透明像素的 RGB 归零了**（那是它故意偏离原版的一处）。
+ * 92.5% 的像素变成完全相同的 `(0,0,0,0)` 之后 deflate 极其有效：
+ * 实测 1070 KB → **207 KB**，而 alpha/RGB 偏差都是 0。详见 docs/14 事实 ⑤。
+ */
+export const encodeRgbaPng = (rgba: Uint8Array, width: number, height: number): Uint8Array => {
+  const buf = rgba.buffer.slice(rgba.byteOffset, rgba.byteOffset + rgba.byteLength) as ArrayBuffer
+  // cnum = 0 → 无损 RGBA。**不要改成 >0**，那会出 ctype=3，见上面第 1 条
+  return new Uint8Array(UPNG.encode([buf], width, height, 0))
+}

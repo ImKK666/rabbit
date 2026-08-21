@@ -51,6 +51,7 @@ import { imageCapabilityAvailable } from '@server/runtime/assetConfig'
 import { createAgentTools, type DeckState } from './tools'
 import { createAssetTools, type AssetTools } from './assetTools'
 import { createReflectTools, reflectVisualAvailable } from './reflectTool'
+import { createOrnamentTools } from './ornamentTool'
 import { getSystemPrompt, getToolSubset } from './roles'
 import { createDeckChannel, type DeckChannel } from './channel'
 
@@ -484,7 +485,30 @@ const runTurn = async ({
     signal,
   }, { visual })
 
-  const allTools = { ...createAgentTools(accessor), ...(assetTools ?? {}), ...reflect.tools }
+  /**
+   * 装饰层工具和反思工具一样**建在这一轮里** —— 理由逐字相同：
+   * 它要读「此刻的 deck」才知道哪些矩形被占了，而那只有 `accessor` 知道。
+   * 在 `runDeckTask` 那层建的话，闭包捕获的是开跑那一刻的空稿子，
+   * 于是装饰会以为整页都是空的、画得满页都是，**而且不会有任何东西报错**。
+   */
+  const ornament = createOrnamentTools({
+    userId,
+    getSlides: () => accessor.get().slides,
+    // 三个锚点色从**此刻的主题**取。R-56 之后颜色回到了主题上，
+    // 所以这里读 theme 而不是每页的 paletteOverride
+    getAnchorColors: () => {
+      const t = accessor.get().theme
+      // `themeColors` 是数组（第一个是主色）。取「背景 + 主色 + 字色」三个锚点 ——
+      // 和 R-55 划的那三个「模型自己定」的锚点是同一组
+      return [t?.backgroundColor, t?.themeColors?.[0], t?.fontColor]
+        .filter((c): c is string => !!c)
+    },
+    emit: msg => channel.emit(msg),
+  })
+
+  const allTools = {
+    ...createAgentTools(accessor), ...(assetTools ?? {}), ...reflect.tools, ...ornament,
+  }
   const tools = toolless ? undefined : getToolSubset(AGENT_ROLE, allTools, { assets: !!assetTools })
   const system = getSystemPrompt(AGENT_ROLE)
   const maxSteps = toolless ? 1 : resolveMaxSteps(AGENT_ROLE)

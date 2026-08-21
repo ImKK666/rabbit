@@ -18,9 +18,11 @@ import type { AgentTools } from './tools'
 import type { AssetTools } from './assetTools'
 // 同上，必须 `import type`：`reflectTool.ts` 经 `runtime/llm.ts` 拉 `bun:sqlite`
 import type { ReflectTools } from './reflectTool'
+// 同上，必须 `import type`：`ornamentTool.ts` 经 `runtime/assetConfig.ts` 拉 `bun:sqlite`
+import type { OrnamentTools } from './ornamentTool'
 
 /** deck 域现在能提供的全部工具。装配时由 `pipeline.ts` 把三组合到一起 */
-export type DeckTools = AgentTools & AssetTools & ReflectTools
+export type DeckTools = AgentTools & AssetTools & ReflectTools & OrnamentTools
 
 /**
  * 25 个工具分成 7 组。
@@ -66,13 +68,23 @@ export const DECK_TOOL_GROUPS = {
    * 再叫几次模型。哪天需要「便宜的只读 agent」时，这一组要能单独摘掉。
    */
   render: ['reflectRender'],
+
+  /**
+   * 生成装饰层（docs/14）。
+   *
+   * **和 `asset` 分开，虽然两者都要生图模型。** 理由是它们可以各自关掉：
+   * 配图是内容能力（没图这份稿子就是纯文字），装饰是质感增强（没它稿子照样成立）。
+   * 并成一组的话，「只想要配图不想要装饰」就没法表达 ——
+   * 而这正是每页多花 15 秒之后第一个会提的要求。
+   */
+  ornament: ['addOrnament', 'generateBackdrop'],
 } as const satisfies ToolGroupMap<DeckTools>
 
 export type DeckToolGroup = keyof typeof DECK_TOOL_GROUPS
 
 /** 全部能力。单独抽出来是为了下面那张表和判据都指向同一份组名 */
 const ALL_DECK_GROUPS = [
-  'read', 'slide', 'element', 'layout', 'theme', 'animation', 'asset', 'render',
+  'read', 'slide', 'element', 'layout', 'theme', 'animation', 'asset', 'render', 'ornament',
 ] as const satisfies readonly DeckToolGroup[]
 
 /**
@@ -114,8 +126,13 @@ export const DECK_ROLE_TOOL_GROUPS: Record<AgentRole, readonly DeckToolGroup[]> 
  */
 export const deckRoleGroups = (
   role: AgentRole,
-  { assets }: { assets: boolean },
+  { assets, ornament = assets }: { assets: boolean, ornament?: boolean },
 ): readonly DeckToolGroup[] => {
   const groups = DECK_ROLE_TOOL_GROUPS[role]
-  return assets ? groups : groups.filter(g => g !== 'asset')
+  return groups.filter(g =>
+    (g !== 'asset' || assets)
+    // 装饰层也要生图，所以 `assets` 关着时它一定不可用；
+    // 但反过来不成立 —— 开着生图而单独关掉装饰是合法配置，默认跟随 `assets`
+    && (g !== 'ornament' || (assets && ornament)),
+  )
 }
