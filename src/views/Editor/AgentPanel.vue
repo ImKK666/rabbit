@@ -95,6 +95,15 @@
                 >⑂ 分叉</span>
               </div>
               <div class="entry-content">{{ entry.content }}</div>
+              <!-- R-68：随这句话发的图。历史里由 hydrateLog 从 blocksJson 还原 -->
+              <div class="entry-images" v-if="entry.images?.length">
+                <img
+                  v-for="(src, i) in entry.images"
+                  :key="i"
+                  :src="assetSrc(src)"
+                  alt="附图"
+                />
+              </div>
               <div class="delivery-reason" v-if="entry.delivery?.state === 'rejected'">
                 {{ entry.delivery.reason }}
               </div>
@@ -213,12 +222,31 @@
       </div>
 
       <div class="panel-footer">
+        <!-- R-68：待发送的图。上传中转圈、失败标红可重试，都能单独删掉 -->
+        <div class="pending-images" v-if="pendingImages.length">
+          <div
+            class="pending-image"
+            :class="{ uploading: img.state === 'uploading', failed: img.state === 'failed' }"
+            v-for="img in pendingImages"
+            :key="img.id"
+            v-tooltip="img.state === 'failed' ? img.error : undefined"
+          >
+            <img :src="img.preview" alt="待发送图片" />
+            <div class="mask" v-if="img.state === 'uploading'"><span class="spin"></span></div>
+            <div class="mask retry" v-else-if="img.state === 'failed'" @click="retryImage(img.id)">重试</div>
+            <span class="remove" @click="removeImage(img.id)">×</span>
+          </div>
+        </div>
+
         <div class="input-row">
           <TextArea
             v-model:value="promptText"
-            placeholder="输入指令，如「生成一份关于人工智能的 PPT」"
+            :placeholder="imageInputAllowed
+              ? '输入指令，可粘贴或上传图片（最多 9 张）'
+              : '输入指令，如「生成一份关于人工智能的 PPT」'"
             :rows="2"
             @keydown="handleKeydown"
+            @paste="handlePaste"
           />
         </div>
         <div class="action-row">
@@ -226,6 +254,23 @@
             已选 {{ selectedCount }} 个元素
           </div>
           <div class="action-buttons">
+            <!-- 不支持识图时置灰并说明原因 —— 让人传完九张再说不行是最差的做法 -->
+            <span
+              class="upload-btn"
+              :class="{ disabled: !imageInputAllowed || isRunning }"
+              @click="triggerPick"
+              v-tooltip="imageInputAllowed ? '添加图片（最多 9 张）' : imageInputReason"
+            >
+              <i-icon-park-outline:picture />
+            </span>
+            <input
+              class="file-input"
+              ref="fileInputRef"
+              type="file"
+              accept="image/png,image/jpeg"
+              multiple
+              @change="handlePick"
+            />
             <Button size="small" v-if="isRunning" @click="agentStore.cancelTask()">取消</Button>
             <Button size="small" type="primary" @click="handleSend" :disabled="!canSend">发送</Button>
           </div>
@@ -236,11 +281,15 @@
 </template>
 
 <script lang="ts" setup>
-import { ref, reactive, computed, watch } from 'vue'
+import { ref, reactive, computed, watch, onMounted, onUnmounted } from 'vue'
 import { storeToRefs } from 'pinia'
 import { groupStartOf as groupStarts, groupStats, summarizeGroup } from '@/utils/agentLogGroups'
 import { useMainStore, useAgentStore } from '@/store'
 import { useStickToBottom } from '@/hooks/useStickToBottom'
+import { userApi, assetApi } from '@/services'
+import { resolveAssetUrl } from '@/utils/assetUrl'
+import { nanoid } from 'nanoid'
+import message from '@/utils/message'
 import type { DeckPlanMessage } from '@/services/websocket'
 import Button from '@/components/Button.vue'
 import TextArea from '@/components/TextArea.vue'
@@ -371,15 +420,192 @@ const formatTime = (t: string | number) => {
 }
 
 const selectedCount = computed(() => activeElementIdList.value.length)
-const canSend = computed(() => promptText.value.trim() && !isRunning.value && props.deckId)
+
+// ---------------------------------------------------------------------------
+// R-68 · 粘贴 / 上传图片
+// ---------------------------------------------------------------------------
+
+/** 一次最多九张。后端也挡一道，那道才是约束 —— 这里挡的是体验 */
+const MAX_IMAGES = 9
+
+interface PendingImage {
+  id: string
+  /** 本地预览用的 object URL。**必须手动 revoke**，见 releasePreview */
+  preview: string
+  file: File
+  state: 'uploading' | 'done' | 'failed'
+  /** 上传成功后的 `asset://<hash>` */
+  src?: string
+  error?: string
+}
+
+const pendingImages = ref<PendingImage[]>([])
+const fileInputRef = ref<HTMLInputElement>()
+const imageInputAllowed = ref(false)
+const imageInputReason = ref('正在检查模型能力…')
+
+/** `asset://` → 可显示的地址。历史气泡里的缩略图用 */
+const assetSrc = (src: string) => resolveAssetUrl(src)
+
+/**
+ * 能不能传图。两个条件：模型能读图 + 对象存储配好，后端一次算清。
+ *
+ * 不在前端拿 models + preferences 自己推 —— 那要复算「用户偏好 → 角色默认」
+ * 的解析规则，而后端的 `inspectRoleModel` 才是那条规则的权威。
+ */
+const refreshCapabilities = async () => {
+  try {
+    const res = await userApi.capabilities()
+    imageInputAllowed.value = !!res.data.imageInput
+    imageInputReason.value = res.data.reason || ''
+  }
+  catch {
+    // 问不到就当不支持：给一个点了没反应的按钮比置灰更让人困惑
+    imageInputAllowed.value = false
+    imageInputReason.value = '无法确认模型能力，暂时不能传图'
+  }
+}
+
+onMounted(refreshCapabilities)
+
+/**
+ * 换模型之后能力会变。面板重新展开时问一次，够用且便宜 ——
+ * 真正的兜底在后端（带图但模型读不了图会被当场挡回来）。
+ */
+watch(expanded, open => {
+  if (open) refreshCapabilities()
+})
+
+const releasePreview = (img: PendingImage) => URL.revokeObjectURL(img.preview)
+
+const uploadOne = async (img: PendingImage) => {
+  try {
+    const res = await assetApi.upload(img.file)
+    img.src = res.data.src
+    img.state = 'done'
+  }
+  catch (err) {
+    img.state = 'failed'
+    const detail = (err as { response?: { data?: { message?: string } } })?.response?.data?.message
+    img.error = detail || '上传失败'
+  }
+}
+
+/**
+ * 收下若干文件并开始上传。
+ *
+ * 超出上限时**只收前面的并说一声** —— 静默丢掉用户选的图，
+ * 会让人以为传上去了，直到发出去才发现少了几张。
+ */
+const acceptFiles = (files: File[]) => {
+  if (!imageInputAllowed.value) {
+    if (files.length) message.warning(imageInputReason.value || '当前不能上传图片')
+    return
+  }
+
+  const images = files.filter(f => f.type === 'image/png' || f.type === 'image/jpeg')
+  const rejected = files.length - images.length
+  if (rejected > 0) message.warning(`有 ${rejected} 个文件不是 PNG / JPEG，已跳过`)
+  if (!images.length) return
+
+  const room = MAX_IMAGES - pendingImages.value.length
+  if (room <= 0) {
+    message.warning(`一次最多 ${MAX_IMAGES} 张图片`)
+    return
+  }
+  if (images.length > room) {
+    message.warning(`一次最多 ${MAX_IMAGES} 张图片，只收下了前 ${room} 张`)
+  }
+
+  for (const file of images.slice(0, room)) {
+    const img: PendingImage = {
+      id: nanoid(8),
+      preview: URL.createObjectURL(file),
+      file,
+      state: 'uploading',
+    }
+    pendingImages.value.push(img)
+    uploadOne(img)
+  }
+}
+
+/**
+ * 粘贴。**只有真的收到图片时才 preventDefault** ——
+ * 否则粘贴文字会被一起吞掉。
+ */
+const handlePaste = (e: ClipboardEvent) => {
+  const files = Array.from(e.clipboardData?.items ?? [])
+    .filter(item => item.kind === 'file' && item.type.startsWith('image/'))
+    .map(item => item.getAsFile())
+    .filter((f): f is File => f !== null)
+
+  if (!files.length) return
+  e.preventDefault()
+  acceptFiles(files)
+}
+
+const triggerPick = () => {
+  if (!imageInputAllowed.value || isRunning.value) return
+  fileInputRef.value?.click()
+}
+
+const handlePick = (e: Event) => {
+  const input = e.target as HTMLInputElement
+  acceptFiles(Array.from(input.files ?? []))
+  // 清空，否则连着选同一个文件不会再触发 change
+  input.value = ''
+}
+
+const removeImage = (id: string) => {
+  const idx = pendingImages.value.findIndex(i => i.id === id)
+  if (idx === -1) return
+  releasePreview(pendingImages.value[idx])
+  pendingImages.value.splice(idx, 1)
+}
+
+const retryImage = (id: string) => {
+  const img = pendingImages.value.find(i => i.id === id)
+  if (!img || img.state !== 'failed') return
+  img.state = 'uploading'
+  img.error = undefined
+  uploadOne(img)
+}
+
+/** 走人时把没 revoke 的 object URL 收掉，否则这些 blob 会一直占着内存 */
+onUnmounted(() => pendingImages.value.forEach(releasePreview))
+
+const uploadingCount = computed(() => pendingImages.value.filter(i => i.state === 'uploading').length)
+const readyImages = computed(() => pendingImages.value.filter(i => i.state === 'done' && i.src))
+
+/**
+ * 能不能发。
+ *
+ * **有文字或有图都能发** —— 只发图让模型描述是合理用法。
+ * 但还在上传的时候不让发：那会把一张正在传的图悄悄漏掉。
+ */
+const canSend = computed(() =>
+  (!!promptText.value.trim() || readyImages.value.length > 0)
+  && uploadingCount.value === 0
+  && !isRunning.value
+  && !!props.deckId)
 
 const handleSend = () => {
   if (!canSend.value || !props.deckId) return
   expandedEntries.clear()
   expandedGroups.clear()
   const selectedIds = activeElementIdList.value.length ? [...activeElementIdList.value] : undefined
-  agentStore.submitTask(props.deckId, promptText.value.trim(), selectedIds)
+  const images = readyImages.value.map(i => i.src!)
+
+  // 失败的那些不会被发出去，但也不能默默留在输入区假装还在等 ——
+  // 说一声再清掉，用户要么重传要么算了
+  const failed = pendingImages.value.filter(i => i.state === 'failed').length
+  if (failed > 0) message.warning(`有 ${failed} 张图片上传失败，未随本次发送`)
+
+  agentStore.submitTask(props.deckId, promptText.value.trim(), selectedIds, images.length ? images : undefined)
+
   promptText.value = ''
+  pendingImages.value.forEach(releasePreview)
+  pendingImages.value = []
 }
 
 const handleKeydown = (e: KeyboardEvent) => {
@@ -986,6 +1212,116 @@ useStickToBottom(bodyRef, log, { deep: true })
   display: flex;
   gap: 6px;
   margin-left: auto;
+  align-items: center;
+}
+
+// R-68 · 上传入口与待发送图片
+.upload-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 4px;
+  color: #666;
+  cursor: pointer;
+  transition: background-color .2s, color .2s;
+
+  &:hover:not(.disabled) {
+    background-color: rgba(0, 0, 0, .06);
+    color: $themeColor;
+  }
+
+  &.disabled {
+    color: #ccc;
+    cursor: not-allowed;
+  }
+}
+.file-input {
+  display: none;
+}
+.pending-images {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+.pending-image {
+  position: relative;
+  width: 48px;
+  height: 48px;
+  border-radius: 4px;
+  overflow: hidden;
+  border: 1px solid $borderColor;
+
+  img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+  }
+
+  &.failed {
+    border-color: #d95c5c;
+  }
+
+  .mask {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(0, 0, 0, .45);
+    color: #fff;
+    font-size: 11px;
+
+    &.retry {
+      cursor: pointer;
+      background: rgba(217, 92, 92, .65);
+    }
+  }
+
+  .spin {
+    width: 14px;
+    height: 14px;
+    border: 2px solid rgba(255, 255, 255, .35);
+    border-top-color: #fff;
+    border-radius: 50%;
+    animation: pending-image-spin .7s linear infinite;
+  }
+
+  .remove {
+    position: absolute;
+    top: 0;
+    right: 0;
+    width: 16px;
+    height: 16px;
+    line-height: 14px;
+    text-align: center;
+    background: rgba(0, 0, 0, .55);
+    color: #fff;
+    font-size: 12px;
+    cursor: pointer;
+    border-bottom-left-radius: 4px;
+  }
+}
+@keyframes pending-image-spin {
+  to { transform: rotate(360deg); }
+}
+.entry-images {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 6px;
+
+  img {
+    width: 64px;
+    height: 64px;
+    object-fit: cover;
+    border-radius: 4px;
+    border: 1px solid $borderColor;
+    display: block;
+  }
 }
 .ask-entry {
   padding: 8px 12px;

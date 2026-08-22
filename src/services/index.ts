@@ -122,6 +122,15 @@ export const userApi = {
   changePassword(oldPassword: string, newPassword: string) {
     return api.put(`${SERVER_URL}/user/password`, { oldPassword, newPassword })
   },
+  /**
+   * R-68 · 对话框能不能传图（模型能读图 + 对象存储配好）。
+   *
+   * 不在前端拿 models + preferences 自己算 —— 那要复算一遍
+   * 「用户偏好 → 角色默认」的解析规则，而后端 `inspectRoleModel` 才是权威。
+   */
+  capabilities() {
+    return api.get(`${SERVER_URL}/user/capabilities`)
+  },
 }
 
 // ---------------------------------------------------------------------------
@@ -258,6 +267,17 @@ export const assetApi = {
    */
   baseUrl() {
     return api.get(`${SERVER_URL}/assets/base-url`)
+  },
+  /**
+   * R-68 · 上传一张图片，拿到 `asset://<hash>`。
+   *
+   * **不设 Content-Type**：交给浏览器自己填，它会带上 multipart 必需的
+   * `boundary`。手写 `multipart/form-data` 会丢掉 boundary，服务端解不出表单。
+   */
+  upload(file: File) {
+    const form = new FormData()
+    form.append('file', file)
+    return api.post(`${SERVER_URL}/assets/upload`, form)
   },
 }
 

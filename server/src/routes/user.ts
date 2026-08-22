@@ -3,6 +3,8 @@ import { zValidator } from '@hono/zod-validator'
 import { z } from 'zod'
 import { eq, and } from 'drizzle-orm'
 import { getJwtPayload } from '@server/auth/jwt'
+import { inspectRoleModel } from '@server/runtime/llm'
+import { assetStorageReady } from '@server/runtime/assetConfig'
 import { db } from '@server/db'
 import {
   users,
@@ -56,8 +58,40 @@ user.get('/preferences', async (c) => {
   return c.json({ preferences: result })
 })
 
-const prefSchema = z.object({
-  role: z.enum(AGENT_ROLES),
+/**
+ * R-68 · 对话框能不能传图。
+ *
+ * 两个条件缺一不可：写作角色的模型**能读图**、对象存储**配好了**。
+ * 前端据此把上传入口置灰并说清原因 —— 让用户传完九张再告诉他不行，
+ * 是最差的一种做法。
+ *
+ * 不让前端自己拿 `/models` + `/preferences` 算：那要复算一遍
+ * 「用户偏好 → 角色默认」的解析规则，而 `inspectRoleModel` 才是这条规则的
+ * 唯一权威。算出两份不一致的答案时，出错的会是**没人看的那一份**。
+ *
+ * 服务端在 `pipeline.ts` 里还会再挡一道 —— 这里只是体验，那里才是约束。
+ */
+user.get('/capabilities', async (c) => {
+  const { userId } = getJwtPayload(c)
+
+  const [info, storageReady] = await Promise.all([
+    inspectRoleModel('deck', userId),
+    assetStorageReady(),
+  ])
+
+  const vision = info.ok && info.supportsVision
+  const reason = !storageReady
+    ? '未配置对象存储，无法上传图片'
+    : !info.ok
+      ? `当前模型不可用（${info.reason}）`
+      : !info.supportsVision
+        ? '当前模型不支持识图，请在设置里换一个勾了「能读图」的模型'
+        : ''
+
+  return c.json({ imageInput: vision && storageReady, reason })
+})
+
+const prefSchema = z.object({  role: z.enum(AGENT_ROLES),
   modelConfigId: z.number().int().positive(),
 })
 

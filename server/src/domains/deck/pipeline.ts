@@ -44,10 +44,12 @@ import {
   type StoredRow,
   type AssistantBlock,
   type ToolResultBlock,
+  type UserBlock,
 } from '@server/runtime/turnMemory'
-import { resolveModelForRole, type ResolvedModel } from '@server/runtime/llm'
+import { resolveModelForRole, inspectRoleModel, type ResolvedModel } from '@server/runtime/llm'
 import { createReasoningRelay } from '@server/runtime/reasoningRelay'
-import { imageCapabilityAvailable } from '@server/runtime/assetConfig'
+import { imageCapabilityAvailable, publicAssetBaseUrl } from '@server/runtime/assetConfig'
+import { resolveAssetUrl } from '@/utils/assetUrl'
 import { createAgentTools, type DeckState } from './tools'
 import { createAssetTools, type AssetTools } from './assetTools'
 import { createReflectTools, reflectVisualAvailable } from './reflectTool'
@@ -136,8 +138,9 @@ const saveMessage = async (
   conversationId: number,
   role: 'user' | 'assistant' | 'system' | 'tool',
   content: string,
+  blocksJson?: string,
 ) => {
-  await db.insert(messages).values({ conversationId, role, content })
+  await db.insert(messages).values({ conversationId, role, content, blocksJson })
 }
 
 /**
@@ -418,6 +421,13 @@ interface TurnInput {
   toolless?: boolean
   /** R-63：本任务开始时的策划稿（从会话读，可能为 null） */
   initialPlan: DeckPlan | null
+  /**
+   * R-68 · 历史里的 `asset://` 图片怎么解析成可取的 URL。
+   *
+   * 由 `runDeckTask` 建好传进来（根地址是一次库读，不该每轮重来）。
+   * 对象存储没配时为 undefined —— 那时历史里也不会有图。
+   */
+  resolveAssetUrl?: (src: string) => string
 }
 
 interface TurnResult {
@@ -434,6 +444,7 @@ interface TurnResult {
  */
 const runTurn = async ({
   userId, conversationId, state, channel, signal, assetTools, visual, extra, toolless, initialPlan,
+  resolveAssetUrl,
 }: TurnInput): Promise<TurnResult> => {
   channel.emit({ type: 'agent.status', status: 'thinking', message: `${AGENT_LABEL} 正在思考...` })
 
@@ -464,6 +475,7 @@ const runTurn = async ({
   // 历史必须在拿到 configId **之后**读 —— 剥不剥思考块取决于它是不是同一个配置
   const history = toModelMessages(await loadRows(conversationId), {
     modelConfigId: resolved.configId,
+    resolveAssetUrl,
   })
   // 先从还原出来的历史里学一遍 —— 上一轮那些思考也要跟着回传，
   // 否则「接着做完」这种续问又回到从零推导
@@ -671,6 +683,13 @@ export interface DeckTaskInput {
   selectedElementIds?: string[]
   conversationId?: number
   /**
+   * R-68 · 用户随这句话一起发来的图片，`asset://<sha256>` 引用。
+   *
+   * 只作为**给模型看的材料**，不进 deck。上限与文法在 `ws/handler.ts` 挡过一道，
+   * 这里不再重复校验 —— 那道挡在协议边界，是唯一该管这件事的地方。
+   */
+  images?: string[]
+  /**
    * 取消信号，由装配层从任务注册表拿。
    *
    * 剧本不自己 new AbortController，也不碰注册表：
@@ -686,7 +705,7 @@ export interface DeckTaskInput {
  * 占坑 / 注销由装配层（`agent/orchestrator.ts`）负责，这里进来时已经持有坑位。
  */
 export const runDeckTask = async ({
-  ws, deckId, prompt, selectedElementIds, conversationId, signal,
+  ws, deckId, prompt, selectedElementIds, conversationId, images, signal,
 }: DeckTaskInput) => {
   const { userId } = ws.data
 
@@ -720,6 +739,44 @@ export const runDeckTask = async ({
    */
   const visual = await reflectVisualAvailable(userId)
 
+  /**
+   * R-68 · 历史里 `asset://` 图片的解析器。
+   *
+   * 根地址读一次库就够了 —— 它是全局配置，一轮任务里不会变。
+   * 没配对象存储时为 undefined，那时历史里本来也不会有图。
+   *
+   * `resolveAssetUrl` 显式传 base，不走 `utils/assetUrl` 的模块级全局：
+   * 那个全局只在浏览器里被 `App.vue` 设过，服务端进程里永远是默认值。
+   */
+  const assetBase = await publicAssetBaseUrl()
+  const resolveHistoryAsset = assetBase
+    ? (src: string) => resolveAssetUrl(src, assetBase)
+    : undefined
+
+  /**
+   * R-68 · 带了图但模型读不了图 —— **当场说清楚，不要把请求打到模型**。
+   *
+   * 打过去的话拿回来的是 provider 的原始报错（往往只是一句 400），
+   * 用户看到那句话既不知道是自己的模型选错了，也不知道该去哪改。
+   *
+   * 前端会在按钮上挡一道（不支持时置灰），这里是那道挡不住时的兜底：
+   * 换模型和发消息之间有时间差，前端拿到的能力也可能是旧的。
+   */
+  if (images?.length) {
+    const info = await inspectRoleModel(AGENT_ROLE, userId)
+    if (!info.ok || !info.supportsVision) {
+      const why = info.ok
+        ? '当前模型不支持识图'
+        : `当前模型不可用（${info.reason}）`
+      channel.emit({
+        type: 'agent.status',
+        status: 'error',
+        message: `${why}。请在设置里换一个勾了「能读图」的模型，或去掉图片再发。`,
+      })
+      return
+    }
+  }
+
   const conv = await resolveConversation(userId, deckId, conversationId, prompt)
   // 前端据此把新建的会话挂进列表，也用来纠正对不上的 conversationId
   channel.emit({ type: 'agent.conversation', id: conv.id, title: conv.title })
@@ -727,7 +784,20 @@ export const runDeckTask = async ({
   // **先存用户这句，再读历史。** 和旧版相反：旧版的 history 是另一份东西，
   // 当轮 prompt 要单独拼在后面；现在用户这句本来就是历史的最后一条，
   // 分开处理只会制造「存的和送的不一致」
-  await saveMessage(conv.id, 'user', prompt)
+  //
+  // R-68：带图时 `content` 列仍写人话（面板、会话标题、分叉锚点都读它，
+  // 空着会让标题变成空白），图片走 `blocksJson`
+  if (images?.length) {
+    const blocks: UserBlock[] = [
+      ...(prompt ? [{ type: 'text' as const, text: prompt }] : []),
+      ...images.map(src => ({ type: 'image' as const, src })),
+    ]
+    const shown = prompt || `[图片 ${images.length} 张]`
+    await saveMessage(conv.id, 'user', shown, serializeBlocks(blocks))
+  }
+  else {
+    await saveMessage(conv.id, 'user', prompt)
+  }
 
   let { state } = loaded
 
@@ -739,6 +809,7 @@ export const runDeckTask = async ({
     let result = await runTurn({
       userId, conversationId: conv.id, state, channel, signal,
       assetTools, visual, extra: selection, initialPlan: parseStoredPlan(conv.planJson),
+      resolveAssetUrl: resolveHistoryAsset,
     })
     state = result.state
 
@@ -754,6 +825,7 @@ export const runDeckTask = async ({
         userId, conversationId: conv.id, state: result.state, channel, signal,
         assetTools, visual, extra: FINALIZE_PROMPT, toolless: true,
         initialPlan: parseStoredPlan(conv.planJson),
+        resolveAssetUrl: resolveHistoryAsset,
       })
       state = result.state
       channel.emit({

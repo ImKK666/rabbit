@@ -172,3 +172,63 @@ describe('老会话不能被改坏', () => {
     ])
   })
 })
+
+/**
+ * R-68 · 重开会话时用户发过的图要还在。
+ *
+ * 图存在 blocksJson 里，`content` 列存的是给人看的那一份 —— 两者都要还原对，
+ * 否则历史里要么少了图，要么气泡是空的。
+ */
+describe('R-68 · 带图的用户消息', () => {
+  it('图片从 blocksJson 还原成 images', () => {
+    nextId = 1
+    const log = hydrateLog([
+      row('user', '这张图里是什么', [
+        { type: 'text', text: '这张图里是什么' },
+        { type: 'image', src: `asset://${'a'.repeat(64)}` },
+      ]),
+    ])
+    expect(log).toEqual([{
+      type: 'text',
+      role: 'user',
+      content: '这张图里是什么',
+      messageId: 1,
+      images: [`asset://${'a'.repeat(64)}`],
+    }])
+  })
+
+  it('多张图按原顺序还原', () => {
+    nextId = 1
+    const log = hydrateLog([
+      row('user', '看这两张', [
+        { type: 'text', text: '看这两张' },
+        { type: 'image', src: `asset://${'a'.repeat(64)}` },
+        { type: 'image', src: `asset://${'b'.repeat(64)}` },
+      ]),
+    ])
+    expect(log[0]).toMatchObject({
+      images: [`asset://${'a'.repeat(64)}`, `asset://${'b'.repeat(64)}`],
+    })
+  })
+
+  // 纯图消息的 content 列是 `[图片 N 张]`，气泡不能是空的
+  it('只有图没有文字时用 content 列兜底', () => {
+    nextId = 1
+    const log = hydrateLog([
+      row('user', '[图片 1 张]', [{ type: 'image', src: `asset://${'a'.repeat(64)}` }]),
+    ])
+    expect(log[0]).toMatchObject({
+      content: '[图片 1 张]',
+      images: [`asset://${'a'.repeat(64)}`],
+    })
+  })
+
+  // 这条是安全网：老会话的用户行没有 blocksJson，必须逐字段还是老样子
+  it('没有 blocksJson 的用户行不长出 images 字段', () => {
+    nextId = 1
+    const log = hydrateLog([row('user', '做一份海洋主题的 PPT')])
+    expect(log).toEqual([
+      { type: 'text', role: 'user', content: '做一份海洋主题的 PPT', messageId: 1 },
+    ])
+  })
+})

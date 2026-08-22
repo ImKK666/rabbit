@@ -65,7 +65,7 @@ import {
   generateImage as callGenerateImage, resolveImageApiFlavor, effectiveImageRateLimit,
   IMAGE_ASPECT_RATIOS,
 } from '@server/runtime/imageGenerate'
-import { compressImage } from '@server/runtime/imageCodec'
+import { storeImageBytes, type StoredImage } from '@server/runtime/assetIngest'
 import { searchCacheKey, readCache } from '@server/runtime/searchCache'
 import { imageRateLimiter, modelRateKey } from '@server/runtime/rateLimiter'
 import {
@@ -180,23 +180,11 @@ export const sweepStalePendingAssets = async (): Promise<number> => {
 // 落图：下载/生成 → 压缩 → 传对象存储
 // ---------------------------------------------------------------------------
 
-interface StoredImage {
-  hash: string
-  storageKey: string
-  width: number
-  height: number
-  bytes: number
-  originalBytes: number
-  compressReason: string
-  /** `[p5, p95]` 亮度，给背景遮罩算浓度 */
-  luminance: [number, number]
-}
-
 /**
- * 把一段图片字节变成桶里的一个对象。
+ * `storeImageBytes` 的本地包装：把「对象存储没配好」翻译成一句人话。
  *
- * key **不带扩展名**，这样 `asset://<hash>` 才解析得到它 ——
- * 理由见 `runtime/assetConfig.ts` 头注释。
+ * 共用实现刻意不认 `null` store —— 它不碰库也不认配置，
+ * 而「没配好」是调用方的处境，措辞该由调用方决定。
  */
 const storeBytes = async (
   raw: Uint8Array,
@@ -204,24 +192,7 @@ const storeBytes = async (
   store: Awaited<ReturnType<typeof openAssetStorage>>,
 ): Promise<StoredImage> => {
   if (!store) throw new Error('对象存储不可用')
-
-  const out = compressImage(raw, { maxEdgePx })
-  const put = await store.store.put(out.bytes, '', out.contentType)
-
-  // key 形如 `rabbit/<sha256>`；hash 是最后一段，也是写进 deck 的那一段
-  const hash = put.key.split('/').pop() ?? ''
-
-  return {
-    hash,
-    storageKey: put.key,
-    width: out.width,
-    height: out.height,
-    bytes: out.bytes.byteLength,
-    originalBytes: out.originalBytes,
-    compressReason: out.reason,
-    // 解码时顺手量的亮度分布 —— 版式拿它算背景遮罩浓度
-    luminance: [out.luminance.p5, out.luminance.p95] as [number, number],
-  }
+  return storeImageBytes(raw, maxEdgePx, store.store)
 }
 
 const download = async (url: string): Promise<Uint8Array> => {

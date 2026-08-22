@@ -123,10 +123,16 @@ export const isAssetUrl = (src: string): boolean => !!src && src.startsWith(ASSE
 /**
  * 解析一个图片引用
  * @param src `PPTImageElement.src` / `SlideBackgroundImage.src` 的原始值
+ * @param baseUrl 资产库根地址。**服务端必须显式传** —— 模块级的
+ *   `assetBaseUrl` 只在浏览器里由 `App.vue` 登录后设过，
+ *   服务端进程里它永远是默认值 `/assets`（必然 404）。
+ *   留成参数而不是让服务端去调 setter：那是个进程级全局，
+ *   多用户共用一个可变量，改起来没人说得清什么时候被谁设过。
  */
-export const parseAssetUrl = (src: string): AssetRef => {
+export const parseAssetUrl = (src: string, baseUrl?: string): AssetRef => {
   if (!isAssetUrl(src)) return { kind: 'plain', url: src || '' }
 
+  const base = (baseUrl ?? assetBaseUrl).replace(/\/+$/, '')
   const body = src.slice(ASSET_PROTOCOL.length)
 
   if (body.startsWith(ASSET_PENDING_SEGMENT)) {
@@ -142,7 +148,7 @@ export const parseAssetUrl = (src: string): AssetRef => {
   }
 
   const hash = body.toLowerCase()
-  return { kind: 'hash', url: `${assetBaseUrl}/${hash}`, hash }
+  return { kind: 'hash', url: `${base}/${hash}`, hash }
 }
 
 /**
@@ -152,7 +158,8 @@ export const parseAssetUrl = (src: string): AssetRef => {
  * **不要**把原串塞回 `<img src>` 兜底：浏览器认不得 `asset:` 协议，
  * 只会得到一个破图，还会把「生成中」和「引用坏了」混成同一种观感。
  */
-export const resolveAssetUrl = (src: string): string => parseAssetUrl(src).url
+export const resolveAssetUrl = (src: string, baseUrl?: string): string =>
+  parseAssetUrl(src, baseUrl).url
 
 /** 是否为生成中的资产（渲染骨架屏的判据） */
 export const isPendingAsset = (src: string): boolean => parseAssetUrl(src).kind === 'pending'

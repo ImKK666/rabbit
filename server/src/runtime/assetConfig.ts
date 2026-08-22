@@ -103,6 +103,19 @@ export const publicAssetBaseUrl = async (): Promise<string> => {
 }
 
 /**
+ * R-68 · 对象存储能不能用来放图。
+ *
+ * 和下面的 `imageCapabilityAvailable` **刻意分开**：那个还要求至少开一个
+ * 取图开关（搜图 / 生图），因为它管的是「要不要把取图工具给 agent」。
+ * 用户上传只需要一个能放东西的桶 —— 把两者合成一个判断的话，
+ * 管理员关掉搜图会连带把上传也关掉，而那两件事根本没关系。
+ */
+export const assetStorageReady = async (): Promise<boolean> => {
+  const row = await loadStorageRow()
+  return !!row && row.enabled && storageMissingFields(row).length === 0
+}
+
+/**
  * 这次装配要不要把图片工具给 agent。
  *
  * 三个条件缺一不可：对象存储配好且开着（图没地方放）、至少一个取图开关开着。

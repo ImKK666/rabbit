@@ -3,6 +3,16 @@ import { verifyToken, type JwtPayload } from '@server/auth/jwt'
 import { runAgentTask, cancelAgentTask, releaseWsResources, settleRenderResult, settleUserAnswer } from '@server/agent/orchestrator'
 import type { DeckPlan } from '@server/domains/deck/plan'
 
+/**
+ * R-68 · 一条消息最多带几张图。
+ *
+ * 九张是产品定的。挡在这里而不是只挡前端：协议边界才是约束所在。
+ */
+const MAX_TASK_IMAGES = 9
+
+/** 只收 `asset://<64 位 hex>`。文法与 `src/utils/assetUrl.ts` 一致 */
+const ASSET_REF_REGEXP = /^asset:\/\/[0-9a-fA-F]{64}$/
+
 export interface WsUserData {
   userId: number
   username: string
@@ -17,6 +27,14 @@ export type ClientMessage =
     selectedElementIds?: string[]
     /** 续哪条会话；不传则新开一条（记忆从零开始） */
     conversationId?: number
+    /**
+     * R-68 · 随这句话发来的图片，`asset://<sha256>` 引用
+     * （先经 `POST /api/assets/upload` 落进资产库）。
+     *
+     * 只作为给模型看的材料，不进 deck。上限 9 张 —— 前端也挡一道，
+     * 但**这里才是约束**：绕过前端直接发 WS 同样不能突破。
+     */
+    images?: string[]
   }
   /**
    * 取消任务。**必须带 deckId** —— 活动任务按工作区（`deck:<id>`）登记，
@@ -168,7 +186,28 @@ export const handleWsMessage = async (
     const msg: ClientMessage = JSON.parse(raw)
 
     switch (msg.type) {
-      case 'agent.task':
+      case 'agent.task': {
+        /**
+         * R-68 · 图片在协议边界挡一道。
+         *
+         * 前端也挡，但那是体验；**这里才是约束** —— 绕过前端直接发 WS
+         * 一样不能突破。只收合法的 `asset://<sha256>`：别的字符串
+         * 会一路走到 `new URL()` 那里才炸，而那时错误信息已经和"用户传了什么"
+         * 对不上了。
+         */
+        const images = Array.isArray(msg.images)
+          ? msg.images.filter(s => typeof s === 'string' && ASSET_REF_REGEXP.test(s))
+          : []
+
+        if (images.length > MAX_TASK_IMAGES) {
+          ws.send(JSON.stringify({
+            type: 'agent.status',
+            status: 'error',
+            message: `一次最多带 ${MAX_TASK_IMAGES} 张图片，这次收到 ${images.length} 张`,
+          } satisfies ServerMessage))
+          break
+        }
+
         /**
          * **故意不 await**：任务要跑几分钟，等它结束就没法处理这条连接上的
          * 其它消息了（首先就是 `agent.cancel` —— 取消按钮会彻底失灵）。
@@ -182,7 +221,8 @@ export const handleWsMessage = async (
          * 剧本内部已经把收尾动作都包了（`pipeline.ts` 的 `settle`），
          * 这里是**最后一道**：只要还有一条没想到的路径，它兜住。
          */
-        runAgentTask(ws, msg.deckId, msg.prompt, msg.selectedElementIds, msg.conversationId)
+        runAgentTask(ws, msg.deckId, msg.prompt, msg.selectedElementIds, msg.conversationId,
+          images.length ? images : undefined)
           .catch((err) => {
             console.error('[ws] agent 任务异常退出:', err)
             ws.send(JSON.stringify({
@@ -192,6 +232,7 @@ export const handleWsMessage = async (
             } satisfies ServerMessage))
           })
         break
+      }
 
       case 'agent.cancel': {
         // 取消 = 全停：在跑的那一轮 + 排着的全部。

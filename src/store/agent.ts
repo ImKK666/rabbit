@@ -52,6 +52,11 @@ export type AgentLogEntry =
      * `undefined` = 已经在跑或已经跑完（历史里的条目一律是这个）。
      */
     delivery?: DeliveryState
+    /**
+     * R-68 · 用户随这句话发的图片，`asset://<sha256>` 引用。
+     * 气泡里渲染成缩略图。历史条目由 `hydrateLog` 从 blocksJson 还原。
+     */
+    images?: string[]
   }
   | { type: 'tool', tool: string, args: Record<string, unknown>, result?: string, messageId?: number }
   | { type: 'status', status: string, message: string }
@@ -158,13 +163,19 @@ export const useAgentStore = defineStore('agent', {
       onMessage((msg: ServerMessage) => this.handleMessage(msg))
     },
 
-    submitTask(deckId: number, prompt: string, selectedElementIds?: string[]) {
+    submitTask(deckId: number, prompt: string, selectedElementIds?: string[], images?: string[]) {
       this.status = 'thinking'
       this.statusMessage = '正在处理...'
       // 追加而不是覆盖 —— 同一条会话里多轮对话要能连起来看。
       // **带 pending 标记**：这句话此刻只是发出去了，还不知道是开跑、
       // 排队还是被拒。收到回执前不许把它显示成已受理
-      this.log.push({ type: 'text', role: 'user', content: prompt, delivery: { state: 'pending' } })
+      this.log.push({
+        type: 'text',
+        role: 'user',
+        content: prompt,
+        delivery: { state: 'pending' },
+        ...(images?.length ? { images: [...images] } : {}),
+      })
       this.currentDeckId = deckId
       // agent 接过这份文稿的所有权：画布锁住，直到任务终止或用户点「接管」。
       // 在**发出请求时**就转移，不等后端回第一条消息 —— 中间那段空窗期
@@ -175,6 +186,7 @@ export const useAgentStore = defineStore('agent', {
         deckId,
         prompt,
         selectedElementIds,
+        ...(images?.length ? { images } : {}),
         // 为 null 表示「新会话」，让后端新建一条，记忆从零开始
         conversationId: this.activeConversationId ?? undefined,
       })
@@ -608,6 +620,8 @@ type StoredBlock =
   | { type: 'reasoning', text: string }
   | { type: 'redacted-reasoning', data: string }
   | { type: 'text', text: string }
+  /** R-68 · 用户消息里的一张图，`asset://<sha256>` */
+  | { type: 'image', src: string }
   | { type: 'tool-call', toolCallId: string, toolName: string, args: Record<string, unknown> }
   | { type: 'tool-result', toolCallId: string, toolName: string, result: unknown }
 
@@ -702,8 +716,24 @@ export const hydrateLog = (msgs: StoredMessage[]): AgentLogEntry[] => {
       continue
     }
 
-    // user / system 行没有 blocks 的概念，走文本路径
+    // R-68：用户行的 blocks 里可能有图片，还原成缩略图。
+    // system 行仍然没有 blocks 的概念，和以前一样走文本路径
     flushPending()
+    if (msg.role === 'user') {
+      const images = blocks
+        .filter((b): b is Extract<StoredBlock, { type: 'image' }> => b.type === 'image')
+        .map(b => b.src)
+      out.push({
+        type: 'text',
+        role: 'user',
+        // content 列存的就是给人看的那一份（纯图时是 `[图片 N 张]`）
+        content: msg.content,
+        messageId: msg.id,
+        ...(images.length ? { images } : {}),
+      })
+      continue
+    }
+
     const entry = toLogEntry(msg)
     if (entry) out.push(entry)
   }

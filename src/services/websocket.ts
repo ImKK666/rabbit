@@ -9,6 +9,11 @@ export type ClientMessage =
     selectedElementIds?: string[]
     /** 续哪条会话；不传则新开一条（记忆从零开始） */
     conversationId?: number
+    /**
+     * R-68 · 随这句话发的图片，`asset://<sha256>`（先经 `assetApi.upload` 落库）。
+     * 只给模型看，不进 deck。上限 9 张 —— 后端同样挡一道，那道才是约束。
+     */
+    images?: string[]
   }
   /**
    * 取消任务。**必须带 deckId** —— 后端的活动任务按工作区（`deck:<id>`）登记，

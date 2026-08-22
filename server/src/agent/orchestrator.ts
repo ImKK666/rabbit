@@ -53,6 +53,8 @@ interface PendingTask {
   prompt: string
   selectedElementIds?: string[]
   conversationId?: number
+  /** R-68 · 随这句话发来的图片（`asset://`），跟着排队一起走 */
+  images?: string[]
 }
 
 /** deck 域的工作区键。各域自造前缀，不会撞 */
@@ -126,8 +128,10 @@ export const runAgentTask = (
   prompt: string,
   selectedElementIds?: string[],
   conversationId?: number,
+  /** R-68 · 随这句话发来的图片（`asset://`），已在 ws 层校验过文法与上限 */
+  images?: string[],
 ): Promise<void> =>
-  gate.submit(deckWorkspace(deckId), { ws, deckId, prompt, selectedElementIds, conversationId })
+  gate.submit(deckWorkspace(deckId), { ws, deckId, prompt, selectedElementIds, conversationId, images })
 
 /**
  * 取消某份演示文稿的任务 —— **在跑的那一轮 + 排着的全部**。

@@ -67,8 +67,29 @@ export interface ToolResultBlock {
 export type AssistantBlock =
   | ReasoningBlock | RedactedReasoningBlock | TextBlock | ToolCallBlock
 
+/**
+ * R-68 · 用户消息里的一张图，**存的是 `asset://<sha256>` 原串**。
+ *
+ * 不存真实 URL，理由和 deck 里那些图完全一样（决策 E）：换桶、挂 CDN 之后
+ * 所有历史会话跟着走。也不存 base64 —— 那会让 `HISTORY_CHAR_BUDGET`
+ * 的字符预算被一张图吃光，而预算存在的意义正是控制带进模型的规模。
+ */
+export interface StoredImageBlock { type: 'image', src: string }
+
+/** 用户消息落库时的一块 */
+export type UserBlock = TextBlock | StoredImageBlock
+
+/**
+ * 模型看到的一张图。AI SDK v4 的 image part 收 `URL`，
+ * 和 `domains/deck/reflectTool.ts` 里视觉复核用的是同一种形状。
+ */
+export interface ImagePart { type: 'image', image: URL }
+
+/** 模型看到的用户消息内容块 */
+export type UserContentPart = TextBlock | ImagePart
+
 export type ModelMessage =
-  | { role: 'user', content: string }
+  | { role: 'user', content: string | UserContentPart[] }
   | { role: 'assistant', content: AssistantBlock[] }
   | { role: 'tool', content: ToolResultBlock[] }
 
@@ -118,20 +139,69 @@ interface Carried { msg: ModelMessage, modelConfigId: number | null }
  * 单独一个函数而不是让调用方 `JSON.stringify`：将来要加压缩或换格式时，
  * 读写两端会一起改，而它俩现在就在同一个文件里，改漏不了。
  */
-export const serializeBlocks = (blocks: AssistantBlock[] | ToolResultBlock[]): string =>
-  JSON.stringify(blocks)
+export const serializeBlocks = (
+  blocks: AssistantBlock[] | ToolResultBlock[] | UserBlock[],
+): string => JSON.stringify(blocks)
+
+/**
+ * R-68 · 用户消息的 blocks → 模型看到的 content。
+ *
+ * `resolve` 把 `asset://<hash>` 变成可直接取的 URL。**取不到就把这张图丢掉**，
+ * 而不是塞一个坏 URL 进去：坏 URL 会让整轮请求 4xx，丢一张图只是少一张图。
+ * 丢弃会在 `toModelMessages` 的调用方留下痕迹吗？不会 —— 所以这条路径
+ * 只在「没给 resolver」和「引用坏了」两种情况下走，两种都不该在正常运行时出现。
+ *
+ * 全是图没有文字时也返回数组（不退化成字符串）—— 只发图让模型描述是合理用法。
+ */
+const userBlocksToContent = (
+  blocks: UserBlock[],
+  resolve?: (src: string) => string,
+): UserContentPart[] => {
+  const parts: UserContentPart[] = []
+
+  for (const b of blocks) {
+    if (b.type === 'text') {
+      parts.push(b)
+      continue
+    }
+    if (b.type !== 'image' || !resolve) continue
+
+    const url = resolve(b.src)
+    if (!url) continue
+    try {
+      parts.push({ type: 'image', image: new URL(url) })
+    }
+    catch {
+      // resolve 给了个不合法的 URL。同上：丢这一张，别让它炸掉整轮
+    }
+  }
+
+  return parts
+}
 
 /**
  * 库里的一行 → 一条模型消息。返回 null 表示这行不进模型
  * （system 行是错误日志；老的 tool 行没有 toolCallId，带进去必然配不上对 → 400）。
  */
-const rowToCarried = (row: StoredRow): Carried | null => {
+const rowToCarried = (
+  row: StoredRow,
+  resolveAsset?: (src: string) => string,
+): Carried | null => {
   const modelConfigId = row.modelConfigId ?? null
 
   if (row.blocksJson) {
     const blocks = parseBlocks(row.blocksJson)
     // 脏数据不能炸掉整轮对话，退回按老数据处理
     if (blocks) {
+      // R-68：带图的用户消息。没有 blocksJson 的用户行走下面的纯文本路径，
+      // 所以老会话完全不受影响
+      if (row.role === 'user') {
+        const content = userBlocksToContent(blocks as UserBlock[], resolveAsset)
+        return content.length > 0
+          ? { msg: { role: 'user', content }, modelConfigId }
+          // 图全丢了、文字也没有 → 退回 content 列的纯文本，至少还剩一句话
+          : { msg: { role: 'user', content: row.content }, modelConfigId }
+      }
       if (row.role === 'assistant') {
         return blocks.length > 0
           ? { msg: { role: 'assistant', content: blocks as AssistantBlock[] }, modelConfigId }
@@ -202,8 +272,16 @@ const dropLeadingNonUser = (msgs: ModelMessage[]): ModelMessage[] => {
   return i === 0 ? msgs : msgs.slice(i)
 }
 
+/**
+ * 这条消息占多少字符预算。
+ *
+ * 带图的用户消息按 `JSON.stringify` 算，于是一张图只记它的 URL 长度 ——
+ * **这正是存 `asset://` 而不是 base64 的收益**：一张图在预算里约等于一行字，
+ * 不会把整份历史挤掉。真实的 token 成本在模型那边（一张图几百到上千 token），
+ * 这里的预算管的是「历史规模」，两者本来就不是一回事。
+ */
 const messageChars = (m: ModelMessage): number =>
-  m.role === 'user' ? m.content.length : JSON.stringify(m.content).length
+  typeof m.content === 'string' ? m.content.length : JSON.stringify(m.content).length
 
 /**
  * 按预算从旧往新丢 —— **丢整轮，不丢半轮**。
@@ -303,6 +381,15 @@ export interface ToModelMessagesOptions {
    */
   modelConfigId: number | null
   charBudget?: number
+  /**
+   * R-68 · `asset://<sha256>` → 可直接取的 URL。
+   *
+   * **不给的话带图的历史会丢掉图**（只留文字）。做成注入而不是在这里
+   * import `assetConfig`，是因为那个模块拉 `db/index.ts`（`bun:sqlite`），
+   * 一 import 本文件就再也不能在 vitest 里裸跑 —— 而"能裸跑"正是
+   * 这个文件所有判据的前提（见文件头）。
+   */
+  resolveAssetUrl?: (src: string) => string
 }
 
 /**
@@ -313,10 +400,10 @@ export interface ToModelMessagesOptions {
  */
 export const toModelMessages = (
   rows: StoredRow[],
-  { modelConfigId, charBudget = HISTORY_CHAR_BUDGET }: ToModelMessagesOptions,
+  { modelConfigId, charBudget = HISTORY_CHAR_BUDGET, resolveAssetUrl }: ToModelMessagesOptions,
 ): ModelMessage[] => {
   const carried = rows
-    .map(rowToCarried)
+    .map(row => rowToCarried(row, resolveAssetUrl))
     .filter((c): c is Carried => c !== null)
 
   const msgs = stripForeignReasoning(carried, modelConfigId).map(c => c.msg)
