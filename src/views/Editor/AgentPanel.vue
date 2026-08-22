@@ -496,21 +496,41 @@ watch(expanded, open => {
 
 const releasePreview = (img: PendingImage) => URL.revokeObjectURL(img.preview)
 
-const uploadOne = async (img: PendingImage) => {
+/**
+ * 上传一张。**按 id 找回数组里那一项再改，不要改传进来的对象。**
+ *
+ * `pendingImages` 是 ref 数组，`push(obj)` 存进去的是**原始对象**；
+ * 从数组读出来的才是响应式代理。持着原始引用改 `state`，
+ * 值确实变了（代理和它共享同一个 target），但**一个依赖都不会被触发** ——
+ * `uploadingCount` 永远停在 1，于是转圈不停、发送按钮永远禁用、
+ * 图也永远进不了 `readyImages`。R-68 实测就是栽在这里。
+ */
+const uploadOne = async (id: string) => {
+  /** 每次用之前重新查 —— await 期间用户可能已经把它删掉了 */
+  const at = () => pendingImages.value.find(i => i.id === id)
+
+  const target = at()
+  if (!target) return
+
   try {
-    // 同上：拿到的就是响应体，没有 .data 这一层
-    const res = await assetApi.upload(img.file) as any
+    // 拿到的就是响应体，没有 .data 这一层
+    const res = await assetApi.upload(target.file) as any
     if (!res?.src) throw new Error('服务端没有返回图片地址')
-    img.src = res.src
-    img.state = 'done'
+
+    const done = at()
+    if (!done) return
+    done.src = res.src
+    done.state = 'done'
   }
   catch (err) {
-    img.state = 'failed'
+    const failed = at()
+    if (!failed) return
+    failed.state = 'failed'
     // 错误拦截器把失败整形成 `{ message, status, data }`，其中 `message` 取的是
     // 响应体的 `error` 字段（`unsupported_format` 这种机器码），
     // 人话在 `data.message` 里 —— 要显示给用户的是后者
     const e = err as { data?: { message?: string }, message?: string }
-    img.error = e?.data?.message || e?.message || '上传失败'
+    failed.error = e?.data?.message || e?.message || '上传失败'
   }
 }
 
@@ -548,7 +568,8 @@ const acceptFiles = (files: File[]) => {
       state: 'uploading',
     }
     pendingImages.value.push(img)
-    uploadOne(img)
+    // 传 id 不传对象 —— uploadOne 要改的是数组里那个响应式代理
+    uploadOne(img.id)
   }
 }
 
@@ -587,11 +608,12 @@ const removeImage = (id: string) => {
 }
 
 const retryImage = (id: string) => {
+  // find 出来的是响应式代理，改它才会触发更新
   const img = pendingImages.value.find(i => i.id === id)
   if (!img || img.state !== 'failed') return
   img.state = 'uploading'
   img.error = undefined
-  uploadOne(img)
+  uploadOne(id)
 }
 
 /** 走人时把没 revoke 的 object URL 收掉，否则这些 blob 会一直占着内存 */
