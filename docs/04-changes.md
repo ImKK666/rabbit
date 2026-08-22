@@ -3068,6 +3068,65 @@ openai → `null`（一律放行），gemini → 库里配的值（那个中转�
 
 ---
 
+## R-63 · 阶段化工作流：策划稿 + 闸门升级 + applyLayout 守卫
+
+接 [16-workflow-redesign.md](./16-workflow-redesign.md)。触发点是从库里把
+会话 70 / 76 的调用日志翻出来数了一遍：5 页的稿子 `generateBackdrop` 打 85 次
+（限流倒计时被当自旋时钟）、50 页稿子 `applyLayout` 打 169 次（同一批 36 页
+8 分钟重排三轮换色）、5 个部门分组的版式序列整组复制、用户「一页一页」的
+规则被违反 23 个回合。**根因是流程只存在于 prompt 的软约束里** —— 这一轮把
+两个参照（workflow-san 的策划稿 + review-gate、Gorden 的 outline 层决策 +
+页级执行）的流程骨架落成代码。
+
+### 策划稿层（阶段 0）
+
+- `domains/deck/plan.ts`：`DeckPlan` schema + `validatePlan`（P1–P8）+
+  `planSectionSignature` + `lintPlanAdherence`（lint ⑫），全是纯函数。
+  **P5 直接复刻会话 76 的病**：任意两个段落的版式序列签名相同 → error
+- P2/P3/P4 把 lintDeck ①⑦⑧ 三条设计判据**前置到方案层**（阈值 P4 比
+  kernel 严一档：方案是硬闸门，比事后 lint 严是刻意的）
+- `planTool.ts`：`setPlan`（校验→落库→发 `agent.plan`）+ `getPlan`；
+  落库是 pipeline 注入的回调，文件本身不碰库（vitest 加载纪律不变）
+- 迁移 0009：`conversations.plan_json`（会话级，fork 不带旧方案）
+- pipeline：任务开始从会话读方案，`lintDeck` 增补 lint ⑫ 漂移检查
+
+### 闸门升级
+
+- 触发条件：重要稿件清单（对外/管理层/销售/技术密集/方向分岔）+
+  **页数 ≥12 或段落 ≥3 自动升级**
+- 位置与对象：setPlan 之后、setTheme 之前，问的是**方案本身**
+  （叙事线 + 页数 + 版式序列），面板先渲染方案卡片再看「是/否」
+- 每任务最多一次、超时按方案继续 —— 沿用 R-61 机制，`askTool.ts` 零改动
+
+### 执行守卫（tools.ts，状态每轮一份）
+
+- **守卫① applyLayout 防抖**：同页同版式同内容本轮重排 → 拒并指路
+  updateElement；换 pattern / variant / 内容放行；kernel 拒掉的排布不记指纹
+- **守卫② 换色风暴**：同一套显式覆盖色出现在第 3 个不同页 → 拒并指路
+  setTheme（已排的页自动继承）；个别页破例 ≤2 页
+- 每回合页数上限**按决策者意见不设硬值** —— 由 LLM 按流程自定，
+  守卫只管「重复」不管「批量」
+
+### prompt 与前端
+
+- `roles.ts` 工作顺序重写为六阶段流水线（先方案→闸门→按方案建→校验→图层→收口），
+  明确「同一轮里同一页重复 applyLayout 会被拒」「整份换色走 setTheme」
+- `agent.plan` 下行消息 + 面板方案卡片（叙事线 / 视觉意图 / 段落页面 chips，
+  默认摊开，悬停看每页目的与 keyMessage）
+- `toolGroups` 新增 `plan` 组（setPlan/getPlan），总工具数 29 → 31
+
+### 判据
+
+新增 36 条（validatePlan 22 + planTool 6 + 守卫 8），其中：
+- P5 负对照用会话 76 的部门分组模板整组复制
+- 防抖负对照：kernel 拒掉的排布不记指纹、新一轮重建工具后可重排
+- toolGroups / events / promptCoverage 三组期望同步更新（29→31 等）
+
+全量：**1871 测试 / 57 文件**、`bunx tsc --noEmit`、`vue-tsc --build` 三绿；
+lint 与 HEAD 严格对齐（改动的老文件问题数不变，新文件 0 问题）。
+
+---
+
 ## 待完成
 
 > 下面这张表是**当前**的权威清单。其中 agent 相关的多项已被
@@ -3095,6 +3154,7 @@ openai → `null`（一律放行），gemini → 库里配的值（那个中转�
 | **edits 提取式剥层（image2 逆向）** | docs/15 §四-③：从渲染截图提取框架/图标层。官方总结说 edits 双侧支持 `background: transparent` + alpha `mask` —— 绿幕不再是必要条件，但「框架图承载结构 vs 质感」的红线边界仍需先定 | 低 |
 | **调研摄入** | 方案已定，见 [13-queue-reflect-ingest.md](./13-queue-reflect-ingest.md) §四§五。**摄入的验收标准是「几乎所有材料都能吃」**（pdf / txt / 图片 / word / md / json / 网页 url），按「解析在哪」分三档：浏览器侧（jszip 已在树里 + pdfjs）/ 服务端（URL 抓取）/ 模型（图片与扫描件）。搜索照抄 `imageSearch.ts` 那套：付费 provider 首选 + 一档免 key 兜底 | **高** |
 | ~~**`agent.confirm` 接上去**~~ | **R-61 已完成**：`askUser` 确认闸门全链路（后端工具 + ws + 面板「是/否」按钮 + 90 秒超时），prompt 有「确认闸门」节 | ✅ |
+| **R-64 · 执行纪律第二阶段** | [16-workflow-redesign.md](./16-workflow-redesign.md) §九：守卫③ 限流不自旋（拒绝后本回合禁用、配额耗尽本任务禁用，倒计时不再出现在结果里）+ 守卫④ reflectRender 页级参数 + 断线短路 + pageIndex 寻址 | 中 |
 | ~~渲染后反思~~ | 11 号 D3。**R-52 已完成**：`reflectRender` 工具 + 离屏测量 + 独立配置的视觉复核模型。判据与负对照见 13 号文档 §三 | ✅ |
 | ~~排队输入~~ | 11 号 C 期。**R-52 已完成**：`runtime/inputQueue.ts` + `runtime/taskGate.ts`，顺带修掉「被拒的输入在面板上显示成已受理」 | ✅ |
 | OAuth 登录 | GitHub / Google，目前只有账号密码 | 低 |

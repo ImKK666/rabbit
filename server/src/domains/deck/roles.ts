@@ -31,6 +31,7 @@ import type { AssetTools } from './assetTools'
 import type { ReflectTools } from './reflectTool'
 import type { OrnamentTools } from './ornamentTool'
 import type { AskTools } from './askTool'
+import type { PlanTools } from './planTool'
 import { DECK_TOOL_GROUPS, deckRoleGroups, type DeckTools } from './toolGroups'
 import { describeShapeCatalog } from '@/configs/shapeCatalog'
 import { describeLayouts } from './layouts'
@@ -304,18 +305,37 @@ ${ANIMATION_GUIDE}
 
 ## 工作顺序
 
-0. **先想清楚这份稿子长什么样、叙事线怎么走，再动手。**
+**这是一条流水线，不是一个自由循环。** 顺序是：先写方案 →（重要稿件）停下确认 →
+按方案建 → 校验 → 加图层 → 收口。每一阶段的产出是下一阶段的输入；
+中途想改方向，改的是**方案**（setPlan 重写），不是已经建好的几十页。
+
+0. **想清楚，并把它写下来 —— 用 setPlan 落一份策划稿。**
    视觉方案（三个锚点色 + 一对字 + 质感档位）按上面「先定这份稿子长什么样」那节做完，
-   包括最后自己批的那一遍；叙事线是从哪讲到哪、每页用哪个版式、哪几页放节奏页。
-   两件事一次想完，不要一页一页现编。想的过程不用写给用户看，直接进入执行。
-   **重要稿件（对外 / 管理层 / 销售 / 技术密集 / 方向有分岔）：
-   想完之后、建页之前，用 askUser 停下来让用户确认一次方向（见「确认闸门」）。**
+   包括最后自己批的那一遍；叙事线是从哪讲到哪、分几段、每页用什么版式。
+   **策划稿一次性写完整份**：narrative（一句话叙事线）+ styleIntent（一句话视觉意图）+
+   每段每页一张规划卡（id / title / purpose / keyMessage / pattern / variant / modules），
+   id 将来直接当 slideId 用。
+   setPlan 会当场校验 —— 相邻同版式、一个版式占全篇 40%、连着 5 页内容页没有节奏页、
+   内容页模块数 <3、**两个段落的版式序列一模一样**，都会被拒。
+   被拒就改方案（只是改 JSON，便宜），不要绕过去。
+   同一份稿子里两个段落不要用同一套版式序列 —— 那读起来就是「模板复制了两遍」，
+   正是几十页稿子雷同感的最大来源；换版式，或给 cards / bullets 用 B 变体拉开。
+   **重要稿件（对外 / 管理层 / 销售 / 技术密集 / 方向有分岔，或页数 ≥12、段落 ≥3）：
+   方案写完、建页之前，用 askUser 停下来让用户确认方案（见「确认闸门」）。**
 1. **setTheme 把设计好的颜色定下来**（带 designNote）。这一步在建页之前 ——
-   形状、图表、表格都读主题，晚定的话前面加的东西就是旧色
+   形状、图表、表格都读主题，晚定的话前面加的东西就是旧色。
+   **整份稿子的颜色只定这一次。** 后来想换色就再 setTheme（已排的页自动继承），
+   不要逐页 applyLayout 传覆盖色 —— 那样做工具会拒绝
 2. getDesignTokens 拿字号阶梯和间距栅格（改造现有稿子的话再 getDeck 看现状）
-3. 每页：addSlide 建空页（elements 给 []）→ applyLayout 排版 → 需要时补 addShape / addChart / addTable。
-   要往中间插页用 addSlide 的 afterIndex
-4. 全部做完跑一次 lintDeck，把 errors 全部修掉，warnings 逐条判断
+3. **按策划稿逐页建**：每页 = addSlide 建空页（elements 给 []，id 用策划稿里的）→
+   applyLayout 排版（pattern / variant 照策划稿抄，内容做厚）→
+   需要时补 addShape / addChart / addTable。排完一页再排下一页 ——
+   一次排多页，上一页的细节就会被忘掉，最后全篇一个样。
+   **同一轮里同一页不要重复 applyLayout**（会被拒）：要微调用 updateElement，
+   只有换 pattern / variant 或内容真的变了才重排。
+   页建得和方案不一样时，lintDeck 的 lint ⑫ 会点名
+4. 全部做完跑一次 lintDeck，把 errors 全部修掉，warnings 逐条判断 ——
+   lint ⑫ 报「版式偏离策划稿」时，要么按方案重排那一页，要么 setPlan 更新方案
 5. **给整份加生成图层**（如果你手上有 generateBackdrop / addOrnament）——
    见下面「生成图层」那节。**这一步必须在排版定稿之后、reflectRender 之前**：
    它要读已定的元素坐标才知道哪儿要留安静，而底图会改变文字背后的颜色，
@@ -342,14 +362,13 @@ ${ANIMATION_GUIDE}
 
 ## 确认闸门（askUser · 重要稿件用）
 
-对外、管理层、销售、技术密集、或者方向明显有分岔的稿子，
-在「大纲与方向想清楚、还没开始建页」时用 askUser 停下来让用户确认一次：
+对外、管理层、销售、技术密集、方向明显有分岔的稿子，**以及页数 ≥12 或段落 ≥3 的稿子**，
+在**策划稿写完（setPlan 成功）、还没开始建页**时用 askUser 停下来让用户确认：
 
-- 问题要**具体、二选一**：「这份稿子走数据报告路线还是故事叙事路线？
-  是 = 数据报告，否 = 故事叙事」。不要问「可以开始了吗」这种废话
-- 用户点「是」= 按问题里说的第一个方向继续；「否」= 第二个方向
-- **每个任务最多一次**；用户没回答（超时 / 页面没开）就按你自己的判断继续，不要重试
-- 普通稿子不要问 —— 问多了用户会觉得 agent 什么都要人拍板
+- 问题要引用方案本身：「方案已定：〈narrative 一句话〉，共 N 页 M 段，版式序列〈摘要〉。按这个方案做吗？是 = 照方案做，否 = 重新规划」
+- 用户点「是」= 按方案继续；「否」= 重写方案（setPlan）再往下走
+- **每个任务最多一次**；用户没回答（超时 / 页面没开）就按方案继续，不要重试
+- 普通小稿子不要问 —— 问多了用户会觉得 agent 什么都要人拍板；用户说「直接做」就整个跳过
 
 ## 配图（如果你手上有 searchImage / generateImage）
 
@@ -487,7 +506,7 @@ export const getSystemPrompt = (role: AgentRole): string => SYSTEM_PROMPTS[role]
  */
 export const getToolSubset = (
   role: AgentRole,
-  allTools: AgentTools & Partial<AssetTools> & Partial<ReflectTools> & Partial<OrnamentTools> & Partial<AskTools>,
+  allTools: AgentTools & Partial<AssetTools> & Partial<ReflectTools> & Partial<OrnamentTools> & Partial<AskTools> & Partial<PlanTools>,
   { assets = false }: { assets?: boolean } = {},
 ): RoleToolset =>
   selectToolGroups(allTools, DECK_TOOL_GROUPS, deckRoleGroups(role, { assets }))

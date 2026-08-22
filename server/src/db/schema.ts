@@ -271,6 +271,12 @@ export const conversations = sqliteTable('conversations', {
    * 来源没了就当普通会话，不影响使用。
    */
   forkedFromId: integer('forked_from_id'),
+  /**
+   * R-63 · 策划稿（docs/16）。会话级而不是 deck 级：同一份 deck 的两个会话
+   * 可以有两个意图（「扩到 50 页」vs「打磨封面」），方案跟着会话走。
+   * fork 出来的新会话不带旧方案（新方向从零规划）。
+   */
+  planJson: text('plan_json'),
   createdAt: integer('created_at', { mode: 'timestamp' }).notNull().$defaultFn(() => new Date()),
   updatedAt: integer('updated_at', { mode: 'timestamp' }).notNull().$defaultFn(() => new Date()),
 })

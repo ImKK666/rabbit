@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia'
-import { send, onMessage, type ServerMessage } from '@/services/websocket'
+import { send, onMessage, type ServerMessage, type DeckPlanMessage } from '@/services/websocket'
 import { conversationApi } from '@/services'
 import { measureRenderedSlides } from '@/utils/renderMeasure'
 import { useSlidesStore } from './slides'
@@ -88,6 +88,12 @@ export type AgentLogEntry =
    * `agent.confirm` 原样带回 requestId。只存在于实时流里，不落库。
    */
   | { type: 'ask', question: string, requestId: string, answer?: boolean }
+  /**
+   * R-63：策划稿方案卡片。setPlan 通过校验后实时推来，
+   * 渲染在确认闸门提问的上方 —— 用户看着方案点「是 / 否」。
+   * 只存在于实时流里（历史里方案在 setPlan 的工具参数里）。
+   */
+  | { type: 'plan', plan: DeckPlanMessage }
 
 export interface ConversationMeta {
   id: number
@@ -387,6 +393,11 @@ export const useAgentStore = defineStore('agent', {
             type: 'ask', question: msg.question, requestId: msg.requestId,
           }) - 1
           this.statusMessage = `等待确认：${msg.question}`
+          break
+
+        case 'agent.plan':
+          // R-63：策划稿方案卡片。实时流专属，紧挨着它后面的就是闸门提问
+          this.log.push({ type: 'plan', plan: msg.plan })
           break
 
         case 'error':

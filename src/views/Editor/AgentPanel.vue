@@ -161,6 +161,39 @@
               <div class="ask-answered" v-else>已选择：{{ entry.answer ? '是' : '否' }}</div>
             </div>
 
+            <!-- R-63：策划稿方案卡片。默认摊开 —— 闸门提问就在它下面，
+                 用户要看着方案才能判断「是 / 否」 -->
+            <div class="log-entry plan-entry" v-else-if="entry.type === 'plan'">
+              <div class="plan-header" @click="toggleExpand(idx)">
+                <span class="plan-icon">📋</span>
+                <span class="plan-title">
+                  策划稿 · {{ planPageCount(entry.plan) }} 页 {{ entry.plan.sections.length }} 段
+                </span>
+                <span class="expand-arrow" :class="{ open: !expandedEntries.has(idx) }">▸</span>
+              </div>
+              <div class="plan-body" v-if="!expandedEntries.has(idx)">
+                <div class="plan-line narrative"><b>叙事线</b>{{ entry.plan.narrative }}</div>
+                <div class="plan-line style"><b>视觉</b>{{ entry.plan.styleIntent }}</div>
+                <div class="plan-section" v-for="sec in entry.plan.sections" :key="sec.id">
+                  <div class="plan-sec-title">
+                    {{ sec.title }}
+                    <span class="plan-sec-purpose" v-if="sec.purpose">{{ sec.purpose }}</span>
+                  </div>
+                  <div class="plan-pages">
+                    <span
+                      class="plan-page"
+                      v-for="(p, pi) in sec.slides"
+                      :key="p.id"
+                      v-tooltip="`${p.purpose}${p.keyMessage ? `｜记住：${p.keyMessage}` : ''}`"
+                    >
+                      {{ pi + 1 }}.{{ p.title }}
+                      <em>{{ p.pattern }}{{ p.variant === 'B' ? '·B' : '' }}</em>
+                    </span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
             <!-- 状态变化 -->
             <div class="log-entry status-entry" v-else-if="entry.type === 'status' && entry.message">
               <span class="status-icon" :class="entry.status">●</span>
@@ -208,6 +241,7 @@ import { storeToRefs } from 'pinia'
 import { groupStartOf as groupStarts, groupStats, summarizeGroup } from '@/utils/agentLogGroups'
 import { useMainStore, useAgentStore } from '@/store'
 import { useStickToBottom } from '@/hooks/useStickToBottom'
+import type { DeckPlanMessage } from '@/services/websocket'
 import Button from '@/components/Button.vue'
 import TextArea from '@/components/TextArea.vue'
 import AgentReasoningEntry from './AgentReasoningEntry.vue'
@@ -430,6 +464,10 @@ const summarizeArgs = (args: Record<string, unknown>): string => {
   if (keys.length > 2) parts.push('...')
   return parts.join(', ')
 }
+
+/** R-63：策划稿的总页数（方案卡片的摘要行用） */
+const planPageCount = (plan: DeckPlanMessage): number =>
+  plan.sections.reduce((n, s) => n + s.slides.length, 0)
 
 /**
  * 外层面板的贴底跟随。
@@ -968,6 +1006,83 @@ useStickToBottom(bodyRef, log, { deep: true })
   .ask-answered {
     font-size: 12px;
     color: var(--textColorMuted, #888);
+  }
+}
+
+// R-63：策划稿方案卡片。比工具条目更显眼 —— 它是闸门要用户确认的**方案**，
+// 不是过程日志；默认摊开，点标题行收起
+.plan-entry {
+  border: 1px solid rgba(125, 105, 205, 0.5);
+  border-radius: 6px;
+  background: rgba(125, 105, 205, 0.06);
+  overflow: hidden;
+}
+.plan-header {
+  padding: 7px 10px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  font-size: 12px;
+
+  &:hover { background: rgba(125, 105, 205, 0.08); }
+}
+.plan-icon { font-size: 13px; }
+.plan-title {
+  font-weight: 600;
+  color: #5b4a9e;
+  flex: 1;
+}
+.plan-body {
+  border-top: 1px solid rgba(125, 105, 205, 0.25);
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.plan-line {
+  font-size: 11px;
+  line-height: 1.5;
+  color: #555;
+
+  b {
+    display: inline-block;
+    margin-right: 6px;
+    color: #5b4a9e;
+    flex-shrink: 0;
+  }
+}
+.plan-section {
+  margin-top: 2px;
+}
+.plan-sec-title {
+  font-size: 11px;
+  font-weight: 600;
+  color: #444;
+  margin-bottom: 3px;
+}
+.plan-sec-purpose {
+  font-weight: 400;
+  font-size: 10px;
+  color: #999;
+  margin-left: 4px;
+}
+.plan-pages {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.plan-page {
+  font-size: 10px;
+  padding: 2px 6px;
+  background: rgba(125, 105, 205, 0.1);
+  border-radius: 10px;
+  color: #5b4a9e;
+  white-space: nowrap;
+
+  em {
+    font-style: normal;
+    color: #8d7cc9;
   }
 }
 

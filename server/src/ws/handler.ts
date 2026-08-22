@@ -1,6 +1,7 @@
 import type { ServerWebSocket } from 'bun'
 import { verifyToken, type JwtPayload } from '@server/auth/jwt'
 import { runAgentTask, cancelAgentTask, releaseWsResources, settleRenderResult, settleUserAnswer } from '@server/agent/orchestrator'
+import type { DeckPlan } from '@server/domains/deck/plan'
 
 export interface WsUserData {
   userId: number
@@ -74,6 +75,12 @@ export type ServerMessage =
    * 「后端挂起等回答」的下行消息，机制同一套（`pendingRequests`）。
    */
   | { type: 'agent.ask', requestId: string, question: string }
+  /**
+   * R-63：agent 写好了策划稿（setPlan 通过校验并落库）。
+   * 面板渲染成方案卡片；确认闸门的提问跟在它后面，
+   * 用户看着这张卡片点「是 / 否」。只随 setPlan 实时发，不落消息表。
+   */
+  | { type: 'agent.plan', plan: DeckPlan }
   /**
    * 这一句用户输入的去向。**三种状态一条消息**，不是三种消息。
    *

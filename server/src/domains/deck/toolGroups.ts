@@ -22,12 +22,14 @@ import type { ReflectTools } from './reflectTool'
 import type { OrnamentTools } from './ornamentTool'
 // askTool 不碰库，但和上面保持一致：类型导入不拖 bun:sqlite 进 vitest
 import type { AskTools } from './askTool'
+// R-63 策划稿工具同理：落库是 pipeline 注入的回调，文件本身不碰库
+import type { PlanTools } from './planTool'
 
 /** deck 域现在能提供的全部工具。装配时由 `pipeline.ts` 把几组合到一起 */
-export type DeckTools = AgentTools & AssetTools & ReflectTools & OrnamentTools & AskTools
+export type DeckTools = AgentTools & AssetTools & ReflectTools & OrnamentTools & AskTools & PlanTools
 
 /**
- * 26 个工具分成 8 组（R-61 加了确认闸门 askUser）。
+ * 31 个工具分成 11 组（R-61 加确认闸门 askUser，R-63 加策划稿 setPlan/getPlan）。
  *
  * `satisfies` 而不是类型标注：这样组里写错工具名是**编译错误**，
  * 同时 `DECK_TOOL_GROUPS` 的键仍是字面量联合，
@@ -86,13 +88,19 @@ export const DECK_TOOL_GROUPS = {
    * 将来想要「只读 agent」或「不许提问的 agent」时这一组要能单独摘掉。
    */
   ask: ['askUser'],
+
+  /**
+   * R-63：策划稿（docs/16）。单独一组 —— 它是**另一个载体**（conversations.plan_json）
+   * 而不是 deck 状态，将来「只许改 deck、不许写方案」的角色要能单独摘掉。
+   */
+  plan: ['setPlan', 'getPlan'],
 } as const satisfies ToolGroupMap<DeckTools>
 
 export type DeckToolGroup = keyof typeof DECK_TOOL_GROUPS
 
 /** 全部能力。单独抽出来是为了下面那张表和判据都指向同一份组名 */
 const ALL_DECK_GROUPS = [
-  'read', 'slide', 'element', 'layout', 'theme', 'animation', 'asset', 'render', 'ornament', 'ask',
+  'read', 'slide', 'element', 'layout', 'theme', 'animation', 'asset', 'render', 'ornament', 'ask', 'plan',
 ] as const satisfies readonly DeckToolGroup[]
 
 /**

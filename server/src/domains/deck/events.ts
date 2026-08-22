@@ -49,6 +49,8 @@ const CANCEL_POLICY: Record<ServerMessage['type'], 'survives' | 'reclaimable'> =
   'agent.reasoning.done': 'reclaimable',
   'agent.conversation': 'reclaimable',
   'agent.ask': 'reclaimable',
+  // 方案卡片是实时展示不是权威状态 —— 方案本体在库（conversations.plan_json）
+  'agent.plan': 'reclaimable',
   'error': 'reclaimable',
 
   // 输入去向回执。分类成「可回收」不是因为它不重要，是因为**它根本不从这条闸门走** ——

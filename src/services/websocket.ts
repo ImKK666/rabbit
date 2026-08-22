@@ -80,7 +80,32 @@ export type ServerMessage =
   | { type: 'agent.asset.pending', ticket: string, kind: 'search' | 'generate', prompt: string }
   | { type: 'agent.asset.ready', ticket: string, src: string, width: number, height: number }
   | { type: 'agent.asset.failed', ticket: string, reason: string }
+  /**
+   * R-63：agent 写好的策划稿（setPlan 通过校验后发来）。
+   * 面板渲染成方案卡片；确认闸门的提问跟在它后面。
+   */
+  | { type: 'agent.plan', plan: DeckPlanMessage }
   | { type: 'error', message: string }
+
+/** 策划稿的线上形状 —— 后端 DeckPlan 的面板用子集，松一点避免跨端耦合 */
+export interface DeckPlanMessage {
+  narrative: string
+  styleIntent: string
+  sections: Array<{
+    id: string
+    title: string
+    purpose: string
+    slides: Array<{
+      id: string
+      title: string
+      purpose: string
+      keyMessage: string
+      pattern: string
+      variant?: 'A' | 'B'
+      modules: number
+    }>
+  }>
+}
 
 type MessageHandler = (msg: ServerMessage) => void
 

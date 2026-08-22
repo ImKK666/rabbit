@@ -27,6 +27,15 @@ const SAMPLES: ServerMessage[] = [
   { type: 'agent.reasoning.done', role: 'generator' },
   { type: 'agent.conversation', id: 1, title: '新会话' },
   { type: 'agent.ask', requestId: 'req_ask_1', question: '要横版还是竖版' },
+  {
+    type: 'agent.plan',
+    plan: {
+      version: 1,
+      narrative: '从问题到方案再到落地',
+      styleIntent: 'swiss grid minimalism',
+      sections: [{ id: 's01', title: '开场', purpose: '点题', slides: [] }],
+    },
+  } as ServerMessage,
   { type: 'agent.deck', slidesJson: '[]', version: 3 },
   { type: 'agent.asset.pending', ticket: 'a1b2', kind: 'generate', prompt: 'a data center' },
   { type: 'agent.asset.ready', ticket: 'a1b2', src: `asset://${'0'.repeat(64)}`, width: 1376, height: 768 },
@@ -57,6 +66,8 @@ describe('取消策略', () => {
       'agent.reasoning.done',
       'agent.conversation',
       'agent.ask',
+      // 方案卡片是实时展示不是权威状态 —— 方案本体在库里（plan_json）
+      'agent.plan',
       // 三条图片消息全部可回收：工具是同步等图的，图由 agent 自己写进 deck，
       // 所以它们一个字节的权威状态都不带 —— 详见 events.ts 里的说明
       'agent.asset.pending',
@@ -71,9 +82,9 @@ describe('取消策略', () => {
     // 和 boundary.test.ts 那条「扫到的文件数 ≥ 5」是同一类断言
     const types = new Set(SAMPLES.map(m => m.type))
     expect(types.size).toBe(SAMPLES.length)
-    // 11 → 12：第十八轮加了 agent.asset.failed。
+    // 12 → 13：R-63 加了 agent.plan。
     // 这条断言按设计就该在协议增删时先红 —— 它是「样本别落后于协议」的锚
-    expect(SAMPLES).toHaveLength(12)
+    expect(SAMPLES).toHaveLength(13)
   })
 
   it('agent.deck 是唯一放行的那一条，且它确实被放行', () => {

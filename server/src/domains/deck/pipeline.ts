@@ -53,6 +53,8 @@ import { createAssetTools, type AssetTools } from './assetTools'
 import { createReflectTools, reflectVisualAvailable } from './reflectTool'
 import { createOrnamentTools } from './ornamentTool'
 import { createAskTool } from './askTool'
+import { createPlanTools } from './planTool'
+import { validatePlan, type DeckPlan } from './plan'
 import { getSystemPrompt, getToolSubset } from './roles'
 import { createDeckChannel, type DeckChannel } from './channel'
 // 单一真相源在 kernel —— lint ⑨ 拿它当「颜色真的被改过」的参照物（R-60）
@@ -136,6 +138,24 @@ const saveMessage = async (
   content: string,
 ) => {
   await db.insert(messages).values({ conversationId, role, content })
+}
+
+/**
+ * R-63：把会话里存的策划稿读回来。
+ *
+ * 存进去时经过 validatePlan，正常路径不会再验一遍；但库里是外部世界
+ * （手改、老版本写入），读回来必须走一次校验拿类型收窄 ——
+ * 坏数据当「没有方案」处理，绝不让它把 lint ⑫ 或 setPlan 炸掉。
+ */
+const parseStoredPlan = (json: string | null | undefined): DeckPlan | null => {
+  if (!json) return null
+  try {
+    const check = validatePlan(JSON.parse(json))
+    return check.ok ? check.plan : null
+  }
+  catch {
+    return null
+  }
 }
 
 /**
@@ -396,6 +416,8 @@ interface TurnInput {
   extra?: string
   /** 收口轮：不给任何工具，只让它把话说完 */
   toolless?: boolean
+  /** R-63：本任务开始时的策划稿（从会话读，可能为 null） */
+  initialPlan: DeckPlan | null
 }
 
 interface TurnResult {
@@ -411,7 +433,7 @@ interface TurnResult {
  * 输出的每一条模型消息原样追加回同一份历史 —— 下一轮它们就是上下文。
  */
 const runTurn = async ({
-  userId, conversationId, state, channel, signal, assetTools, visual, extra, toolless,
+  userId, conversationId, state, channel, signal, assetTools, visual, extra, toolless, initialPlan,
 }: TurnInput): Promise<TurnResult> => {
   channel.emit({ type: 'agent.status', status: 'thinking', message: `${AGENT_LABEL} 正在思考...` })
 
@@ -507,8 +529,25 @@ const runTurn = async ({
   // 「取消即作废在等提问」随任务生命周期一起走
   const ask = createAskTool({ emit: msg => channel.emit(msg), signal })
 
+  /**
+   * R-63：策划稿。状态是这一轮的局部绑定（和 deck state 同一个道理），
+   * 落库走 `save` 回调写回 conversations 行 —— planTool 自己不碰库
+   * （见 planTool.ts 头注释）。任务开始时从会话读来的方案就是 `initialPlan`。
+   */
+  const plan = initialPlan
+  const planAccessor = { get: () => plan }
+  const planTools = createPlanTools({
+    get: () => plan,
+    save: async (p) => {
+      await db.update(conversations)
+        .set({ planJson: JSON.stringify(p) })
+        .where(eq(conversations.id, conversationId))
+    },
+    emit: msg => channel.emit(msg),
+  })
+
   const allTools = {
-    ...createAgentTools(accessor), ...(assetTools ?? {}), ...reflect.tools, ...ornament, ...ask,
+    ...createAgentTools(accessor, planAccessor), ...(assetTools ?? {}), ...reflect.tools, ...ornament, ...ask, ...planTools,
   }
   const tools = toolless ? undefined : getToolSubset(AGENT_ROLE, allTools, { assets: !!assetTools })
   const system = getSystemPrompt(AGENT_ROLE)
@@ -699,7 +738,7 @@ export const runDeckTask = async ({
 
     let result = await runTurn({
       userId, conversationId: conv.id, state, channel, signal,
-      assetTools, visual, extra: selection,
+      assetTools, visual, extra: selection, initialPlan: parseStoredPlan(conv.planJson),
     })
     state = result.state
 
@@ -714,6 +753,7 @@ export const runDeckTask = async ({
       result = await runTurn({
         userId, conversationId: conv.id, state: result.state, channel, signal,
         assetTools, visual, extra: FINALIZE_PROMPT, toolless: true,
+        initialPlan: parseStoredPlan(conv.planJson),
       })
       state = result.state
       channel.emit({

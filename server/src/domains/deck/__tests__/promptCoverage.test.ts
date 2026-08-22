@@ -30,12 +30,13 @@ const prompt = getSystemPrompt('deck')
  * 慢、贵、有先后依赖、或者不做也能交差的。
  */
 const MUST_BE_IN_WORKFLOW = [
-  'setTheme',          // 必须在建页之前，晚了前面的元素就是旧色
-  'applyLayout',       // 主力
-  'lintDeck',          // 不主动跑就不会跑
-  'reflectRender',     // 慢，且只有它看得见渲染后的问题
-  'generateBackdrop',  // 慢、贵，且有严格的先后位置
-  'askUser',           // R-61：不主动说「重要稿件可以停一次」，模型永远不会问
+  'setTheme', // 必须在建页之前，晚了前面的元素就是旧色
+  'applyLayout', // 主力
+  'lintDeck', // 不主动跑就不会跑
+  'reflectRender', // 慢，且只有它看得见渲染后的问题
+  'generateBackdrop', // 慢、贵，且有严格的先后位置
+  'askUser', // R-61：不主动说「重要稿件可以停一次」，模型永远不会问
+  'setPlan', // R-63：不主动说「先写方案」，模型直接跳到建页
 ]
 
 describe('工具在提示词里够得着', () => {

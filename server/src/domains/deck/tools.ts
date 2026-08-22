@@ -38,6 +38,7 @@ import {
   type KernelOutcome,
 } from './kernel'
 import { LAYOUT_PATTERNS, describeLayouts } from './layouts'
+import { lintPlanAdherence, type DeckPlan } from './plan'
 import {
   buildPalette, describePaletteStyles, FONT_FAMILIES, TYPE_SCALE, SPACING, SAFE,
   PALETTE_STYLES, TYPOGRAPHY_PAIRS,
@@ -116,487 +117,565 @@ const summarizeElement = (el: PPTElement) => ({
 // 工具定义
 // ---------------------------------------------------------------------------
 
-export const createAgentTools = (accessor: DeckStateAccessor) => ({
+/**
+ * 策划稿的只读访问器（R-63）—— lintDeck 拿它跑 lint ⑫ 一致性检查。
+ * 落库与下行在 `planTool.ts`（pipeline 注入回调），这里只读。
+ */
+export interface PlanAccessor {
+  get: () => DeckPlan | null
+}
+
+/**
+ * 守卫① 的键：这一轮里某页第一次排版的指纹。
+ * 同页同版式同内容再排 = 白做一次模板重建（日志实测 36 连击），
+ * 直接拒；换 pattern / variant 或内容真的变了才放行。
+ */
+interface LaidFingerprint {
+  pattern: string
+  variant?: 'A' | 'B'
+  contentJson: string
+}
+
+/**
+ * 守卫② 的阈值：同一套显式覆盖色出现在**第三个**不同页时拒。
+ * 个别页破例允许（≤2 页），再多就是整份换色 —— 那该走 setTheme。
+ */
+const COLOR_STORM_PAGE_LIMIT = 2
+
+export const createAgentTools = (accessor: DeckStateAccessor, planAccessor?: PlanAccessor) => {
+  /**
+   * R-63 守卫状态 —— **每轮一份**。
+   *
+   * 工具在 pipeline 的每一轮里重建（`runTurn`），所以这个 Map 的
+   * 生命周期恰好是「一轮」：下一轮重新排同一页是合法的（用户在中间
+   * 改过主意），而一轮之内连排同一页十几次一定是风暴。
+   */
+  const laidThisTurn = new Map<string, LaidFingerprint>()
+  const colorPagesThisTurn = new Map<string, Set<string>>()
+
+  return {
   // --- 读 ---
 
-  getDeck: tool({
-    description: '获取当前演示文稿的结构总览。传 includeElements=true 可一次拿到每页所有元素的摘要（id/类型/位置/文本前 60 字），审查和整体调整时用这个，比逐页 getSlide 省很多步',
-    parameters: z.object({
-      includeElements: z.boolean().optional().describe('是否连每页元素摘要一起返回，默认 false'),
-    }),
-    execute: async ({ includeElements }) => {
-      const { slides, theme, version } = accessor.get()
-      return JSON.stringify({
-        slideCount: slides.length,
-        slides: slides.map((s, i) => ({
-          index: i,
-          id: s.id,
-          type: s.type,
-          elementCount: s.elements.length,
-          animationCount: s.animations?.length || 0,
-          background: s.background?.type,
-          ...(includeElements
-            ? {
-              elements: s.elements.map(summarizeElement),
-              animations: s.animations?.map(a => ({ id: a.id, elId: a.elId, effect: a.effect, trigger: a.trigger })),
-            }
-            : {}),
-        })),
-        theme: { backgroundColor: theme.backgroundColor, fontColor: theme.fontColor, fontName: theme.fontName },
-        version,
-      })
-    },
-  }),
-
-  getSlide: tool({
-    description: '获取指定页面的完整数据，包括所有元素和动画',
-    parameters: z.object({
-      slideId: z.string().describe('幻灯片 ID'),
-    }),
-    execute: async ({ slideId }) => {
-      const { slides } = accessor.get()
-      const slide = slides.find(s => s.id === slideId)
-      if (!slide) return JSON.stringify({ error: `幻灯片 "${slideId}" 不存在` })
-      return JSON.stringify(slide)
-    },
-  }),
-
-  findElements: tool({
-    description: '按条件查找元素。可按页面、文本类型（title/subtitle/content 等）筛选',
-    parameters: z.object({
-      slideId: z.string().optional().describe('限定在某一页查找，不传则全局查找'),
-      textType: z.string().optional().describe('文本语义类型：title, subtitle, content, item, itemTitle 等'),
-    }),
-    execute: async ({ slideId, textType }) => {
-      const { slides } = accessor.get()
-      const elements = findElementsByType(slides, slideId, textType)
-      return JSON.stringify(elements.map(summarizeElement))
-    },
-  }),
-
-  lintDeck: tool({
-    description: '检查整份演示文稿。两类问题：几何（越界、文本重叠、空元素、孤儿动画）和设计（相邻页版式重复、整页没有非文本元素、动画种类太少）。收尾前必须跑一次',
-    parameters: z.object({
-      designChecks: z.boolean().optional().describe('是否包含设计类检查，默认 true'),
-    }),
-    execute: async ({ designChecks }) => {
-      // theme 必须传：判据⑨ 要看 theme.designNote，少了它走 setTheme 定色的稿子会被误报
-      const { slides, theme } = accessor.get()
-      const issues = lintDeck(slides, { designChecks, theme })
-      return JSON.stringify({ issueCount: issues.length, issues })
-    },
-  }),
-
-  getDesignTokens: tool({
-    description: '获取当前主题推导出的设计规范：颜色角色（主色/强调色/正文/次要文字/卡片底/描边）、字号阶梯、间距栅格、安全区、可选的配色风格。自己配色前先调这个，别凭空编颜色',
-    parameters: z.object({
-      style: z.enum(PALETTE_STYLE_ENUM).optional()
-        .describe('按哪个风格推导。不传按 business'),
-    }),
-    execute: async ({ style }) => {
-      const { theme } = accessor.get()
-      const palette = buildPalette(theme, undefined, style)
-      return JSON.stringify({
-        palette,
-        style: style ?? 'business',
-        styles: describePaletteStyles(),
-        typeScale: TYPE_SCALE,
-        spacing: SPACING,
-        safeArea: { left: SAFE.left, top: SAFE.top, right: SAFE.right, bottom: SAFE.bottom },
-        canvas: { width: 1000, height: 562.5 },
-        hint: '同一个角色在整份文稿里只用一个取值。字号只在阶梯里挑，不要用阶梯之外的数值。'
-          + '**风格整份文稿只选一个**，每页 applyLayout 都传同一个值 —— 换来换去等于没有风格',
-      })
-    },
-  }),
-
-  // --- 写 ---
-
-  updateElement: tool({
-    description: '更新元素属性。可以改位置、大小、文本内容、颜色、字体等',
-    parameters: z.object({
-      elementId: z.string().describe('要修改的元素 ID'),
-      props: z.record(z.unknown()).describe('要更新的属性键值对，如 { "left": 100, "content": "<p>新内容</p>" }'),
-    }),
-    execute: async ({ elementId, props }) => {
-      const state = accessor.get()
-      return applyMutation(accessor, applyUpdateElement(state.slides, elementId, props))
-    },
-  }),
-
-  addElement: tool({
-    description: '在指定页面添加元素。必须提供完整的元素数据',
-    parameters: z.object({
-      slideId: z.string().describe('目标幻灯片 ID'),
-      element: z.record(z.unknown()).describe('完整的元素数据，必须包含 id, type, left, top, width, height, rotate 等'),
-    }),
-    execute: async ({ slideId, element }) => {
-      const state = accessor.get()
-      return applyMutation(accessor, applyAddElement(state.slides, slideId, element as unknown as PPTElement))
-    },
-  }),
-
-  deleteElement: tool({
-    description: '删除元素及其关联的动画',
-    parameters: z.object({
-      elementId: z.string().describe('要删除的元素 ID'),
-    }),
-    execute: async ({ elementId }) => {
-      const state = accessor.get()
-      return applyMutation(accessor, applyDeleteElement(state.slides, elementId))
-    },
-  }),
-
-  addSlide: tool({
-    description: '添加新页面。可指定插入位置',
-    parameters: z.object({
-      slide: z.record(z.unknown()).describe('完整的幻灯片数据，必须包含 id 和 elements'),
-      afterIndex: z.number().int().optional().describe('在哪个索引之后插入，不传则追加到末尾'),
-    }),
-    execute: async ({ slide, afterIndex }) => {
-      const state = accessor.get()
-      return applyMutation(accessor, applyAddSlide(state.slides, slide as unknown as Slide, afterIndex))
-    },
-  }),
-
-  updateSlide: tool({
-    description: '更新页面属性（背景、备注、翻页方式等）。不要用这个改元素，用 updateElement',
-    parameters: z.object({
-      slideId: z.string().describe('幻灯片 ID'),
-      props: z.record(z.unknown()).describe('要更新的属性，如 { "background": { "type": "solid", "color": "#fff" } }'),
-    }),
-    execute: async ({ slideId, props }) => {
-      const state = accessor.get()
-      return applyMutation(accessor, applyUpdateSlide(state.slides, slideId, props as Partial<Slide>))
-    },
-  }),
-
-  deleteSlide: tool({
-    description: '删除一页幻灯片。不能删除最后一页',
-    parameters: z.object({
-      slideId: z.string().describe('要删除的幻灯片 ID'),
-    }),
-    execute: async ({ slideId }) => {
-      const state = accessor.get()
-      return applyMutation(accessor, applyDeleteSlide(state.slides, slideId))
-    },
-  }),
-
-  setTheme: tool({
-    description: [
-      '**定这份稿子的颜色，用这个。** 整份走一次，形状 / 图表 / 表格 / getDesignTokens 全都跟着走。',
-      'backgroundColor 是页面底色，themeColors[0] 是主色、[1] 是强调色。',
-      '',
-      'applyLayout 那三个 primaryColor / accentColor / backgroundColor 是**个别页的例外**，',
-      '只改得动版式那一层 —— 拿它们当整份配色用，形状和图表会留在旧主题上，一份稿子两张脸。',
-    ].join('\n'),
-    parameters: z.object({
-      props: z.record(z.unknown()).describe('要更新的主题属性，如 { "backgroundColor": "#f4f1ea", "themeColors": ["#8a1538", "#e0a458"], "fontColor": "#2b2b2b" }'),
-      designNote: z.string().optional()
-        .describe('一句话：这套颜色是被这份稿子里的什么驱动的。定颜色时必须写 —— 写不出来说明还没设计，只是挑了几个好看的色。lintDeck 会查'),
-      artDirection: z.string().optional()
-        .describe('一个**英文短语**：这份稿子的视觉流派，如 "mid-century editorial illustration"、"swiss grid minimalism"、"japanese textile pattern"。会注入生成底图/装饰层的生图提示词，让底图跟着内容走。写具体流派，不要写 professional / clean 这种空词；没写就按质感档位用默认流派'),
-    }),
-    execute: async ({ props, designNote, artDirection }) => {
-      const state = accessor.get()
-      // R-60：designNote 必须伴随真实的颜色决定 —— 库里实测过「note 写满一页、
-      // 颜色一个没动」的稿子（星耀影视）。这里在入口就把那条路堵死。
-      const colorKeys = ['backgroundColor', 'themeColors', 'fontColor'] as const
-      if (designNote?.trim() && !colorKeys.some(k => k in (props ?? {}))) {
+    getDeck: tool({
+      description: '获取当前演示文稿的结构总览。传 includeElements=true 可一次拿到每页所有元素的摘要（id/类型/位置/文本前 60 字），审查和整体调整时用这个，比逐页 getSlide 省很多步',
+      parameters: z.object({
+        includeElements: z.boolean().optional().describe('是否连每页元素摘要一起返回，默认 false'),
+      }),
+      execute: async ({ includeElements }) => {
+        const { slides, theme, version } = accessor.get()
         return JSON.stringify({
-          ok: false,
-          error: 'designNote 写了，但 props 里一个颜色键（backgroundColor / themeColors / fontColor）都没有 —— '
-            + '设计说明必须和真实的颜色决定一起给，把想好的颜色写进来',
+          slideCount: slides.length,
+          slides: slides.map((s, i) => ({
+            index: i,
+            id: s.id,
+            type: s.type,
+            elementCount: s.elements.length,
+            animationCount: s.animations?.length || 0,
+            background: s.background?.type,
+            ...(includeElements
+              ? {
+                elements: s.elements.map(summarizeElement),
+                animations: s.animations?.map(a => ({ id: a.id, elId: a.elId, effect: a.effect, trigger: a.trigger })),
+              }
+              : {}),
+          })),
+          theme: { backgroundColor: theme.backgroundColor, fontColor: theme.fontColor, fontName: theme.fontName },
+          version,
         })
-      }
-      const outcome = applySetTheme(state.theme, {
-        ...(props as Partial<SlideTheme>),
-        ...(designNote ? { designNote } : {}),
-        ...(artDirection ? { artDirection } : {}),
-      })
-      if (!outcome.ok) return JSON.stringify({ ok: false, error: outcome.error })
-      accessor.set({ ...state, theme: outcome.data, version: state.version + 1 })
-      await accessor.onChange?.()
-      return JSON.stringify({ ok: true, version: state.version + 1 })
-    },
-  }),
-
-  setAnimationPreset: tool({
-    description: '给整页套用动画方案，一次调用生成全页合法的动画时间线。想让一页元素「依次出现」「标题先出再出内容」时优先用这个，比逐个 addAnimation 省很多步。会覆盖该页原有动画',
-    parameters: z.object({
-      slideId: z.string().describe('幻灯片 ID'),
-      preset: z.enum(['sequential', 'title-then-content', 'all-at-once', 'none']).describe(
-        'sequential=按阅读顺序依次入场 / title-then-content=标题先入其余随后同时入 / all-at-once=全部同时入场 / none=清空本页动画',
-      ),
-      effect: z.enum(ANIMATION_EFFECTS).optional().describe('入场效果，默认 fade-up'),
-      duration: z.number().int().min(100).max(5000).optional().describe('持续时间（毫秒），默认 600'),
+      },
     }),
-    execute: async ({ slideId, preset, effect, duration }) => {
-      const state = accessor.get()
-      return applyMutation(accessor, applyAnimationPreset(state.slides, slideId, preset, { effect, duration }))
-    },
-  }),
 
-  addAnimation: tool({
-    description: '给指定元素追加动画。可一次传多条（数组）。整页统一编排请优先用 setAnimationPreset',
-    parameters: z.object({
-      slideId: z.string().describe('幻灯片 ID'),
-      animations: z.array(z.object({
-        id: z.string().describe('动画 ID，全页唯一，如 anim_xxx'),
-        elId: z.string().describe('目标元素 ID，必须在本页存在'),
-        effect: z.enum(ANIMATION_EFFECTS).describe('动画效果'),
-        type: z.enum(['in', 'out', 'attention']).describe('必须与 effect 自洽：exit-* 是 out，pulse-*/grow-shrink-* 是 attention，其余是 in'),
-        duration: z.number().int().min(100).max(5000).describe('持续时间（毫秒），推荐 500~1000'),
-        trigger: z.enum(['click', 'meantime', 'auto']).describe('click=点击触发新一步, meantime=与上一条同时, auto=上一条结束后自动'),
-      })).min(1).describe('动画配置数组'),
+    getSlide: tool({
+      description: '获取指定页面的完整数据，包括所有元素和动画',
+      parameters: z.object({
+        slideId: z.string().describe('幻灯片 ID'),
+      }),
+      execute: async ({ slideId }) => {
+        const { slides } = accessor.get()
+        const slide = slides.find(s => s.id === slideId)
+        if (!slide) return JSON.stringify({ error: `幻灯片 "${slideId}" 不存在` })
+        return JSON.stringify(slide)
+      },
     }),
-    execute: async ({ slideId, animations }) => {
-      const state = accessor.get()
-      return applyMutation(accessor, applyAddAnimations(state.slides, slideId, animations))
-    },
-  }),
 
-  removeAnimation: tool({
-    description: '删除动画。可按 animationIds、按 elementIds，或 all=true 清空整页。改动画时先删再加',
-    parameters: z.object({
-      slideId: z.string().describe('幻灯片 ID'),
-      animationIds: z.array(z.string()).optional().describe('按动画 ID 删'),
-      elementIds: z.array(z.string()).optional().describe('删掉这些元素身上的全部动画'),
-      all: z.boolean().optional().describe('清空本页所有动画'),
+    findElements: tool({
+      description: '按条件查找元素。可按页面、文本类型（title/subtitle/content 等）筛选',
+      parameters: z.object({
+        slideId: z.string().optional().describe('限定在某一页查找，不传则全局查找'),
+        textType: z.string().optional().describe('文本语义类型：title, subtitle, content, item, itemTitle 等'),
+      }),
+      execute: async ({ slideId, textType }) => {
+        const { slides } = accessor.get()
+        const elements = findElementsByType(slides, slideId, textType)
+        return JSON.stringify(elements.map(summarizeElement))
+      },
     }),
-    execute: async ({ slideId, animationIds, elementIds, all }) => {
-      const state = accessor.get()
-      return applyMutation(accessor, applyRemoveAnimations(state.slides, slideId, { animationIds, elementIds, all }))
-    },
-  }),
 
-  // --- 版式 / 图形 ---
+    lintDeck: tool({
+      description: '检查整份演示文稿。两类问题：几何（越界、文本重叠、空元素、孤儿动画）和设计（相邻页版式重复、整页没有非文本元素、动画种类太少）。有策划稿时还会查页面版式是否偏离方案（lint ⑫）。收尾前必须跑一次',
+      parameters: z.object({
+        designChecks: z.boolean().optional().describe('是否包含设计类检查，默认 true'),
+      }),
+      execute: async ({ designChecks }) => {
+      // theme 必须传：判据⑨ 要看 theme.designNote，少了它走 setTheme 定色的稿子会被误报
+        const { slides, theme } = accessor.get()
+        const issues = lintDeck(slides, { designChecks, theme })
+        // lint ⑫ · 策划稿一致性（R-63）：漂移只报 warning，见 plan.ts 头注释
+        const plan = planAccessor?.get()
+        if (plan) issues.push(...lintPlanAdherence(plan, slides))
+        return JSON.stringify({ issueCount: issues.length, issues })
+      },
+    }),
 
-  applyLayout: tool({
-    description: `按语义版式重排一整页 —— **做新页面的首选做法**。你给版式名和内容，坐标、字号、间距、配色、层次、出场动画全部自动算，产出必然对齐、必然符合设计规范。
+    getDesignTokens: tool({
+      description: '获取当前主题推导出的设计规范：颜色角色（主色/强调色/正文/次要文字/卡片底/描边）、字号阶梯、间距栅格、安全区、可选的配色风格。自己配色前先调这个，别凭空编颜色',
+      parameters: z.object({
+        style: z.enum(PALETTE_STYLE_ENUM).optional()
+          .describe('按哪个风格推导。不传按 business'),
+      }),
+      execute: async ({ style }) => {
+        const { theme } = accessor.get()
+        const palette = buildPalette(theme, undefined, style)
+        return JSON.stringify({
+          palette,
+          style: style ?? 'business',
+          styles: describePaletteStyles(),
+          typeScale: TYPE_SCALE,
+          spacing: SPACING,
+          safeArea: { left: SAFE.left, top: SAFE.top, right: SAFE.right, bottom: SAFE.bottom },
+          canvas: { width: 1000, height: 562.5 },
+          hint: '同一个角色在整份文稿里只用一个取值。字号只在阶梯里挑，不要用阶梯之外的数值。'
+          + '**风格整份文稿只选一个**，每页 applyLayout 都传同一个值 —— 换来换去等于没有风格',
+        })
+      },
+    }),
+
+    // --- 写 ---
+
+    updateElement: tool({
+      description: '更新元素属性。可以改位置、大小、文本内容、颜色、字体等',
+      parameters: z.object({
+        elementId: z.string().describe('要修改的元素 ID'),
+        props: z.record(z.unknown()).describe('要更新的属性键值对，如 { "left": 100, "content": "<p>新内容</p>" }'),
+      }),
+      execute: async ({ elementId, props }) => {
+        const state = accessor.get()
+        return applyMutation(accessor, applyUpdateElement(state.slides, elementId, props))
+      },
+    }),
+
+    addElement: tool({
+      description: '在指定页面添加元素。必须提供完整的元素数据',
+      parameters: z.object({
+        slideId: z.string().describe('目标幻灯片 ID'),
+        element: z.record(z.unknown()).describe('完整的元素数据，必须包含 id, type, left, top, width, height, rotate 等'),
+      }),
+      execute: async ({ slideId, element }) => {
+        const state = accessor.get()
+        return applyMutation(accessor, applyAddElement(state.slides, slideId, element as unknown as PPTElement))
+      },
+    }),
+
+    deleteElement: tool({
+      description: '删除元素及其关联的动画',
+      parameters: z.object({
+        elementId: z.string().describe('要删除的元素 ID'),
+      }),
+      execute: async ({ elementId }) => {
+        const state = accessor.get()
+        return applyMutation(accessor, applyDeleteElement(state.slides, elementId))
+      },
+    }),
+
+    addSlide: tool({
+      description: '添加新页面。可指定插入位置',
+      parameters: z.object({
+        slide: z.record(z.unknown()).describe('完整的幻灯片数据，必须包含 id 和 elements'),
+        afterIndex: z.number().int().optional().describe('在哪个索引之后插入，不传则追加到末尾'),
+      }),
+      execute: async ({ slide, afterIndex }) => {
+        const state = accessor.get()
+        return applyMutation(accessor, applyAddSlide(state.slides, slide as unknown as Slide, afterIndex))
+      },
+    }),
+
+    updateSlide: tool({
+      description: '更新页面属性（背景、备注、翻页方式等）。不要用这个改元素，用 updateElement',
+      parameters: z.object({
+        slideId: z.string().describe('幻灯片 ID'),
+        props: z.record(z.unknown()).describe('要更新的属性，如 { "background": { "type": "solid", "color": "#fff" } }'),
+      }),
+      execute: async ({ slideId, props }) => {
+        const state = accessor.get()
+        return applyMutation(accessor, applyUpdateSlide(state.slides, slideId, props as Partial<Slide>))
+      },
+    }),
+
+    deleteSlide: tool({
+      description: '删除一页幻灯片。不能删除最后一页',
+      parameters: z.object({
+        slideId: z.string().describe('要删除的幻灯片 ID'),
+      }),
+      execute: async ({ slideId }) => {
+        const state = accessor.get()
+        return applyMutation(accessor, applyDeleteSlide(state.slides, slideId))
+      },
+    }),
+
+    setTheme: tool({
+      description: [
+        '**定这份稿子的颜色，用这个。** 整份走一次，形状 / 图表 / 表格 / getDesignTokens 全都跟着走。',
+        'backgroundColor 是页面底色，themeColors[0] 是主色、[1] 是强调色。',
+        '',
+        'applyLayout 那三个 primaryColor / accentColor / backgroundColor 是**个别页的例外**，',
+        '只改得动版式那一层 —— 拿它们当整份配色用，形状和图表会留在旧主题上，一份稿子两张脸。',
+      ].join('\n'),
+      parameters: z.object({
+        props: z.record(z.unknown()).describe('要更新的主题属性，如 { "backgroundColor": "#f4f1ea", "themeColors": ["#8a1538", "#e0a458"], "fontColor": "#2b2b2b" }'),
+        designNote: z.string().optional()
+          .describe('一句话：这套颜色是被这份稿子里的什么驱动的。定颜色时必须写 —— 写不出来说明还没设计，只是挑了几个好看的色。lintDeck 会查'),
+        artDirection: z.string().optional()
+          .describe('一个**英文短语**：这份稿子的视觉流派，如 "mid-century editorial illustration"、"swiss grid minimalism"、"japanese textile pattern"。会注入生成底图/装饰层的生图提示词，让底图跟着内容走。写具体流派，不要写 professional / clean 这种空词；没写就按质感档位用默认流派'),
+      }),
+      execute: async ({ props, designNote, artDirection }) => {
+        const state = accessor.get()
+        // R-60：designNote 必须伴随真实的颜色决定 —— 库里实测过「note 写满一页、
+        // 颜色一个没动」的稿子（星耀影视）。这里在入口就把那条路堵死。
+        const colorKeys = ['backgroundColor', 'themeColors', 'fontColor'] as const
+        if (designNote?.trim() && !colorKeys.some(k => k in (props ?? {}))) {
+          return JSON.stringify({
+            ok: false,
+            error: 'designNote 写了，但 props 里一个颜色键（backgroundColor / themeColors / fontColor）都没有 —— '
+            + '设计说明必须和真实的颜色决定一起给，把想好的颜色写进来',
+          })
+        }
+        const outcome = applySetTheme(state.theme, {
+          ...(props as Partial<SlideTheme>),
+          ...(designNote ? { designNote } : {}),
+          ...(artDirection ? { artDirection } : {}),
+        })
+        if (!outcome.ok) return JSON.stringify({ ok: false, error: outcome.error })
+        accessor.set({ ...state, theme: outcome.data, version: state.version + 1 })
+        await accessor.onChange?.()
+        return JSON.stringify({ ok: true, version: state.version + 1 })
+      },
+    }),
+
+    setAnimationPreset: tool({
+      description: '给整页套用动画方案，一次调用生成全页合法的动画时间线。想让一页元素「依次出现」「标题先出再出内容」时优先用这个，比逐个 addAnimation 省很多步。会覆盖该页原有动画',
+      parameters: z.object({
+        slideId: z.string().describe('幻灯片 ID'),
+        preset: z.enum(['sequential', 'title-then-content', 'all-at-once', 'none']).describe(
+          'sequential=按阅读顺序依次入场 / title-then-content=标题先入其余随后同时入 / all-at-once=全部同时入场 / none=清空本页动画',
+        ),
+        effect: z.enum(ANIMATION_EFFECTS).optional().describe('入场效果，默认 fade-up'),
+        duration: z.number().int().min(100).max(5000).optional().describe('持续时间（毫秒），默认 600'),
+      }),
+      execute: async ({ slideId, preset, effect, duration }) => {
+        const state = accessor.get()
+        return applyMutation(accessor, applyAnimationPreset(state.slides, slideId, preset, { effect, duration }))
+      },
+    }),
+
+    addAnimation: tool({
+      description: '给指定元素追加动画。可一次传多条（数组）。整页统一编排请优先用 setAnimationPreset',
+      parameters: z.object({
+        slideId: z.string().describe('幻灯片 ID'),
+        animations: z.array(z.object({
+          id: z.string().describe('动画 ID，全页唯一，如 anim_xxx'),
+          elId: z.string().describe('目标元素 ID，必须在本页存在'),
+          effect: z.enum(ANIMATION_EFFECTS).describe('动画效果'),
+          type: z.enum(['in', 'out', 'attention']).describe('必须与 effect 自洽：exit-* 是 out，pulse-*/grow-shrink-* 是 attention，其余是 in'),
+          duration: z.number().int().min(100).max(5000).describe('持续时间（毫秒），推荐 500~1000'),
+          trigger: z.enum(['click', 'meantime', 'auto']).describe('click=点击触发新一步, meantime=与上一条同时, auto=上一条结束后自动'),
+        })).min(1).describe('动画配置数组'),
+      }),
+      execute: async ({ slideId, animations }) => {
+        const state = accessor.get()
+        return applyMutation(accessor, applyAddAnimations(state.slides, slideId, animations))
+      },
+    }),
+
+    removeAnimation: tool({
+      description: '删除动画。可按 animationIds、按 elementIds，或 all=true 清空整页。改动画时先删再加',
+      parameters: z.object({
+        slideId: z.string().describe('幻灯片 ID'),
+        animationIds: z.array(z.string()).optional().describe('按动画 ID 删'),
+        elementIds: z.array(z.string()).optional().describe('删掉这些元素身上的全部动画'),
+        all: z.boolean().optional().describe('清空本页所有动画'),
+      }),
+      execute: async ({ slideId, animationIds, elementIds, all }) => {
+        const state = accessor.get()
+        return applyMutation(accessor, applyRemoveAnimations(state.slides, slideId, { animationIds, elementIds, all }))
+      },
+    }),
+
+    // --- 版式 / 图形 ---
+
+    applyLayout: tool({
+      description: `按语义版式重排一整页 —— **做新页面的首选做法**。你给版式名和内容，坐标、字号、间距、配色、层次、出场动画全部自动算，产出必然对齐、必然符合设计规范。
 
 ${describeLayouts()}
 
 注意：会清空该页原有元素重排（版式的价值来自「所有元素同属一套网格」）。要微调请在 applyLayout 之后用 updateElement。
-相邻两页不要用同一个版式 —— lintDeck 会报。`,
-    parameters: z.object({
-      slideId: z.string().describe('幻灯片 ID'),
-      pattern: z.enum(LAYOUT_PATTERNS).describe('版式名'),
-      content: z.object({
-        eyebrow: z.string().optional().describe('标题上方的小标签：章节名/分类/日期。section 版式用它当章节号（如 "03"）'),
-        title: z.string().optional().describe('主标题'),
-        subtitle: z.string().optional().describe('副标题 / 一句话说明'),
-        items: z.array(z.object({
-          label: z.string().optional().describe('时间轴节点的标签，如 "2024" "第一步"'),
-          title: z.string().optional().describe('条目标题'),
-          body: z.string().optional().describe('条目正文，一到两句'),
-        })).optional().describe('并列条目，数量要求见版式说明'),
-        stat: z.object({
-          value: z.string().describe('要放大的数字或短句，如 "87%" "3.2 亿"'),
-          label: z.string().optional().describe('这个数字是什么'),
-          note: z.string().optional().describe('补充说明'),
-        }).optional().describe('stat 版式专用'),
-        quote: z.string().optional().describe('quote 版式专用：引述的那段话'),
-        source: z.string().optional().describe('出处 / 数据来源'),
-        image: z.object({
-          src: z.string().describe('必须是 searchImage / generateImage 返回的 asset:// 地址，不能填图库网址'),
-          width: z.number().optional().describe('图片真实宽度，把工具返回值原样抄进来'),
-          height: z.number().optional().describe('图片真实高度，把工具返回值原样抄进来'),
-          luminance: z.tuple([z.number(), z.number()]).optional()
-            .describe('图片亮度，把工具返回的 luminance 原样抄进来。少了它背景遮罩只能按中位数压，深色照片会被压灰'),
-        }).optional().describe('本页配图。只有标了「可配图」的版式吃它，摆放位置/裁剪/遮罩全部自动算'),
-      }).describe('版式内容'),
-      animate: z.boolean().optional().describe('是否生成出场动画，默认 true。每个版式的编排各不相同'),
-      backgroundColor: z.string().optional()
-        .describe('**页面底色，你来定**。整份文稿传同一个。从这份稿子讲的东西里取色，别默认白底'),
-      primaryColor: z.string().optional()
-        .describe('**主色，你来定**。标题强调、关键图形用它。整份文稿传同一个'),
-      accentColor: z.string().optional()
-        .describe('**强调色，你来定**，要和主色不同色相。只用在需要跳出来的地方。整份文稿传同一个。surface / border / textMuted / onPrimary 这些由代码从这三个锚点推，不用你操心'),
-      style: z.enum(PALETTE_STYLE_ENUM).optional()
-        .describe('**质感档位，不是配色** —— 它不改你给的三个锚点色，只调「卡片和背景拉多开、描边多重、次要文字多淡」。business 最克制、academic 几乎纯中性、tech 层次最分明、vivid 最饱和、editorial 墨感最重、soft 最温柔。整份文稿传同一个，不传是 business'),
-      typography: z.enum(TYPOGRAPHY_PAIR_ENUM).optional()
-        .describe('现成字体配对，当**起点**用（清单见系统提示词）。想自己配就改用 displayFont + bodyFont。整份文稿传同一个'),
-      displayFont: z.enum(FONT_FAMILIES as [FontFamily, ...FontFamily[]]).optional()
-        .describe('**标题字族，你来定**（字号 ≥ 38px 的元素用它）。和 bodyFont 必须一起传，传了就覆盖 typography。只能从登记过的字族里挑 —— 表外字体没有实测字宽，估行高会按最坏情况算，白白浪费版面'),
-      bodyFont: z.enum(FONT_FAMILIES as [FontFamily, ...FontFamily[]]).optional()
-        .describe('**正文字族，你来定**。要和 displayFont 性格不同（衬线配非衬线是最稳的一组），两边同字就只剩字号在扛层级'),
-      variant: z.enum(['A', 'B']).optional()
-        .describe('结构变体，默认 A。只有 cards / bullets / title-center 有 B 变体：同版式的另一种排法（卡片网格 vs 分栏无卡、圆点列表 vs 大编号、居中封面 vs 左对齐封面）。相邻页同版式但不同变体，lintDeck 不报'),
-    }),
-    execute: async ({
-      slideId, pattern, content, animate, style, typography,
-      primaryColor, accentColor, backgroundColor, displayFont, bodyFont, variant,
-    }) => {
-      const state = accessor.get()
-      const paletteOverride = {
-        ...(primaryColor ? { primary: primaryColor } : {}),
-        ...(accentColor ? { accent: accentColor } : {}),
-        ...(backgroundColor ? { background: backgroundColor } : {}),
-      }
-      // 两个都给才算自配 —— 只给一个的话另一半仍要从 typography 取，
-      // 那就是「一半自己配一半用预设」，配出来的对比关系不受任何一方控制
-      if ((displayFont ? 1 : 0) + (bodyFont ? 1 : 0) === 1) {
-        return { ok: false, error: 'displayFont 和 bodyFont 必须一起给 —— 只定一半，另一半会落回预设，配对关系就没人管了' }
-      }
-      return applyMutation(accessor, applyLayoutToSlide(
-        state.slides, slideId, state.theme, pattern, content,
-        {
-          animate, style, typography, variant,
-          fonts: displayFont && bodyFont ? { display: displayFont, body: bodyFont } : undefined,
-          paletteOverride: Object.keys(paletteOverride).length ? paletteOverride : undefined,
-        },
-      ))
-    },
-  }),
+相邻两页不要用同一个版式 —— lintDeck 会报。
+**同一轮里同一页用相同版式重排会被拒**（改色请用 setTheme，微调请用 updateElement）。`,
+      parameters: z.object({
+        slideId: z.string().describe('幻灯片 ID'),
+        pattern: z.enum(LAYOUT_PATTERNS).describe('版式名'),
+        content: z.object({
+          eyebrow: z.string().optional().describe('标题上方的小标签：章节名/分类/日期。section 版式用它当章节号（如 "03"）'),
+          title: z.string().optional().describe('主标题'),
+          subtitle: z.string().optional().describe('副标题 / 一句话说明'),
+          items: z.array(z.object({
+            label: z.string().optional().describe('时间轴节点的标签，如 "2024" "第一步"'),
+            title: z.string().optional().describe('条目标题'),
+            body: z.string().optional().describe('条目正文，一到两句'),
+          })).optional().describe('并列条目，数量要求见版式说明'),
+          stat: z.object({
+            value: z.string().describe('要放大的数字或短句，如 "87%" "3.2 亿"'),
+            label: z.string().optional().describe('这个数字是什么'),
+            note: z.string().optional().describe('补充说明'),
+          }).optional().describe('stat 版式专用'),
+          quote: z.string().optional().describe('quote 版式专用：引述的那段话'),
+          source: z.string().optional().describe('出处 / 数据来源'),
+          image: z.object({
+            src: z.string().describe('必须是 searchImage / generateImage 返回的 asset:// 地址，不能填图库网址'),
+            width: z.number().optional().describe('图片真实宽度，把工具返回值原样抄进来'),
+            height: z.number().optional().describe('图片真实高度，把工具返回值原样抄进来'),
+            luminance: z.tuple([z.number(), z.number()]).optional()
+              .describe('图片亮度，把工具返回的 luminance 原样抄进来。少了它背景遮罩只能按中位数压，深色照片会被压灰'),
+          }).optional().describe('本页配图。只有标了「可配图」的版式吃它，摆放位置/裁剪/遮罩全部自动算'),
+        }).describe('版式内容'),
+        animate: z.boolean().optional().describe('是否生成出场动画，默认 true。每个版式的编排各不相同'),
+        backgroundColor: z.string().optional()
+          .describe('**页面底色，你来定**。整份文稿传同一个。从这份稿子讲的东西里取色，别默认白底'),
+        primaryColor: z.string().optional()
+          .describe('**主色，你来定**。标题强调、关键图形用它。整份文稿传同一个'),
+        accentColor: z.string().optional()
+          .describe('**强调色，你来定**，要和主色不同色相。只用在需要跳出来的地方。整份文稿传同一个。surface / border / textMuted / onPrimary 这些由代码从这三个锚点推，不用你操心'),
+        style: z.enum(PALETTE_STYLE_ENUM).optional()
+          .describe('**质感档位，不是配色** —— 它不改你给的三个锚点色，只调「卡片和背景拉多开、描边多重、次要文字多淡」。business 最克制、academic 几乎纯中性、tech 层次最分明、vivid 最饱和、editorial 墨感最重、soft 最温柔。整份文稿传同一个，不传是 business'),
+        typography: z.enum(TYPOGRAPHY_PAIR_ENUM).optional()
+          .describe('现成字体配对，当**起点**用（清单见系统提示词）。想自己配就改用 displayFont + bodyFont。整份文稿传同一个'),
+        displayFont: z.enum(FONT_FAMILIES as [FontFamily, ...FontFamily[]]).optional()
+          .describe('**标题字族，你来定**（字号 ≥ 38px 的元素用它）。和 bodyFont 必须一起传，传了就覆盖 typography。只能从登记过的字族里挑 —— 表外字体没有实测字宽，估行高会按最坏情况算，白白浪费版面'),
+        bodyFont: z.enum(FONT_FAMILIES as [FontFamily, ...FontFamily[]]).optional()
+          .describe('**正文字族，你来定**。要和 displayFont 性格不同（衬线配非衬线是最稳的一组），两边同字就只剩字号在扛层级'),
+        variant: z.enum(['A', 'B']).optional()
+          .describe('结构变体，默认 A。只有 cards / bullets / title-center 有 B 变体：同版式的另一种排法（卡片网格 vs 分栏无卡、圆点列表 vs 大编号、居中封面 vs 左对齐封面）。相邻页同版式但不同变体，lintDeck 不报'),
+      }),
+      execute: async ({
+        slideId, pattern, content, animate, style, typography,
+        primaryColor, accentColor, backgroundColor, displayFont, bodyFont, variant,
+      }) => {
+        const state = accessor.get()
 
-  addShape: tool({
-    description: `添加一个形状。**按名字选，不要写 SVG path** —— 路径由形状库生成。
+        // 守卫① · applyLayout 防抖（R-63）：同页同版式同内容本轮重排，
+        // 等于白做一次模板重建（日志实测 36 连击）—— 直接拒并指路
+        const contentJson = JSON.stringify(content ?? {})
+        const prev = laidThisTurn.get(slideId)
+        if (prev
+        && prev.pattern === pattern
+        && (prev.variant ?? 'A') === (variant ?? 'A')
+        && prev.contentJson === contentJson
+        ) {
+          return JSON.stringify({
+            ok: false,
+            error: `「${slideId}」这一轮已经用 ${pattern}${variant === 'B' ? ' B 变体' : ''} 排过，内容也没变 —— 无需重排。要微调用 updateElement；只有换 pattern / variant、或内容真的变了才需要再排`,
+          })
+        }
+
+        // 守卫② · 换色风暴（R-63）：同一套显式覆盖色出现在第 3 个不同页时，
+        // 就是整份换色 —— 指回 setTheme（日志实测：换色风暴会引发整份重排）
+        const colorKey = [primaryColor, accentColor, backgroundColor]
+          .map(c => (c ? c.trim().toLowerCase() : ''))
+          .filter(Boolean)
+          .join('|')
+        if (colorKey) {
+          const pages = colorPagesThisTurn.get(colorKey) ?? new Set<string>()
+          if (!pages.has(slideId) && pages.size >= COLOR_STORM_PAGE_LIMIT) {
+            return JSON.stringify({
+              ok: false,
+              error: '你在逐页传同一套覆盖色 —— 这是整份换色。用 setTheme 改主题锚点，已经排过的页会自动继承新颜色，不要逐页重排。个别页真要破例，最多两页',
+            })
+          }
+          pages.add(slideId)
+          colorPagesThisTurn.set(colorKey, pages)
+        }
+
+        const paletteOverride = {
+          ...(primaryColor ? { primary: primaryColor } : {}),
+          ...(accentColor ? { accent: accentColor } : {}),
+          ...(backgroundColor ? { background: backgroundColor } : {}),
+        }
+        // 两个都给才算自配 —— 只给一个的话另一半仍要从 typography 取，
+        // 那就是「一半自己配一半用预设」，配出来的对比关系不受任何一方控制
+        if ((displayFont ? 1 : 0) + (bodyFont ? 1 : 0) === 1) {
+          return { ok: false, error: 'displayFont 和 bodyFont 必须一起给 —— 只定一半，另一半会落回预设，配对关系就没人管了' }
+        }
+        const outcome = applyLayoutToSlide(
+          state.slides, slideId, state.theme, pattern, content,
+          {
+            animate, style, typography, variant,
+            fonts: displayFont && bodyFont ? { display: displayFont, body: bodyFont } : undefined,
+            paletteOverride: Object.keys(paletteOverride).length ? paletteOverride : undefined,
+          },
+        )
+        // 只有真排成功了才记指纹 —— kernel 拒掉的（如超长文本）下次换了内容还要能重排
+        if (outcome.ok) laidThisTurn.set(slideId, { pattern, variant, contentJson })
+        return applyMutation(accessor, outcome)
+      },
+    }),
+
+    addShape: tool({
+      description: `添加一个形状。**按名字选，不要写 SVG path** —— 路径由形状库生成。
 
 ${describeShapeCatalog()}
 
 高频用法：bar 做标题下划条 / 分隔线，roundRect 做卡片底板，pill 做标签，chevron 排流程，ellipse 做序号圆点，donut 做进度环。
 纯文字的页面几乎一定不好看 —— 每页至少放一个形状。`,
-    parameters: z.object({
-      slideId: z.string().describe('幻灯片 ID'),
-      shape: z.enum(SHAPE_CATALOG_KEYS).describe('形状名'),
-      left: z.number().describe('左边距'),
-      top: z.number().describe('上边距'),
-      width: z.number().positive().describe('宽'),
-      height: z.number().positive().describe('高'),
-      fill: z.string().describe('填充色 hex，如 #2f6feb。用 getDesignTokens 拿主色/强调色'),
-      opacity: z.number().min(0).max(1).optional().describe('不透明度。装饰性色块建议 0.1~0.2'),
-      rotate: z.number().optional().describe('旋转角度'),
-      outlineColor: z.string().optional().describe('描边色'),
-      outlineWidth: z.number().optional().describe('描边宽度，默认 1'),
-      shadow: z.boolean().optional().describe('加投影。卡片底板建议开'),
-      text: z.string().optional().describe('形状内文字（纯文本，会自动居中）'),
-      textColor: z.string().optional().describe('形状内文字颜色'),
-      textSize: z.number().optional().describe('形状内文字字号'),
-      name: z.string().optional().describe('元素名，方便后续引用'),
+      parameters: z.object({
+        slideId: z.string().describe('幻灯片 ID'),
+        shape: z.enum(SHAPE_CATALOG_KEYS).describe('形状名'),
+        left: z.number().describe('左边距'),
+        top: z.number().describe('上边距'),
+        width: z.number().positive().describe('宽'),
+        height: z.number().positive().describe('高'),
+        fill: z.string().describe('填充色 hex，如 #2f6feb。用 getDesignTokens 拿主色/强调色'),
+        opacity: z.number().min(0).max(1).optional().describe('不透明度。装饰性色块建议 0.1~0.2'),
+        rotate: z.number().optional().describe('旋转角度'),
+        outlineColor: z.string().optional().describe('描边色'),
+        outlineWidth: z.number().optional().describe('描边宽度，默认 1'),
+        shadow: z.boolean().optional().describe('加投影。卡片底板建议开'),
+        text: z.string().optional().describe('形状内文字（纯文本，会自动居中）'),
+        textColor: z.string().optional().describe('形状内文字颜色'),
+        textSize: z.number().optional().describe('形状内文字字号'),
+        name: z.string().optional().describe('元素名，方便后续引用'),
+      }),
+      execute: async ({ slideId, ...spec }) => {
+        const state = accessor.get()
+        return applyMutation(accessor, applyAddShape(state.slides, slideId, spec))
+      },
     }),
-    execute: async ({ slideId, ...spec }) => {
-      const state = accessor.get()
-      return applyMutation(accessor, applyAddShape(state.slides, slideId, spec))
-    },
-  }),
 
-  addChart: tool({
-    description: '添加图表。有数字就画图表，别用文字罗列数字 —— 这是提升信息密度最直接的一招。series 的条数要等于 legends 的条数，每条 series 的点数要等于 labels 的个数',
-    parameters: z.object({
-      slideId: z.string().describe('幻灯片 ID'),
-      chartType: z.enum(CHART_TYPES).describe('bar=柱状 / column=条形(横) / line=折线 / area=面积 / pie=饼 / ring=环 / radar=雷达 / scatter=散点'),
-      left: z.number().describe('左边距'),
-      top: z.number().describe('上边距'),
-      width: z.number().positive().describe('宽，建议 ≥ 360'),
-      height: z.number().positive().describe('高，建议 ≥ 240'),
-      labels: z.array(z.string()).min(1).describe('横轴分类，如 ["2021","2022","2023"]'),
-      legends: z.array(z.string()).min(1).describe('系列名，如 ["营收","利润"]'),
-      series: z.array(z.array(z.number())).min(1).describe('每个系列一组数，长度必须等于 labels 长度'),
-      themeColors: z.array(z.string()).optional().describe('系列配色，不传则用主题的主色+强调色'),
-      stack: z.boolean().optional().describe('堆叠（bar/column）'),
-      lineSmooth: z.boolean().optional().describe('平滑曲线（line）'),
-      name: z.string().optional(),
+    addChart: tool({
+      description: '添加图表。有数字就画图表，别用文字罗列数字 —— 这是提升信息密度最直接的一招。series 的条数要等于 legends 的条数，每条 series 的点数要等于 labels 的个数',
+      parameters: z.object({
+        slideId: z.string().describe('幻灯片 ID'),
+        chartType: z.enum(CHART_TYPES).describe('bar=柱状 / column=条形(横) / line=折线 / area=面积 / pie=饼 / ring=环 / radar=雷达 / scatter=散点'),
+        left: z.number().describe('左边距'),
+        top: z.number().describe('上边距'),
+        width: z.number().positive().describe('宽，建议 ≥ 360'),
+        height: z.number().positive().describe('高，建议 ≥ 240'),
+        labels: z.array(z.string()).min(1).describe('横轴分类，如 ["2021","2022","2023"]'),
+        legends: z.array(z.string()).min(1).describe('系列名，如 ["营收","利润"]'),
+        series: z.array(z.array(z.number())).min(1).describe('每个系列一组数，长度必须等于 labels 长度'),
+        themeColors: z.array(z.string()).optional().describe('系列配色，不传则用主题的主色+强调色'),
+        stack: z.boolean().optional().describe('堆叠（bar/column）'),
+        lineSmooth: z.boolean().optional().describe('平滑曲线（line）'),
+        name: z.string().optional(),
+      }),
+      execute: async ({ slideId, ...spec }) => {
+        const state = accessor.get()
+        return applyMutation(accessor, applyAddChart(state.slides, slideId, state.theme, spec))
+      },
     }),
-    execute: async ({ slideId, ...spec }) => {
-      const state = accessor.get()
-      return applyMutation(accessor, applyAddChart(state.slides, slideId, state.theme, spec))
-    },
-  }),
 
-  addTable: tool({
-    description: '添加表格。适合规格对比、参数清单这类结构化数据。rows 是二维字符串数组，每行列数必须一致',
-    parameters: z.object({
-      slideId: z.string().describe('幻灯片 ID'),
-      left: z.number().describe('左边距'),
-      top: z.number().describe('上边距'),
-      width: z.number().positive().describe('总宽'),
-      rows: z.array(z.array(z.string())).min(1).describe('二维数据，首行默认是表头'),
-      header: z.boolean().optional().describe('首行是否为表头，默认 true'),
-      colWidths: z.array(z.number()).optional().describe('各列宽度权重，会自动归一化。不传则等宽'),
-      rowHeight: z.number().optional().describe('行高，默认 40'),
-      themeColor: z.string().optional().describe('表头底色，默认用主题主色'),
-      name: z.string().optional(),
+    addTable: tool({
+      description: '添加表格。适合规格对比、参数清单这类结构化数据。rows 是二维字符串数组，每行列数必须一致',
+      parameters: z.object({
+        slideId: z.string().describe('幻灯片 ID'),
+        left: z.number().describe('左边距'),
+        top: z.number().describe('上边距'),
+        width: z.number().positive().describe('总宽'),
+        rows: z.array(z.array(z.string())).min(1).describe('二维数据，首行默认是表头'),
+        header: z.boolean().optional().describe('首行是否为表头，默认 true'),
+        colWidths: z.array(z.number()).optional().describe('各列宽度权重，会自动归一化。不传则等宽'),
+        rowHeight: z.number().optional().describe('行高，默认 40'),
+        themeColor: z.string().optional().describe('表头底色，默认用主题主色'),
+        name: z.string().optional(),
+      }),
+      execute: async ({ slideId, ...spec }) => {
+        const state = accessor.get()
+        return applyMutation(accessor, applyAddTable(state.slides, slideId, state.theme, spec))
+      },
     }),
-    execute: async ({ slideId, ...spec }) => {
-      const state = accessor.get()
-      return applyMutation(accessor, applyAddTable(state.slides, slideId, state.theme, spec))
-    },
-  }),
 
-  addLine: tool({
-    description: '添加线条。做分隔线、连接线、指向箭头。end 是相对起点的偏移量：水平线用 [长度, 0]，垂直线用 [0, 长度]',
-    parameters: z.object({
-      slideId: z.string().describe('幻灯片 ID'),
-      left: z.number().describe('起点 x'),
-      top: z.number().describe('起点 y'),
-      end: z.tuple([z.number(), z.number()]).describe('终点相对起点的偏移，如 [800, 0] 是一条 800 长的水平线'),
-      color: z.string().describe('颜色 hex'),
-      style: z.enum(['solid', 'dashed', 'dotted']).optional().describe('线型，默认 solid'),
-      width: z.number().optional().describe('线宽，默认 2'),
-      startPoint: z.enum(['', 'arrow', 'dot']).optional().describe('起点样式'),
-      endPoint: z.enum(['', 'arrow', 'dot']).optional().describe('终点样式，指向关系用 arrow'),
-      name: z.string().optional(),
+    addLine: tool({
+      description: '添加线条。做分隔线、连接线、指向箭头。end 是相对起点的偏移量：水平线用 [长度, 0]，垂直线用 [0, 长度]',
+      parameters: z.object({
+        slideId: z.string().describe('幻灯片 ID'),
+        left: z.number().describe('起点 x'),
+        top: z.number().describe('起点 y'),
+        end: z.tuple([z.number(), z.number()]).describe('终点相对起点的偏移，如 [800, 0] 是一条 800 长的水平线'),
+        color: z.string().describe('颜色 hex'),
+        style: z.enum(['solid', 'dashed', 'dotted']).optional().describe('线型，默认 solid'),
+        width: z.number().optional().describe('线宽，默认 2'),
+        startPoint: z.enum(['', 'arrow', 'dot']).optional().describe('起点样式'),
+        endPoint: z.enum(['', 'arrow', 'dot']).optional().describe('终点样式，指向关系用 arrow'),
+        name: z.string().optional(),
+      }),
+      execute: async ({ slideId, ...spec }) => {
+        const state = accessor.get()
+        return applyMutation(accessor, applyAddLine(state.slides, slideId, spec))
+      },
     }),
-    execute: async ({ slideId, ...spec }) => {
-      const state = accessor.get()
-      return applyMutation(accessor, applyAddLine(state.slides, slideId, spec))
-    },
-  }),
 
-  arrangeElements: tool({
-    description: '对齐 / 等距分布一组元素。手填的坐标差几像素肉眼看不出差在哪，只会觉得这页「有点脏」—— 摆完一组并列元素就调一次这个',
-    parameters: z.object({
-      elementIds: z.array(z.string()).min(2).describe('要排列的元素 ID，必须在同一页'),
-      align: z.enum(['left', 'right', 'hcenter', 'top', 'bottom', 'vcenter']).optional()
-        .describe('对齐方式：left/right/hcenter 管水平，top/bottom/vcenter 管垂直'),
-      distribute: z.enum(['horizontal', 'vertical']).optional()
-        .describe('等距分布方向。不传 gap 时保持首尾不动、中间均分'),
-      gap: z.number().optional().describe('固定间距（配合 distribute）。首元素不动，其余按此间距排开'),
+    arrangeElements: tool({
+      description: '对齐 / 等距分布一组元素。手填的坐标差几像素肉眼看不出差在哪，只会觉得这页「有点脏」—— 摆完一组并列元素就调一次这个',
+      parameters: z.object({
+        elementIds: z.array(z.string()).min(2).describe('要排列的元素 ID，必须在同一页'),
+        align: z.enum(['left', 'right', 'hcenter', 'top', 'bottom', 'vcenter']).optional()
+          .describe('对齐方式：left/right/hcenter 管水平，top/bottom/vcenter 管垂直'),
+        distribute: z.enum(['horizontal', 'vertical']).optional()
+          .describe('等距分布方向。不传 gap 时保持首尾不动、中间均分'),
+        gap: z.number().optional().describe('固定间距（配合 distribute）。首元素不动，其余按此间距排开'),
+      }),
+      execute: async ({ elementIds, align, distribute, gap }) => {
+        const state = accessor.get()
+        return applyMutation(accessor, applyArrangeElements(state.slides, elementIds, { align, distribute, gap }))
+      },
     }),
-    execute: async ({ elementIds, align, distribute, gap }) => {
-      const state = accessor.get()
-      return applyMutation(accessor, applyArrangeElements(state.slides, elementIds, { align, distribute, gap }))
-    },
-  }),
 
-  setSlideTransition: tool({
-    description: '设置翻页转场。整份文稿建议只用一到两种（统一节奏），章节转场页可以用不一样的强调切换。全部会写进 PPTX 的 <p:transition>，导出后照样播',
-    parameters: z.object({
-      slideId: z.string().describe('幻灯片 ID'),
-      turningMode: z.enum(TURNING_MODES as [string, ...string[]]).describe(
-        'no=无 / fade=淡入淡出（最稳妥）/ slideX=左右推移 / slideY=上下推移 / scale=放大 / scaleReverse=缩小 / scaleX=左右展开 / scaleY=上下展开 / rotate=旋转 / random=随机。slideX3D / slideY3D 导出时会降级成普通推移',
-      ),
+    setSlideTransition: tool({
+      description: '设置翻页转场。整份文稿建议只用一到两种（统一节奏），章节转场页可以用不一样的强调切换。全部会写进 PPTX 的 <p:transition>，导出后照样播',
+      parameters: z.object({
+        slideId: z.string().describe('幻灯片 ID'),
+        turningMode: z.enum(TURNING_MODES as [string, ...string[]]).describe(
+          'no=无 / fade=淡入淡出（最稳妥）/ slideX=左右推移 / slideY=上下推移 / scale=放大 / scaleReverse=缩小 / scaleX=左右展开 / scaleY=上下展开 / rotate=旋转 / random=随机。slideX3D / slideY3D 导出时会降级成普通推移',
+        ),
+      }),
+      execute: async ({ slideId, turningMode }) => {
+        const state = accessor.get()
+        return applyMutation(accessor, applySetSlideTransition(state.slides, slideId, turningMode))
+      },
     }),
-    execute: async ({ slideId, turningMode }) => {
-      const state = accessor.get()
-      return applyMutation(accessor, applySetSlideTransition(state.slides, slideId, turningMode))
-    },
-  }),
 
-  setSlideBackground: tool({
-    description: '设置页面背景（纯色、渐变、图片）',
-    parameters: z.object({
-      slideId: z.string().describe('幻灯片 ID'),
-      background: z.object({
-        type: z.enum(['solid', 'image', 'gradient']).describe('背景类型'),
-        color: z.string().optional().describe('纯色背景颜色，如 #0a0e27'),
-        image: z.object({
-          src: z.string(),
-          size: z.enum(['cover', 'contain', 'repeat']),
-        }).optional().describe('图片背景'),
-        gradient: z.object({
-          type: z.enum(['linear', 'radial']),
-          colors: z.array(z.object({ pos: z.number(), color: z.string() })),
-          rotate: z.number(),
-        }).optional().describe('渐变背景'),
-      }).describe('背景配置'),
+    setSlideBackground: tool({
+      description: '设置页面背景（纯色、渐变、图片）',
+      parameters: z.object({
+        slideId: z.string().describe('幻灯片 ID'),
+        background: z.object({
+          type: z.enum(['solid', 'image', 'gradient']).describe('背景类型'),
+          color: z.string().optional().describe('纯色背景颜色，如 #0a0e27'),
+          image: z.object({
+            src: z.string(),
+            size: z.enum(['cover', 'contain', 'repeat']),
+          }).optional().describe('图片背景'),
+          gradient: z.object({
+            type: z.enum(['linear', 'radial']),
+            colors: z.array(z.object({ pos: z.number(), color: z.string() })),
+            rotate: z.number(),
+          }).optional().describe('渐变背景'),
+        }).describe('背景配置'),
+      }),
+      execute: async ({ slideId, background }) => {
+        const state = accessor.get()
+        return applyMutation(accessor, applyUpdateSlide(state.slides, slideId, { background } as Partial<Slide>))
+      },
     }),
-    execute: async ({ slideId, background }) => {
-      const state = accessor.get()
-      return applyMutation(accessor, applyUpdateSlide(state.slides, slideId, { background } as Partial<Slide>))
-    },
-  }),
-})
+  }
+}
 
 export type AgentTools = ReturnType<typeof createAgentTools>
