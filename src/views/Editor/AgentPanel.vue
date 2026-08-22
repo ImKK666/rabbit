@@ -229,11 +229,17 @@
             :class="{ uploading: img.state === 'uploading', failed: img.state === 'failed' }"
             v-for="img in pendingImages"
             :key="img.id"
-            v-tooltip="img.state === 'failed' ? img.error : undefined"
           >
             <img :src="img.preview" alt="待发送图片" />
             <div class="mask" v-if="img.state === 'uploading'"><span class="spin"></span></div>
-            <div class="mask retry" v-else-if="img.state === 'failed'" @click="retryImage(img.id)">重试</div>
+            <!-- tooltip 挂在这层而不是外层：它只在失败时才存在，
+                 于是 v-tooltip 永远拿得到一个字符串，不会是 undefined -->
+            <div
+              class="mask retry"
+              v-else-if="img.state === 'failed'"
+              @click="retryImage(img.id)"
+              v-tooltip="img.error || '上传失败'"
+            >重试</div>
             <span class="remove" @click="removeImage(img.id)">×</span>
           </div>
         </div>
