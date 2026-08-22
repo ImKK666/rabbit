@@ -58,6 +58,12 @@
             <Switch v-model:value="masterOverwrite" />
           </div>
         </div>
+        <div class="row">
+          <div class="title">替换为系统字体：</div>
+          <div class="config-item">
+            <Switch v-model:value="substituteFonts" v-tooltip="'演示文稿使用的霞鹜、思源、普惠体等字体，多数电脑并未安装，用 PowerPoint / Keynote 打开时会提示「字体缺失」。开启后会替换成系统自带字体（中文按 macOS 的苹方 / 宋体 / 楷体），任何电脑都能正常打开且不再提示，代价是字体观感与编辑器内不同。若打开文件的电脑已安装这些字体，可关闭本项以保留原字体。'" />
+          </div>
+        </div>
 
         <div class="tip" v-if="!ignoreMedia">
           提示：1. 支持导出格式：avi、mp4、mov、wmv、mp3、wav；2. 跨域资源无法导出。
@@ -101,6 +107,8 @@ const exportMode = ref<'standard' | 'image'>('standard')
 const range = ref<[number, number]>([1, slides.value.length])
 const masterOverwrite = ref(true)
 const ignoreMedia = ref(true)
+// 默认开：装了这些字体的人是少数，而「打开就弹缺失框」是所有人都会撞上的
+const substituteFonts = ref(true)
 
 const selectedSlides = computed(() => {
   if (rangeType.value === 'all') return slides.value
@@ -118,7 +126,7 @@ const renderSlides = computed(() => {
 
 const execExport = () => {
   if (exportMode.value === 'standard') {
-    exportPPTX(selectedSlides.value, masterOverwrite.value, ignoreMedia.value)
+    exportPPTX(selectedSlides.value, masterOverwrite.value, ignoreMedia.value, substituteFonts.value)
   } 
   else {
     const slideRefs = imageThumbnailsRef.value!.querySelectorAll('.export-thumbnail')

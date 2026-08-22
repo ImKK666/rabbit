@@ -11,9 +11,15 @@
  * 既没有前缀也没有扩展名。前端把它解析成 `{assetBaseUrl}/{hash}` ——
  * 所以桶里的对象必须正好叫 `{prefix}{hash}`，多一个 `.jpg` 就对不上。
  *
- * 扩展名本来也只影响观感：MIME 由上传时的 `Content-Type` 给出，
- * 浏览器和 pptxgenjs 都认那个头。`contentKey()` 传空扩展名即可，
- * 它本来就支持（`ext ? … : ''`）。
+ * MIME 由上传时的 `Content-Type` 给出，浏览器认那个头。
+ * `contentKey()` 传空扩展名即可，它本来就支持（`ext ? … : ''`）。
+ *
+ * **但不是所有消费者都认 `Content-Type`。** 这里原先写着「浏览器和 pptxgenjs
+ * 都认那个头」—— pptxgenjs 那半句是错的，而且代价很大（R-67）：它判断图片类型
+ * 时只切 path 字符串，无扩展名的地址会让它把整串 hash 当扩展名；背景图那条路
+ * 还会因此漏写 [Content_Types] 声明，PowerPoint 直接判文件损坏。
+ * 现在导出侧自己把字节取回来转 data URL 绕开了它（`src/utils/exportAssets.ts`），
+ * 但**新接一个消费者时要先确认它认不认 `Content-Type`**，别再假定。
  *
  * 代价是手动从桶里下载下来的文件没有后缀名。可接受 —— 换来的是
  * **deck JSON 与存储位置解耦**：换桶、挂 CDN 只要改这里的配置，

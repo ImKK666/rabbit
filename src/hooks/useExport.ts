@@ -26,6 +26,11 @@
 //
 // 图片 / PDF 导出不受影响，继续用 html-to-image。
 // writer 本体见 R-17（src/utils/ooxml/）。
+//
+// ★ R-67：图片**一律预取成 data URL 再交给 pptxgenjs**，不要退回传 path。
+//   pptxgenjs 只按路径字符串猜图片类型，而 `asset://` 解析出的地址没有扩展名，
+//   背景图那条路还会因此漏写 [Content_Types] 声明 → PowerPoint 判整个文件损坏。
+//   来龙去脉见 utils/exportAssets.ts 的文件头。
 import { createVNode, render, computed, ref } from 'vue'
 import { storeToRefs } from 'pinia'
 import { saveAs } from 'file-saver'
@@ -34,6 +39,8 @@ import pptxgen from 'pptxgenjs'
 import { buildSpidMap } from '@/utils/ooxml/spidMap'
 import { buildTimingXml, type SkippedAnimation } from '@/utils/ooxml/buildTimingXml'
 import { buildTransitionXml } from '@/utils/ooxml/buildTransitionXml'
+import { ensureContentTypes } from '@/utils/ooxml/contentTypes'
+import { collectImageRefs, fetchImageBundle, dataUrlExtension, type ImageBundle } from '@/utils/exportAssets'
 import tinycolor from 'tinycolor2'
 import { toPng, toJpeg } from 'html-to-image'
 import { useSlidesStore } from '@/store'
@@ -42,9 +49,9 @@ import { getElementRange, getLineElementPath, getTableSubThemeColor } from '@/ut
 import { type AST, toAST } from '@/utils/htmlParser'
 import { type SvgPoints, toPoints } from '@/utils/svgPathParser'
 import { encrypt } from '@/utils/crypto'
-import { resolveAssetUrl } from '@/utils/assetUrl'
 import { svg2Base64 } from '@/utils/svg2Base64'
 import { SPECIFIC_FILE_EXT } from '@/configs/specificFile'
+import { resolveFontFamily } from '@/configs/font'
 import message from '@/utils/message'
 
 import BaseLatexElement from '@/views/components/element/LatexElement/BaseLatexElement.vue'
@@ -200,7 +207,7 @@ export default () => {
 
   // 将HTML字符串格式化为pptxgenjs所需的格式
   // 核心思路：将HTML字符串按样式分片平铺，每个片段需要继承祖先元素的样式信息，遇到块级元素需要换行
-  const formatHTML = (html: string) => {
+  const formatHTML = (html: string, substituteFonts: boolean) => {
     const ast = toAST(html)
     let bulletFlag = false
     let indent = 0
@@ -331,7 +338,7 @@ export default () => {
           if (styleObj['text-align']) options.align = styleObj['text-align'] as pptxgen.HAlign
           if (styleObj['font-weight']) options.bold = styleObj['font-weight'] === 'bold'
           if (styleObj['font-style']) options.italic = styleObj['font-style'] === 'italic'
-          if (styleObj['font-family']) options.fontFace = styleObj['font-family']
+          if (styleObj['font-family']) options.fontFace = resolveFontFamily(styleObj['font-family'], substituteFonts)
           if (styleObj['href']) options.hyperlink = { url: styleObj['href'] }
 
           if (bulletFlag && styleObj['list-type'] === 'ol') {
@@ -514,160 +521,521 @@ export default () => {
     return isSVGBase64 || isSVGUrl
   }
 
+  /**
+   * 图片没取回来时告诉用户。
+   *
+   * 不弹 error、不中断导出：少几张图的文件仍然有用，而**一声不吭**才是
+   * 上一次真正的问题 —— 画布上图好好的，导出后没了，没人知道该去查什么。
+   */
+  const warnFailedImages = (bundle: ImageBundle) => {
+    if (!bundle.failures.length) return
+
+    // eslint-disable-next-line no-console
+    console.warn(`[PPTX 导出] ${bundle.failures.length} 张图片未能导出：`, bundle.failures)
+
+    const reasons = [...new Set(bundle.failures.map(f => f.reason))]
+    message.warning(`有 ${bundle.failures.length} 张图片未能导出（${reasons.join('；')}）`)
+  }
+
   // 导出PPTX文件
-  const exportPPTX = (_slides: Slide[], masterOverwrite: boolean, ignoreMedia: boolean) => {
+  const exportPPTX = async (_slides: Slide[], masterOverwrite: boolean, ignoreMedia: boolean, substituteFonts: boolean) => {
     exporting.value = true
-    const pptx = new pptxgen()
-    setPPTXLayout(pptx)
 
-    if (masterOverwrite) {
-      const { color: bgColor, alpha: bgAlpha } = formatColor(theme.value.backgroundColor)
-      pptx.defineSlideMaster({
-        title: 'RABBIT_MASTER',
-        background: { color: bgColor, transparency: (1 - bgAlpha) * 100 },
-      })
-    }
+    // try 要从这里就开始包住：拼页阶段（formatHTML / toPoints / 各种 addXxx）
+    // 一旦抛异常，finally 之外的写法会让 exporting 永远停在 true ——
+    // 用户看到的是一个**永不消失的「正在导出…」遮罩**，只能刷新页面
+    try {
+      // 先把所有图片取回成 data URL 再开始拼页。这一步的 await 顺带让加载遮罩
+      // 有机会画出来 —— 原先那个 `setTimeout(…, 200)` 就是干这个的，现在不需要了
+      const bundle = await fetchImageBundle(collectImageRefs(_slides))
 
-    for (const slide of _slides) {
-      const pptxSlide = pptx.addSlide()
+      const pptx = new pptxgen()
+      setPPTXLayout(pptx)
 
-      if (slide.background) {
-        const background = slide.background
-        if (background.type === 'image' && background.image) {
-          if (isSVGImage(background.image.src)) {
-            pptxSlide.addImage({
-              data: background.image.src,
-              x: 0,
-              y: 0,
-              w: viewportSize.value / ratioPx2Inch.value,
-              h: viewportSize.value * viewportRatio.value / ratioPx2Inch.value,
-            })
-          }
-          else if (isBase64Image(background.image.src)) {
-            pptxSlide.background = { data: background.image.src }
-          }
-          else {
-            // **必须过 asset:// 解析器。** deck 里存的是 `asset://<sha256>`，
-            // 原样丢给 pptxgenjs 只会得到一个取不到的路径 —— 而且它失败得很安静：
-            // 画布上图好好的，只有导出的 PPTX 里那张图没了。
-            // 解析不出（pending / 引用坏了）时给空串，pptxgenjs 会跳过这张图
-            pptxSlide.background = { path: resolveAssetUrl(background.image.src) }
-          }
-        }
-        else if (background.type === 'solid' && background.color) {
-          const c = formatColor(background.color)
-          pptxSlide.background = { color: c.color, transparency: (1 - c.alpha) * 100 }
-        }
-        else if (background.type === 'gradient' && background.gradient) {
-          const colors = background.gradient.colors
-          const color1 = colors[0].color
-          const color2 = colors[colors.length - 1].color
-          const color = tinycolor.mix(color1, color2).toHexString()
-          const c = formatColor(color)
-          pptxSlide.background = { color: c.color, transparency: (1 - c.alpha) * 100 }
-        }
-      }
-      if (slide.remark) {
-        const doc = new DOMParser().parseFromString(slide.remark, 'text/html')
-        const pList = doc.body.querySelectorAll('p')
-        const text = []
-        for (const p of pList) {
-          const textContent = p.textContent
-          text.push(textContent || '')
-        }
-        pptxSlide.addNotes(text.join('\n'))
+      if (masterOverwrite) {
+        const { color: bgColor, alpha: bgAlpha } = formatColor(theme.value.backgroundColor)
+        pptx.defineSlideMaster({
+          title: 'RABBIT_MASTER',
+          background: { color: bgColor, transparency: (1 - bgAlpha) * 100 },
+        })
       }
 
-      if (!slide.elements) continue
+      for (const slide of _slides) {
+        const pptxSlide = pptx.addSlide()
 
-      for (const el of slide.elements) {
-        if (el.type === 'text') {
-          const textProps = formatHTML(el.content)
-          const inset = el.inset || [10, 10, 10, 10]
+        if (slide.background) {
+          const background = slide.background
+          if (background.type === 'image' && background.image) {
+            if (isSVGImage(background.image.src)) {
+              pptxSlide.addImage({
+                data: background.image.src,
+                x: 0,
+                y: 0,
+                w: viewportSize.value / ratioPx2Inch.value,
+                h: viewportSize.value * viewportRatio.value / ratioPx2Inch.value,
+              })
+            }
+            else {
+              // base64 的本来就是 data URL，其余的从预取账本里拿。
+              // **不要退回传 path**：背景图那条路 pptxgenjs 会漏写内容类型声明，
+              // 无扩展名的 asset URL 于是产出一个没有内容类型的 part ——
+              // 那是「整个文件损坏」，比「少一张背景」坏得多，宁可不设背景
+              const dataUrl = isBase64Image(background.image.src)
+                ? background.image.src
+                : bundle.dataUrls.get(background.image.src)
 
-          const options: pptxgen.TextPropsOptions = {
-            x: el.left / ratioPx2Inch.value,
-            y: el.top / ratioPx2Inch.value,
-            w: el.width / ratioPx2Inch.value,
-            h: el.height / ratioPx2Inch.value,
-            fontSize: defaultFontSize / ratioPx2Pt.value,
-            fontFace: '微软雅黑',
-            color: '#000000',
-            valign: el.vAlign || 'top',
-            margin: [inset[3], inset[1], inset[2], inset[0]].map(item => item / ratioPx2Pt.value) as [number, number, number, number],
-            paraSpaceBefore: 5 / ratioPx2Pt.value,
-            lineSpacingMultiple: 1.5 / 1.25,
-          }
-          if (el.rotate) options.rotate = el.rotate
-          if (el.wordSpace) options.charSpacing = el.wordSpace / ratioPx2Pt.value
-          if (el.lineHeight) options.lineSpacingMultiple = el.lineHeight / 1.25
-          if (el.fill) {
-            const c = formatColor(el.fill)
-            const opacity = el.opacity === undefined ? 1 : el.opacity
-            options.fill = { color: c.color, transparency: (1 - c.alpha * opacity) * 100 }
-          }
-          if (el.defaultColor) options.color = formatColor(el.defaultColor).color
-          if (el.defaultFontName) options.fontFace = el.defaultFontName
-          if (el.shadow) options.shadow = getShadowOption(el.shadow)
-          if (el.outline?.width) options.line = getOutlineOption(el.outline)
-          if (el.opacity !== undefined) options.transparency = (1 - el.opacity) * 100
-          if (el.paragraphSpace !== undefined) options.paraSpaceBefore = el.paragraphSpace / ratioPx2Pt.value
-          if (el.vertical) options.vert = 'eaVert'
-          if (!el.fixedHeight) options.fit = 'resize'
-          options.objectName = el.id
-
-          pptxSlide.addText(textProps, options)
-        }
-
-        else if (el.type === 'image') {
-          const options: pptxgen.ImageProps = {
-            x: el.left / ratioPx2Inch.value,
-            y: el.top / ratioPx2Inch.value,
-            w: el.width / ratioPx2Inch.value,
-            h: el.height / ratioPx2Inch.value,
-          }
-          // 同上：deck 里是 `asset://<sha256>`，不解析就等于导出时静默丢图
-          if (isBase64Image(el.src)) options.data = el.src
-          else options.path = resolveAssetUrl(el.src)
-
-          if (el.flipH) options.flipH = el.flipH
-          if (el.flipV) options.flipV = el.flipV
-          if (el.rotate) options.rotate = el.rotate
-          if (el.link) {
-            const linkOption = getLinkOption(el.link)
-            if (linkOption) options.hyperlink = linkOption
-          }
-          if (el.filters?.opacity) options.transparency = 100 - parseInt(el.filters?.opacity)
-          if (el.clip) {
-            if (el.clip.shape === 'ellipse') options.rounding = true
-
-            const [start, end] = el.clip.range
-            const [startX, startY] = start
-            const [endX, endY] = end
-
-            const originW = el.width / ((endX - startX) / ratioPx2Inch.value)
-            const originH = el.height / ((endY - startY) / ratioPx2Inch.value)
-
-            options.w = originW / ratioPx2Inch.value
-            options.h = originH / ratioPx2Inch.value
-
-            options.sizing = {
-              type: 'crop',
-              x: startX / ratioPx2Inch.value * originW / ratioPx2Inch.value,
-              y: startY / ratioPx2Inch.value * originH / ratioPx2Inch.value,
-              w: (endX - startX) / ratioPx2Inch.value * originW / ratioPx2Inch.value,
-              h: (endY - startY) / ratioPx2Inch.value * originH / ratioPx2Inch.value,
+              if (dataUrl) {
+                // path 只是给它推扩展名用的幌子：`preencoded` 前缀会让 pptxgenjs
+                // 跳过取图（它只认 path 不认 data 的 MIME，不给就一律当 png，
+                // 一张 JPEG 被声明成 image/png，PowerPoint 启动时报内容警告）
+                pptxSlide.background = {
+                  data: dataUrl,
+                  path: `preencoded.${dataUrlExtension(dataUrl)}`,
+                }
+              }
             }
           }
-          options.objectName = el.id
-
-          pptxSlide.addImage(options)
+          else if (background.type === 'solid' && background.color) {
+            const c = formatColor(background.color)
+            pptxSlide.background = { color: c.color, transparency: (1 - c.alpha) * 100 }
+          }
+          else if (background.type === 'gradient' && background.gradient) {
+            const colors = background.gradient.colors
+            const color1 = colors[0].color
+            const color2 = colors[colors.length - 1].color
+            const color = tinycolor.mix(color1, color2).toHexString()
+            const c = formatColor(color)
+            pptxSlide.background = { color: c.color, transparency: (1 - c.alpha) * 100 }
+          }
+        }
+        if (slide.remark) {
+          const doc = new DOMParser().parseFromString(slide.remark, 'text/html')
+          const pList = doc.body.querySelectorAll('p')
+          const text = []
+          for (const p of pList) {
+            const textContent = p.textContent
+            text.push(textContent || '')
+          }
+          pptxSlide.addNotes(text.join('\n'))
         }
 
-        else if (el.type === 'shape') {
-          if (el.special) {
+        if (!slide.elements) continue
+
+        for (const el of slide.elements) {
+          if (el.type === 'text') {
+            const textProps = formatHTML(el.content, substituteFonts)
+            const inset = el.inset || [10, 10, 10, 10]
+
+            const options: pptxgen.TextPropsOptions = {
+              x: el.left / ratioPx2Inch.value,
+              y: el.top / ratioPx2Inch.value,
+              w: el.width / ratioPx2Inch.value,
+              h: el.height / ratioPx2Inch.value,
+              fontSize: defaultFontSize / ratioPx2Pt.value,
+              fontFace: '微软雅黑',
+              color: '#000000',
+              valign: el.vAlign || 'top',
+              margin: [inset[3], inset[1], inset[2], inset[0]].map(item => item / ratioPx2Pt.value) as [number, number, number, number],
+              paraSpaceBefore: 5 / ratioPx2Pt.value,
+              lineSpacingMultiple: 1.5 / 1.25,
+            }
+            if (el.rotate) options.rotate = el.rotate
+            if (el.wordSpace) options.charSpacing = el.wordSpace / ratioPx2Pt.value
+            if (el.lineHeight) options.lineSpacingMultiple = el.lineHeight / 1.25
+            if (el.fill) {
+              const c = formatColor(el.fill)
+              const opacity = el.opacity === undefined ? 1 : el.opacity
+              options.fill = { color: c.color, transparency: (1 - c.alpha * opacity) * 100 }
+            }
+            if (el.defaultColor) options.color = formatColor(el.defaultColor).color
+            if (el.defaultFontName) options.fontFace = resolveFontFamily(el.defaultFontName, substituteFonts)
+            if (el.shadow) options.shadow = getShadowOption(el.shadow)
+            if (el.outline?.width) options.line = getOutlineOption(el.outline)
+            if (el.opacity !== undefined) options.transparency = (1 - el.opacity) * 100
+            if (el.paragraphSpace !== undefined) options.paraSpaceBefore = el.paragraphSpace / ratioPx2Pt.value
+            if (el.vertical) options.vert = 'eaVert'
+            if (!el.fixedHeight) options.fit = 'resize'
+            options.objectName = el.id
+
+            pptxSlide.addText(textProps, options)
+          }
+
+          else if (el.type === 'image') {
+            const options: pptxgen.ImageProps = {
+              x: el.left / ratioPx2Inch.value,
+              y: el.top / ratioPx2Inch.value,
+              w: el.width / ratioPx2Inch.value,
+              h: el.height / ratioPx2Inch.value,
+            }
+            // 同上：一律走 data URL。传 path 的话，无扩展名的 asset URL 会让
+            // pptxgenjs 把整串 sha256 当成扩展名，写出 `image/<hash>` 这种假 MIME，
+            // 图在 PPTX 里打不开 —— 而画布上一切正常，所以没人会发现
+            const dataUrl = isBase64Image(el.src) ? el.src : bundle.dataUrls.get(el.src)
+            if (!dataUrl) continue
+            options.data = dataUrl
+
+            if (el.flipH) options.flipH = el.flipH
+            if (el.flipV) options.flipV = el.flipV
+            if (el.rotate) options.rotate = el.rotate
+            if (el.link) {
+              const linkOption = getLinkOption(el.link)
+              if (linkOption) options.hyperlink = linkOption
+            }
+            if (el.filters?.opacity) options.transparency = 100 - parseInt(el.filters?.opacity)
+            if (el.clip) {
+              if (el.clip.shape === 'ellipse') options.rounding = true
+
+              const [start, end] = el.clip.range
+              const [startX, startY] = start
+              const [endX, endY] = end
+
+              const originW = el.width / ((endX - startX) / ratioPx2Inch.value)
+              const originH = el.height / ((endY - startY) / ratioPx2Inch.value)
+
+              options.w = originW / ratioPx2Inch.value
+              options.h = originH / ratioPx2Inch.value
+
+              options.sizing = {
+                type: 'crop',
+                x: startX / ratioPx2Inch.value * originW / ratioPx2Inch.value,
+                y: startY / ratioPx2Inch.value * originH / ratioPx2Inch.value,
+                w: (endX - startX) / ratioPx2Inch.value * originW / ratioPx2Inch.value,
+                h: (endY - startY) / ratioPx2Inch.value * originH / ratioPx2Inch.value,
+              }
+            }
+            options.objectName = el.id
+
+            pptxSlide.addImage(options)
+          }
+
+          else if (el.type === 'shape') {
+            if (el.special) {
+              const container = document.createElement('div')
+              const vm = createVNode(BaseShapeElement, { elementInfo: el }, null)
+              render(vm, container)
+              const svgRef = container.querySelector('svg')
+              const base64SVG = svgRef ? svg2Base64(svgRef) : ''
+              render(null, container)
+
+              if (!base64SVG) continue
+
+              const options: pptxgen.ImageProps = {
+                data: base64SVG,
+                x: el.left / ratioPx2Inch.value,
+                y: el.top / ratioPx2Inch.value,
+                w: el.width / ratioPx2Inch.value,
+                h: el.height / ratioPx2Inch.value,
+              }
+              if (el.rotate) options.rotate = el.rotate
+              if (el.flipH) options.flipH = el.flipH
+              if (el.flipV) options.flipV = el.flipV
+              if (el.link) {
+                const linkOption = getLinkOption(el.link)
+                if (linkOption) options.hyperlink = linkOption
+              }
+              options.objectName = el.id
+
+              pptxSlide.addImage(options)
+            }
+            else {
+              const scale = {
+                x: el.width / el.viewBox[0],
+                y: el.height / el.viewBox[1],
+              }
+              const points = formatPoints(toPoints(el.path), scale)
+  
+              let fillColor = formatColor(el.fill)
+              if (el.gradient) {
+                const colors = el.gradient.colors
+                const color1 = colors[0].color
+                const color2 = colors[colors.length - 1].color
+                const color = tinycolor.mix(color1, color2).toHexString()
+                fillColor = formatColor(color)
+              }
+              if (el.pattern) fillColor = formatColor('#00000000')
+              const opacity = el.opacity === undefined ? 1 : el.opacity
+  
+              const options: pptxgen.ShapeProps = {
+                x: el.left / ratioPx2Inch.value,
+                y: el.top / ratioPx2Inch.value,
+                w: el.width / ratioPx2Inch.value,
+                h: el.height / ratioPx2Inch.value,
+                fill: { color: fillColor.color, transparency: (1 - fillColor.alpha * opacity) * 100 },
+                points,
+              }
+              if (el.flipH) options.flipH = el.flipH
+              if (el.flipV) options.flipV = el.flipV
+              if (el.shadow) options.shadow = getShadowOption(el.shadow)
+              if (el.outline?.width) options.line = getOutlineOption(el.outline)
+              if (el.rotate) options.rotate = el.rotate
+              if (el.link) {
+                const linkOption = getLinkOption(el.link)
+                if (linkOption) options.hyperlink = linkOption
+              }
+              options.objectName = el.id
+
+              pptxSlide.addShape('custGeom' as pptxgen.ShapeType, options)
+            }
+            if (el.text) {
+              const textProps = formatHTML(el.text.content, substituteFonts)
+              const inset = el.text.inset || [10, 10, 10, 10]
+
+              const options: pptxgen.TextPropsOptions = {
+                x: el.left / ratioPx2Inch.value,
+                y: el.top / ratioPx2Inch.value,
+                w: el.width / ratioPx2Inch.value,
+                h: el.height / ratioPx2Inch.value,
+                fontSize: defaultFontSize / ratioPx2Pt.value,
+                fontFace: '微软雅黑',
+                color: '#000000',
+                paraSpaceBefore: 5 / ratioPx2Pt.value,
+                margin: [inset[3], inset[1], inset[2], inset[0]].map(item => item / ratioPx2Pt.value) as [number, number, number, number],
+                valign: el.text.align,
+              }
+              if (el.rotate) options.rotate = el.rotate
+              if (el.text.defaultColor) options.color = formatColor(el.text.defaultColor).color
+              if (el.text.defaultFontName) options.fontFace = resolveFontFamily(el.text.defaultFontName, substituteFonts)
+
+              pptxSlide.addText(textProps, options)
+            }
+            const patternDataUrl = el.pattern
+              ? (isBase64Image(el.pattern) ? el.pattern : bundle.dataUrls.get(el.pattern))
+              : undefined
+            if (patternDataUrl) {
+              const options: pptxgen.ImageProps = {
+                data: patternDataUrl,
+                x: el.left / ratioPx2Inch.value,
+                y: el.top / ratioPx2Inch.value,
+                w: el.width / ratioPx2Inch.value,
+                h: el.height / ratioPx2Inch.value,
+              }
+
+              if (el.flipH) options.flipH = el.flipH
+              if (el.flipV) options.flipV = el.flipV
+              if (el.rotate) options.rotate = el.rotate
+              if (el.link) {
+                const linkOption = getLinkOption(el.link)
+                if (linkOption) options.hyperlink = linkOption
+              }
+
+              pptxSlide.addImage(options)
+            }
+          }
+
+          else if (el.type === 'line') {
+            const path = getLineElementPath(el)
+            const points = formatPoints(toPoints(path))
+            const { minX, maxX, minY, maxY } = getElementRange(el)
+            const c = formatColor(el.color)
+
+            const options: pptxgen.ShapeProps = {
+              x: el.left / ratioPx2Inch.value,
+              y: el.top / ratioPx2Inch.value,
+              w: (maxX - minX) / ratioPx2Inch.value,
+              h: (maxY - minY) / ratioPx2Inch.value,
+              line: {
+                color: c.color, 
+                transparency: (1 - c.alpha) * 100,
+                width: el.width / ratioPx2Pt.value, 
+                dashType: dashTypeMap[el.style] as 'solid' | 'dash' | 'sysDot',
+                beginArrowType: el.points[0] ? 'arrow' : 'none',
+                endArrowType: el.points[1] ? 'arrow' : 'none',
+              },
+              points,
+            }
+            if (el.shadow) options.shadow = getShadowOption(el.shadow)
+            options.objectName = el.id
+
+            pptxSlide.addShape('custGeom' as pptxgen.ShapeType, options)
+          }
+
+          else if (el.type === 'chart') {
+            const chartData = []
+            for (let i = 0; i < el.data.series.length; i++) {
+              const item = el.data.series[i]
+              chartData.push({
+                name: `系列${i + 1}`,
+                labels: el.data.labels,
+                values: item,
+              })
+            }
+
+            let chartColors: string[] = []
+            if (el.themeColors.length === 10) chartColors = el.themeColors.map(color => formatColor(color).color)
+            else if (el.themeColors.length === 1) chartColors = tinycolor(el.themeColors[0]).analogous(10).map(color => formatColor(color.toHexString()).color)
+            else {
+              const len = el.themeColors.length
+              const supplement = tinycolor(el.themeColors[len - 1]).analogous(10 + 1 - len).map(color => color.toHexString())
+              chartColors = [...el.themeColors.slice(0, len - 1), ...supplement].map(color => formatColor(color).color)
+            }
+          
+            const options: pptxgen.IChartOpts = {
+              x: el.left / ratioPx2Inch.value,
+              y: el.top / ratioPx2Inch.value,
+              w: el.width / ratioPx2Inch.value,
+              h: el.height / ratioPx2Inch.value,
+              chartColors: (el.chartType === 'pie' || el.chartType === 'ring') ? chartColors : chartColors.slice(0, el.data.series.length),
+            }
+
+            const textColor = formatColor(el.textColor || '#000000').color
+            options.catAxisLabelColor = textColor
+            options.valAxisLabelColor = textColor
+
+            const fontSize = 14 / ratioPx2Pt.value
+            options.catAxisLabelFontSize = fontSize
+            options.valAxisLabelFontSize = fontSize
+          
+            if (el.fill || el.outline) {
+              const plotArea: pptxgen.IChartPropsFillLine = {}
+              if (el.fill) {
+                plotArea.fill = { color: formatColor(el.fill).color }
+              }
+              if (el.outline) {
+                plotArea.border = {
+                  pt: el.outline.width! / ratioPx2Pt.value,
+                  color: formatColor(el.outline.color!).color,
+                }
+              }
+              options.plotArea = plotArea
+            }
+
+            if ((el.data.series.length > 1 && el.chartType !== 'scatter') || el.chartType === 'pie' || el.chartType === 'ring') {
+              options.showLegend = true
+              options.legendPos = 'b'
+              options.legendColor = textColor
+              options.legendFontSize = fontSize
+            }
+
+            let type = pptx.ChartType.bar
+            if (el.chartType === 'bar') {
+              type = pptx.ChartType.bar
+              options.barDir = 'col'
+              if (el.options?.stack) options.barGrouping = 'stacked'
+            }
+            else if (el.chartType === 'column') {
+              type = pptx.ChartType.bar
+              options.barDir = 'bar'
+              if (el.options?.stack) options.barGrouping = 'stacked'
+            }
+            else if (el.chartType === 'line') {
+              type = pptx.ChartType.line
+              if (el.options?.lineSmooth) options.lineSmooth = true
+            }
+            else if (el.chartType === 'area') {
+              type = pptx.ChartType.area
+            }
+            else if (el.chartType === 'radar') {
+              type = pptx.ChartType.radar
+            }
+            else if (el.chartType === 'scatter') {
+              type = pptx.ChartType.scatter
+              options.lineSize = 0
+            }
+            else if (el.chartType === 'pie') {
+              type = pptx.ChartType.pie
+            }
+            else if (el.chartType === 'ring') {
+              type = pptx.ChartType.doughnut
+              options.holeSize = 60
+            }
+          
+            options.objectName = el.id
+            pptxSlide.addChart(type, chartData, options)
+          }
+
+          else if (el.type === 'table') {
+            const hiddenCells = []
+            for (let i = 0; i < el.data.length; i++) {
+              const rowData = el.data[i]
+
+              for (let j = 0; j < rowData.length; j++) {
+                const cell = rowData[j]
+                if (cell.colspan > 1 || cell.rowspan > 1) {
+                  for (let row = i; row < i + cell.rowspan; row++) {
+                    for (let col = row === i ? j + 1 : j; col < j + cell.colspan; col++) hiddenCells.push(`${row}_${col}`)
+                  }
+                }
+              }
+            }
+
+            const tableData = []
+
+            const theme = el.theme
+            let themeColor: FormatColor | null = null
+            let subThemeColors: FormatColor[] = []
+            if (theme) {
+              themeColor = formatColor(theme.color)
+              subThemeColors = getTableSubThemeColor(theme.color).map(item => formatColor(item))
+            }
+
+            for (let i = 0; i < el.data.length; i++) {
+              const row = el.data[i]
+              const _row = []
+
+              for (let j = 0; j < row.length; j++) {
+                const cell = row[j]
+                const cellOptions: pptxgen.TableCellProps = {
+                  colspan: cell.colspan,
+                  rowspan: cell.rowspan,
+                  bold: cell.style?.bold || false,
+                  italic: cell.style?.em || false,
+                  underline: { style: cell.style?.underline ? 'sng' : 'none' },
+                  align: cell.style?.align || 'left',
+                  valign: 'middle',
+                  fontFace: resolveFontFamily(cell.style?.fontname || '微软雅黑', substituteFonts),
+                  fontSize: (cell.style?.fontsize ? parseInt(cell.style?.fontsize) : 14) / ratioPx2Pt.value,
+                }
+                if (theme && themeColor) {
+                  let c: FormatColor
+                  if (i % 2 === 0) c = subThemeColors[1]
+                  else c = subThemeColors[0]
+
+                  if (theme.rowHeader && i === 0) c = themeColor
+                  else if (theme.rowFooter && i === el.data.length - 1) c = themeColor
+                  else if (theme.colHeader && j === 0) c = themeColor
+                  else if (theme.colFooter && j === row.length - 1) c = themeColor
+
+                  cellOptions.fill = { color: c.color, transparency: (1 - c.alpha) * 100 }
+                }
+                if (cell.style?.backcolor) {
+                  const c = formatColor(cell.style.backcolor)
+                  cellOptions.fill = { color: c.color, transparency: (1 - c.alpha) * 100 }
+                }
+                if (cell.style?.color) cellOptions.color = formatColor(cell.style.color).color
+
+                if (!hiddenCells.includes(`${i}_${j}`)) {
+                  _row.push({
+                    text: cell.text,
+                    options: cellOptions,
+                  })
+                }
+              }
+              if (_row.length) tableData.push(_row)
+            }
+
+            const options: pptxgen.TableProps = {
+              x: el.left / ratioPx2Inch.value,
+              y: el.top / ratioPx2Inch.value,
+              w: el.width / ratioPx2Inch.value,
+              h: el.height / ratioPx2Inch.value,
+              colW: el.colWidths.map(item => el.width * item / ratioPx2Inch.value),
+            }
+            options.objectName = el.id
+            if (el.theme) options.fill = { color: '#ffffff' }
+            if (el.outline.width && el.outline.color) {
+              options.border = {
+                type: el.outline.style === 'solid' ? 'solid' : 'dash',
+                pt: el.outline.width / ratioPx2Pt.value,
+                color: formatColor(el.outline.color).color,
+              }
+            }
+
+            pptxSlide.addTable(tableData, options)
+          }
+        
+          else if (el.type === 'latex') {
             const container = document.createElement('div')
-            const vm = createVNode(BaseShapeElement, { elementInfo: el }, null)
+            const vm = createVNode(BaseLatexElement, { elementInfo: el }, null)
             render(vm, container)
             const svgRef = container.querySelector('svg')
             const base64SVG = svgRef ? svg2Base64(svgRef) : ''
@@ -682,9 +1050,6 @@ export default () => {
               w: el.width / ratioPx2Inch.value,
               h: el.height / ratioPx2Inch.value,
             }
-            if (el.rotate) options.rotate = el.rotate
-            if (el.flipH) options.flipH = el.flipH
-            if (el.flipV) options.flipV = el.flipV
             if (el.link) {
               const linkOption = getLinkOption(el.link)
               if (linkOption) options.hyperlink = linkOption
@@ -693,414 +1058,118 @@ export default () => {
 
             pptxSlide.addImage(options)
           }
-          else {
-            const scale = {
-              x: el.width / el.viewBox[0],
-              y: el.height / el.viewBox[1],
-            }
-            const points = formatPoints(toPoints(el.path), scale)
-  
-            let fillColor = formatColor(el.fill)
-            if (el.gradient) {
-              const colors = el.gradient.colors
-              const color1 = colors[0].color
-              const color2 = colors[colors.length - 1].color
-              const color = tinycolor.mix(color1, color2).toHexString()
-              fillColor = formatColor(color)
-            }
-            if (el.pattern) fillColor = formatColor('#00000000')
-            const opacity = el.opacity === undefined ? 1 : el.opacity
-  
-            const options: pptxgen.ShapeProps = {
+
+          else if (!ignoreMedia && (el.type === 'video' || el.type === 'audio')) {
+            const options: pptxgen.MediaProps = {
               x: el.left / ratioPx2Inch.value,
               y: el.top / ratioPx2Inch.value,
               w: el.width / ratioPx2Inch.value,
               h: el.height / ratioPx2Inch.value,
-              fill: { color: fillColor.color, transparency: (1 - fillColor.alpha * opacity) * 100 },
-              points,
+              path: el.src,
+              type: el.type,
             }
-            if (el.flipH) options.flipH = el.flipH
-            if (el.flipV) options.flipV = el.flipV
-            if (el.shadow) options.shadow = getShadowOption(el.shadow)
-            if (el.outline?.width) options.line = getOutlineOption(el.outline)
-            if (el.rotate) options.rotate = el.rotate
-            if (el.link) {
-              const linkOption = getLinkOption(el.link)
-              if (linkOption) options.hyperlink = linkOption
-            }
-            options.objectName = el.id
+            if (el.type === 'video' && el.poster) options.cover = el.poster
 
-            pptxSlide.addShape('custGeom' as pptxgen.ShapeType, options)
-          }
-          if (el.text) {
-            const textProps = formatHTML(el.text.content)
-            const inset = el.text.inset || [10, 10, 10, 10]
-
-            const options: pptxgen.TextPropsOptions = {
-              x: el.left / ratioPx2Inch.value,
-              y: el.top / ratioPx2Inch.value,
-              w: el.width / ratioPx2Inch.value,
-              h: el.height / ratioPx2Inch.value,
-              fontSize: defaultFontSize / ratioPx2Pt.value,
-              fontFace: '微软雅黑',
-              color: '#000000',
-              paraSpaceBefore: 5 / ratioPx2Pt.value,
-              margin: [inset[3], inset[1], inset[2], inset[0]].map(item => item / ratioPx2Pt.value) as [number, number, number, number],
-              valign: el.text.align,
-            }
-            if (el.rotate) options.rotate = el.rotate
-            if (el.text.defaultColor) options.color = formatColor(el.text.defaultColor).color
-            if (el.text.defaultFontName) options.fontFace = el.text.defaultFontName
-
-            pptxSlide.addText(textProps, options)
-          }
-          if (el.pattern) {
-            const options: pptxgen.ImageProps = {
-              x: el.left / ratioPx2Inch.value,
-              y: el.top / ratioPx2Inch.value,
-              w: el.width / ratioPx2Inch.value,
-              h: el.height / ratioPx2Inch.value,
-            }
-            if (isBase64Image(el.pattern)) options.data = el.pattern
-            else options.path = el.pattern
-  
-            if (el.flipH) options.flipH = el.flipH
-            if (el.flipV) options.flipV = el.flipV
-            if (el.rotate) options.rotate = el.rotate
-            if (el.link) {
-              const linkOption = getLinkOption(el.link)
-              if (linkOption) options.hyperlink = linkOption
-            }
-
-            pptxSlide.addImage(options)
-          }
-        }
-
-        else if (el.type === 'line') {
-          const path = getLineElementPath(el)
-          const points = formatPoints(toPoints(path))
-          const { minX, maxX, minY, maxY } = getElementRange(el)
-          const c = formatColor(el.color)
-
-          const options: pptxgen.ShapeProps = {
-            x: el.left / ratioPx2Inch.value,
-            y: el.top / ratioPx2Inch.value,
-            w: (maxX - minX) / ratioPx2Inch.value,
-            h: (maxY - minY) / ratioPx2Inch.value,
-            line: {
-              color: c.color, 
-              transparency: (1 - c.alpha) * 100,
-              width: el.width / ratioPx2Pt.value, 
-              dashType: dashTypeMap[el.style] as 'solid' | 'dash' | 'sysDot',
-              beginArrowType: el.points[0] ? 'arrow' : 'none',
-              endArrowType: el.points[1] ? 'arrow' : 'none',
-            },
-            points,
-          }
-          if (el.shadow) options.shadow = getShadowOption(el.shadow)
-          options.objectName = el.id
-
-          pptxSlide.addShape('custGeom' as pptxgen.ShapeType, options)
-        }
-
-        else if (el.type === 'chart') {
-          const chartData = []
-          for (let i = 0; i < el.data.series.length; i++) {
-            const item = el.data.series[i]
-            chartData.push({
-              name: `系列${i + 1}`,
-              labels: el.data.labels,
-              values: item,
-            })
-          }
-
-          let chartColors: string[] = []
-          if (el.themeColors.length === 10) chartColors = el.themeColors.map(color => formatColor(color).color)
-          else if (el.themeColors.length === 1) chartColors = tinycolor(el.themeColors[0]).analogous(10).map(color => formatColor(color.toHexString()).color)
-          else {
-            const len = el.themeColors.length
-            const supplement = tinycolor(el.themeColors[len - 1]).analogous(10 + 1 - len).map(color => color.toHexString())
-            chartColors = [...el.themeColors.slice(0, len - 1), ...supplement].map(color => formatColor(color).color)
-          }
+            const extMatch = el.src.match(/\.([a-zA-Z0-9]+)(?:[\?#]|$)/)
+            if (extMatch && extMatch[1]) options.extn = extMatch[1]
+            else if (el.ext) options.extn = el.ext
           
-          const options: pptxgen.IChartOpts = {
-            x: el.left / ratioPx2Inch.value,
-            y: el.top / ratioPx2Inch.value,
-            w: el.width / ratioPx2Inch.value,
-            h: el.height / ratioPx2Inch.value,
-            chartColors: (el.chartType === 'pie' || el.chartType === 'ring') ? chartColors : chartColors.slice(0, el.data.series.length),
-          }
-
-          const textColor = formatColor(el.textColor || '#000000').color
-          options.catAxisLabelColor = textColor
-          options.valAxisLabelColor = textColor
-
-          const fontSize = 14 / ratioPx2Pt.value
-          options.catAxisLabelFontSize = fontSize
-          options.valAxisLabelFontSize = fontSize
-          
-          if (el.fill || el.outline) {
-            const plotArea: pptxgen.IChartPropsFillLine = {}
-            if (el.fill) {
-              plotArea.fill = { color: formatColor(el.fill).color }
+            const videoExts = ['avi', 'mp4', 'm4v', 'mov', 'wmv']
+            const audioExts = ['mp3', 'm4a', 'mp4', 'wav', 'wma']
+            if (options.extn && [...videoExts, ...audioExts].includes(options.extn)) {
+              options.objectName = el.id
+              pptxSlide.addMedia(options)
             }
-            if (el.outline) {
-              plotArea.border = {
-                pt: el.outline.width! / ratioPx2Pt.value,
-                color: formatColor(el.outline.color!).color,
-              }
-            }
-            options.plotArea = plotArea
-          }
-
-          if ((el.data.series.length > 1 && el.chartType !== 'scatter') || el.chartType === 'pie' || el.chartType === 'ring') {
-            options.showLegend = true
-            options.legendPos = 'b'
-            options.legendColor = textColor
-            options.legendFontSize = fontSize
-          }
-
-          let type = pptx.ChartType.bar
-          if (el.chartType === 'bar') {
-            type = pptx.ChartType.bar
-            options.barDir = 'col'
-            if (el.options?.stack) options.barGrouping = 'stacked'
-          }
-          else if (el.chartType === 'column') {
-            type = pptx.ChartType.bar
-            options.barDir = 'bar'
-            if (el.options?.stack) options.barGrouping = 'stacked'
-          }
-          else if (el.chartType === 'line') {
-            type = pptx.ChartType.line
-            if (el.options?.lineSmooth) options.lineSmooth = true
-          }
-          else if (el.chartType === 'area') {
-            type = pptx.ChartType.area
-          }
-          else if (el.chartType === 'radar') {
-            type = pptx.ChartType.radar
-          }
-          else if (el.chartType === 'scatter') {
-            type = pptx.ChartType.scatter
-            options.lineSize = 0
-          }
-          else if (el.chartType === 'pie') {
-            type = pptx.ChartType.pie
-          }
-          else if (el.chartType === 'ring') {
-            type = pptx.ChartType.doughnut
-            options.holeSize = 60
-          }
-          
-          options.objectName = el.id
-          pptxSlide.addChart(type, chartData, options)
-        }
-
-        else if (el.type === 'table') {
-          const hiddenCells = []
-          for (let i = 0; i < el.data.length; i++) {
-            const rowData = el.data[i]
-
-            for (let j = 0; j < rowData.length; j++) {
-              const cell = rowData[j]
-              if (cell.colspan > 1 || cell.rowspan > 1) {
-                for (let row = i; row < i + cell.rowspan; row++) {
-                  for (let col = row === i ? j + 1 : j; col < j + cell.colspan; col++) hiddenCells.push(`${row}_${col}`)
-                }
-              }
-            }
-          }
-
-          const tableData = []
-
-          const theme = el.theme
-          let themeColor: FormatColor | null = null
-          let subThemeColors: FormatColor[] = []
-          if (theme) {
-            themeColor = formatColor(theme.color)
-            subThemeColors = getTableSubThemeColor(theme.color).map(item => formatColor(item))
-          }
-
-          for (let i = 0; i < el.data.length; i++) {
-            const row = el.data[i]
-            const _row = []
-
-            for (let j = 0; j < row.length; j++) {
-              const cell = row[j]
-              const cellOptions: pptxgen.TableCellProps = {
-                colspan: cell.colspan,
-                rowspan: cell.rowspan,
-                bold: cell.style?.bold || false,
-                italic: cell.style?.em || false,
-                underline: { style: cell.style?.underline ? 'sng' : 'none' },
-                align: cell.style?.align || 'left',
-                valign: 'middle',
-                fontFace: cell.style?.fontname || '微软雅黑',
-                fontSize: (cell.style?.fontsize ? parseInt(cell.style?.fontsize) : 14) / ratioPx2Pt.value,
-              }
-              if (theme && themeColor) {
-                let c: FormatColor
-                if (i % 2 === 0) c = subThemeColors[1]
-                else c = subThemeColors[0]
-
-                if (theme.rowHeader && i === 0) c = themeColor
-                else if (theme.rowFooter && i === el.data.length - 1) c = themeColor
-                else if (theme.colHeader && j === 0) c = themeColor
-                else if (theme.colFooter && j === row.length - 1) c = themeColor
-
-                cellOptions.fill = { color: c.color, transparency: (1 - c.alpha) * 100 }
-              }
-              if (cell.style?.backcolor) {
-                const c = formatColor(cell.style.backcolor)
-                cellOptions.fill = { color: c.color, transparency: (1 - c.alpha) * 100 }
-              }
-              if (cell.style?.color) cellOptions.color = formatColor(cell.style.color).color
-
-              if (!hiddenCells.includes(`${i}_${j}`)) {
-                _row.push({
-                  text: cell.text,
-                  options: cellOptions,
-                })
-              }
-            }
-            if (_row.length) tableData.push(_row)
-          }
-
-          const options: pptxgen.TableProps = {
-            x: el.left / ratioPx2Inch.value,
-            y: el.top / ratioPx2Inch.value,
-            w: el.width / ratioPx2Inch.value,
-            h: el.height / ratioPx2Inch.value,
-            colW: el.colWidths.map(item => el.width * item / ratioPx2Inch.value),
-          }
-          options.objectName = el.id
-          if (el.theme) options.fill = { color: '#ffffff' }
-          if (el.outline.width && el.outline.color) {
-            options.border = {
-              type: el.outline.style === 'solid' ? 'solid' : 'dash',
-              pt: el.outline.width / ratioPx2Pt.value,
-              color: formatColor(el.outline.color).color,
-            }
-          }
-
-          pptxSlide.addTable(tableData, options)
-        }
-        
-        else if (el.type === 'latex') {
-          const container = document.createElement('div')
-          const vm = createVNode(BaseLatexElement, { elementInfo: el }, null)
-          render(vm, container)
-          const svgRef = container.querySelector('svg')
-          const base64SVG = svgRef ? svg2Base64(svgRef) : ''
-          render(null, container)
-
-          if (!base64SVG) continue
-
-          const options: pptxgen.ImageProps = {
-            data: base64SVG,
-            x: el.left / ratioPx2Inch.value,
-            y: el.top / ratioPx2Inch.value,
-            w: el.width / ratioPx2Inch.value,
-            h: el.height / ratioPx2Inch.value,
-          }
-          if (el.link) {
-            const linkOption = getLinkOption(el.link)
-            if (linkOption) options.hyperlink = linkOption
-          }
-          options.objectName = el.id
-
-          pptxSlide.addImage(options)
-        }
-
-        else if (!ignoreMedia && (el.type === 'video' || el.type === 'audio')) {
-          const options: pptxgen.MediaProps = {
-            x: el.left / ratioPx2Inch.value,
-            y: el.top / ratioPx2Inch.value,
-            w: el.width / ratioPx2Inch.value,
-            h: el.height / ratioPx2Inch.value,
-            path: el.src,
-            type: el.type,
-          }
-          if (el.type === 'video' && el.poster) options.cover = el.poster
-
-          const extMatch = el.src.match(/\.([a-zA-Z0-9]+)(?:[\?#]|$)/)
-          if (extMatch && extMatch[1]) options.extn = extMatch[1]
-          else if (el.ext) options.extn = el.ext
-          
-          const videoExts = ['avi', 'mp4', 'm4v', 'mov', 'wmv']
-          const audioExts = ['mp3', 'm4a', 'mp4', 'wav', 'wma']
-          if (options.extn && [...videoExts, ...audioExts].includes(options.extn)) {
-            options.objectName = el.id
-            pptxSlide.addMedia(options)
           }
         }
       }
+
+      // E1+E5: pptxgenjs → arraybuffer → jszip 解包 → 注入 <p:timing> → 重新打包
+      // E2: 上面每个 addXxx 都已补 objectName: el.id，解包后按 name 反查 spid 建映射表
+      // E6: web-only / spid 查不到 / preset 不存在 → 跳过并汇总告警
+      const buffer = await pptx.write({ outputType: 'arraybuffer' })
+      const zip = await JSZip.loadAsync(buffer as ArrayBuffer)
+
+      const allSkipped: SkippedAnimation[] = []
+      const allDegraded: string[] = []
+
+      for (let i = 0; i < _slides.length; i++) {
+        const slide = _slides[i]
+
+        const { xml: transitionXml, degraded } = buildTransitionXml(slide.turningMode)
+        if (degraded) allDegraded.push(`第 ${i + 1} 页：${degraded}`)
+
+        let timingXml = ''
+        const slideFile = zip.file(`ppt/slides/slide${i + 1}.xml`)
+        if (!slideFile) continue
+
+        const slideXml = await slideFile.async('string')
+
+        if (slide.animations?.length) {
+          const spidMap = buildSpidMap(slideXml)
+          const built = buildTimingXml(slide.animations, spidMap)
+          timingXml = built.xml
+          allSkipped.push(...built.skipped)
+        }
+
+        // ECMA-376 对 CT_Slide 的子元素顺序有强制约束：
+        //   cSld → clrMapOvr → transition → timing
+        // 两段必须一次性按序插入。分两次 replace('</p:sld>') 会把后写的那段
+        // 排在前面，顺序一反 PowerPoint 直接判文件损坏。
+        if (transitionXml || timingXml) {
+          const injected = slideXml.replace('</p:sld>', `${transitionXml}${timingXml}</p:sld>`)
+          zip.file(`ppt/slides/slide${i + 1}.xml`, injected)
+        }
+      }
+
+      // R-67 兜底：出厂前对着产物自查一遍每个 part 有没有内容类型。
+      // 缺内容类型 = PowerPoint 判文件损坏，而且**打开前毫无征兆** ——
+      // 这次的事故就是这么溜出去的，所以宁可多扫这一遍
+      const contentTypesFile = zip.file('[Content_Types].xml')
+      if (contentTypesFile) {
+        const partNames = Object.keys(zip.files).filter(name => !zip.files[name].dir && name !== '[Content_Types].xml')
+        const { xml, added, uncovered } = ensureContentTypes(await contentTypesFile.async('string'), partNames)
+        if (added.length) {
+          zip.file('[Content_Types].xml', xml)
+          // eslint-disable-next-line no-console
+          console.warn('[PPTX 导出] 补上了缺失的内容类型声明：', added)
+        }
+        if (uncovered.length) {
+          // eslint-disable-next-line no-console
+          console.error('[PPTX 导出] 以下部件没有内容类型，文件可能无法打开：', uncovered)
+          message.error('导出的文件可能无法打开，请联系维护者')
+        }
+      }
+
+      if (allSkipped.length) {
+        const reasons = [...new Set(allSkipped.map(s => s.reason))]
+        // eslint-disable-next-line no-console
+        console.warn(`[PPTX 导出] ${allSkipped.length} 个动画被跳过：`, reasons)
+      }
+      if (allDegraded.length) {
+        // eslint-disable-next-line no-console
+        console.warn('[PPTX 导出] 页面转场降级：', allDegraded)
+      }
+
+      const repackedBuffer = await zip.generateAsync({
+        type: 'arraybuffer',
+        compression: 'DEFLATE',
+        compressionOptions: { level: 6 },
+      })
+      saveAs(new Blob([repackedBuffer], { type: 'application/vnd.openxmlformats-officedocument.presentationml.presentation' }), `${title.value}.pptx`)
+
+      warnFailedImages(bundle)
     }
-
-    // E1+E5: pptxgenjs → arraybuffer → jszip 解包 → 注入 <p:timing> → 重新打包
-    // E2: 上面每个 addXxx 都已补 objectName: el.id，解包后按 name 反查 spid 建映射表
-    // E6: web-only / spid 查不到 / preset 不存在 → 跳过并汇总告警
-    setTimeout(() => {
-      pptx.write({ outputType: 'arraybuffer' })
-        .then(async (buffer) => {
-          const zip = await JSZip.loadAsync(buffer as ArrayBuffer)
-
-          const allSkipped: SkippedAnimation[] = []
-          const allDegraded: string[] = []
-
-          for (let i = 0; i < _slides.length; i++) {
-            const slide = _slides[i]
-
-            const { xml: transitionXml, degraded } = buildTransitionXml(slide.turningMode)
-            if (degraded) allDegraded.push(`第 ${i + 1} 页：${degraded}`)
-
-            let timingXml = ''
-            const slideFile = zip.file(`ppt/slides/slide${i + 1}.xml`)
-            if (!slideFile) continue
-
-            const slideXml = await slideFile.async('string')
-
-            if (slide.animations?.length) {
-              const spidMap = buildSpidMap(slideXml)
-              const built = buildTimingXml(slide.animations, spidMap)
-              timingXml = built.xml
-              allSkipped.push(...built.skipped)
-            }
-
-            // ECMA-376 对 CT_Slide 的子元素顺序有强制约束：
-            //   cSld → clrMapOvr → transition → timing
-            // 两段必须一次性按序插入。分两次 replace('</p:sld>') 会把后写的那段
-            // 排在前面，顺序一反 PowerPoint 直接判文件损坏。
-            if (transitionXml || timingXml) {
-              const injected = slideXml.replace('</p:sld>', `${transitionXml}${timingXml}</p:sld>`)
-              zip.file(`ppt/slides/slide${i + 1}.xml`, injected)
-            }
-          }
-
-          if (allSkipped.length) {
-            const reasons = [...new Set(allSkipped.map(s => s.reason))]
-            // eslint-disable-next-line no-console
-            console.warn(`[PPTX 导出] ${allSkipped.length} 个动画被跳过：`, reasons)
-          }
-          if (allDegraded.length) {
-            // eslint-disable-next-line no-console
-            console.warn('[PPTX 导出] 页面转场降级：', allDegraded)
-          }
-
-          const repackedBuffer = await zip.generateAsync({
-            type: 'arraybuffer',
-            compression: 'DEFLATE',
-            compressionOptions: { level: 6 },
-          })
-          saveAs(new Blob([repackedBuffer], { type: 'application/vnd.openxmlformats-officedocument.presentationml.presentation' }), `${title.value}.pptx`)
-          exporting.value = false
-        })
-        .catch(() => {
-          exporting.value = false
-          message.error('导出失败')
-        })
-    }, 200)
+    catch (err) {
+      // 原先这里是 `.catch(() => message.error('导出失败'))`，一行日志都不留 ——
+      // 于是「导出失败」成了唯一线索，谁也查不下去。真实错误必须落到控制台
+      // eslint-disable-next-line no-console
+      console.error('[PPTX 导出] 失败：', err)
+      message.error('导出失败')
+    }
+    finally {
+      exporting.value = false
+    }
   }
 
   return {
