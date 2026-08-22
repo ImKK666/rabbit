@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import jpeg from 'jpeg-js'
 import UPNG from 'upng-js'
 import {
-  sniffFormat, hasTransparency, resizeRgba, decodeImage, compressImage, JPEG_QUALITY,
+  sniffFormat, hasTransparency, alphaStats, resizeRgba, decodeImage, compressImage, JPEG_QUALITY,
 } from '../imageCodec'
 
 // ---------------------------------------------------------------------------
@@ -76,6 +76,31 @@ describe('hasTransparency', () => {
     const rgba = opaqueRgba(2, 2)
     for (let i = 3; i < rgba.length; i += 4) rgba[i] = 0
     expect(hasTransparency(rgba)).toBe(true)
+  })
+})
+
+describe('alphaStats · 「生成一张」测透明通道的判据', () => {
+  it('全实底：ratio 0、fullyOpaque —— 模型没回透明通道', () => {
+    expect(alphaStats(opaqueRgba(4, 4))).toEqual({ transparentRatio: 0, fullyOpaque: true, empty: false })
+  })
+
+  it('一半透明（含半透明边缘）：ratio 0.5、不判实底', () => {
+    const rgba = opaqueRgba(2, 2)
+    for (let i = 3; i < rgba.length; i += 8) rgba[i] = 128
+    const stats = alphaStats(rgba)
+    expect(stats.transparentRatio).toBeCloseTo(0.5)
+    expect(stats.fullyOpaque).toBe(false)
+    expect(stats.empty).toBe(false)
+  })
+
+  it('全透明：ratio 1、empty —— 图上什么都没有', () => {
+    const rgba = opaqueRgba(2, 2)
+    for (let i = 3; i < rgba.length; i += 4) rgba[i] = 0
+    expect(alphaStats(rgba)).toEqual({ transparentRatio: 1, fullyOpaque: false, empty: true })
+  })
+
+  it('**负对照**：空数组按「空图」处理，不除零', () => {
+    expect(alphaStats(new Uint8Array(0))).toEqual({ transparentRatio: 1, fullyOpaque: false, empty: true })
   })
 })
 

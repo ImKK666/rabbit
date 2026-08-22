@@ -82,6 +82,34 @@ export const hasTransparency = (rgba: Uint8Array): boolean => {
 }
 
 /**
+ * 透明通道的量化统计 —— 后台「生成一张」测透明通道时判
+ * 「模型到底有没有回 alpha」用。
+ *
+ * 半透明边缘（0 < alpha < 255）也计入「透明」：
+ * 抠图路线的绿幕图边缘会是实底，原生 alpha 的细线边缘必有半透明过渡，
+ * 这个口径正好把两者区分开。
+ */
+export interface AlphaStats {
+  /** 透明像素（alpha < 255）占比，0~1 */
+  transparentRatio: number
+  /** 一个透明像素都没有 —— 模型画了实底 */
+  fullyOpaque: boolean
+  /** 全是透明像素 —— 图上什么都没有 */
+  empty: boolean
+}
+
+export const alphaStats = (rgba: Uint8Array): AlphaStats => {
+  if (rgba.length === 0) return { transparentRatio: 1, fullyOpaque: false, empty: true }
+  let transparent = 0
+  for (let i = 3; i < rgba.length; i += 4) {
+    if (rgba[i] !== 255) transparent++
+  }
+  const pixels = rgba.length / 4
+  const transparentRatio = transparent / pixels
+  return { transparentRatio, fullyOpaque: transparent === 0, empty: transparent === pixels }
+}
+
+/**
  * 面积平均缩小。
  *
  * **只缩不放**：目标比源大时原样返回。把图放大到填满版面是排版层的事

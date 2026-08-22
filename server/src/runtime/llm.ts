@@ -149,6 +149,39 @@ export const resolveModelForRole = async (
     throw new Error(`模型提供商 #${config.providerId} 不存在`)
   }
 
+  return buildResolvedModel(config, provider, relay, role)
+}
+
+/**
+ * 按配置 id 直接构建模型实例 —— **后台「模型测试」用**。
+ *
+ * 和 `resolveModelForRole` 的区别：不走用户偏好 / 角色默认的解析链，
+ * 也不要求 enabled（管理员要测的常常就是刚关掉/还没启用的模型）。
+ * 只查两行（config + provider），查不到抛人话。
+ */
+export const resolveModelForConfig = async (configId: number): Promise<ResolvedModel> => {
+  const config = await db.select()
+    .from(modelConfigs)
+    .where(eq(modelConfigs.id, configId))
+    .get()
+  if (!config) throw new Error(`模型配置 #${configId} 不存在`)
+
+  const provider = await db.select()
+    .from(modelProviders)
+    .where(eq(modelProviders.id, config.providerId))
+    .get()
+  if (!provider) throw new Error(`模型提供商 #${config.providerId} 不存在`)
+
+  return buildResolvedModel(config, provider, undefined, 'admin-test')
+}
+
+/** 拿到 config + provider 之后的公共尾巴：拼 baseUrl、建 SDK 实例、挂思考处理 */
+const buildResolvedModel = (
+  config: typeof modelConfigs.$inferSelect,
+  provider: typeof modelProviders.$inferSelect,
+  relay: ReasoningRelay | undefined,
+  role: string,
+): ResolvedModel => {
   const baseUrl = normalizeBaseUrl(provider.providerType, provider.baseUrl)
   if (baseUrl !== provider.baseUrl) {
     console.log(`[llm] baseUrl 规范化: "${provider.baseUrl}" → "${baseUrl}"`)

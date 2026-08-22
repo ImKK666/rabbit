@@ -55,6 +55,31 @@
       </div>
 
       <div class="form-group">
+        <Button size="small" @click="handleTestImage" :disabled="imageTesting || saving">
+          {{ imageTesting ? '生成中（15~50 秒）...' : '生成一张（真实出图，测透明通道）' }}
+        </Button>
+        <span class="test-cost-note">会真花一张图的钱，用<strong>已保存</strong>的生图配置</span>
+      </div>
+
+      <div class="image-test-result" v-if="imageTest">
+        <div :class="imageTest.ok ? 'success' : 'fail'">
+          <template v-if="imageTest.ok">
+            ✓ {{ imageTest.elapsed }}ms · {{ imageTest.model }}（{{ imageTest.flavor }} 形状）
+            · {{ imageTest.width }}×{{ imageTest.height }} · {{ Math.round(imageTest.bytes / 1024) }}KB
+            · 透明像素 {{ Math.round((imageTest.alpha?.transparentRatio ?? 0) * 100) }}%
+          </template>
+          <template v-else>
+            ✗ {{ imageTest.error }}<span v-if="imageTest.elapsed !== undefined">（{{ imageTest.elapsed }}ms）</span>
+          </template>
+        </div>
+        <div class="image-test-note" v-if="imageTest.note">{{ imageTest.note }}</div>
+        <div class="image-preview" v-if="imageTest.dataUrl">
+          <!-- 棋盘格底：透明通道一眼可见（棋盘透出来的地方就是透明） -->
+          <img class="transparent-bg" :src="imageTest.dataUrl" />
+        </div>
+      </div>
+
+      <div class="form-group">
         <label>生图接口形状</label>
         <Select v-model:value="form.imageApi" :options="imageApiOptions" style="width: 240px;" />
         <div class="note">
@@ -108,8 +133,8 @@
         {{ saving ? '保存中...' : '保存' }}
       </Button>
     </div>
-    <!-- 测试只搜一次图，不生图：生图一次 15~50 秒还要花钱，不该挂在测试按钮上 -->
-    <div class="tip">测试用<strong>已保存</strong>的配置真实搜一次图；生图只校验模型是否可用，不会真的出图（那要花钱）。</div>
+    <!-- 「测试」只搜一次图、校验生图模型可用；「生成一张」会真的出一张图（15~50 秒，花一张图的钱） -->
+    <div class="tip">「测试」用<strong>已保存</strong>的配置真实搜一次图，生图只校验模型可用；「生成一张」会真的出一张图来测透明通道（15~50 秒，花一张图的钱）。</div>
   </div>
 </template>
 
@@ -232,6 +257,27 @@ const handleTest = async () => {
   }
 }
 
+/**
+ * 「生成一张」—— 真实出图测透明通道（image2 的 background=transparent）。
+ * 后端回 data URL + alpha 统计，这里在棋盘格底上渲染，透明一眼可见。
+ */
+const imageTesting = ref(false)
+const imageTest = ref<any>(null)
+
+const handleTestImage = async () => {
+  imageTesting.value = true
+  imageTest.value = null
+  try {
+    imageTest.value = await adminApi.testImageGeneration()
+  }
+  catch (err: any) {
+    imageTest.value = { ok: false, error: err?.response?.data?.error || '生成请求失败' }
+  }
+  finally {
+    imageTesting.value = false
+  }
+}
+
 onMounted(load)
 </script>
 
@@ -317,6 +363,40 @@ onMounted(load)
     border-radius: 4px;
     border: 1px solid $borderColor;
   }
+}
+.test-cost-note {
+  margin-left: 8px;
+  font-size: 12px;
+  color: #999;
+}
+.image-test-result {
+  max-width: 720px;
+  margin: 8px 0 12px;
+  font-size: 13px;
+
+  .success { color: #27ae60; }
+  .fail { color: #e74c3c; }
+}
+.image-test-note {
+  margin-top: 4px;
+  font-size: 12px;
+  color: #999;
+}
+.image-preview {
+  margin-top: 8px;
+
+  img {
+    max-width: 360px;
+    width: 100%;
+    border-radius: 6px;
+    border: 1px solid $borderColor;
+  }
+}
+.transparent-bg {
+  // 棋盘格：透明像素处会透出格子 —— 测透明通道时一眼就能看出哪些地方是透明的
+  background-image:
+    conic-gradient(#e3e3e3 25%, #ffffff 0 50%, #e3e3e3 0 75%, #ffffff 0);
+  background-size: 16px 16px;
 }
 .form-actions {
   display: flex;

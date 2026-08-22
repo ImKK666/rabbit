@@ -159,6 +159,9 @@ export const adminApi = {
   deleteModel(id: number) {
     return api.delete(`${SERVER_URL}/admin/models/${id}`)
   },
+  testModel(id: number) {
+    return api.post(`${SERVER_URL}/admin/models/${id}/test`)
+  },
 
   // role defaults
   listRoleDefaults() {
@@ -203,6 +206,9 @@ export const adminApi = {
   },
   testAssetSource() {
     return api.post(`${SERVER_URL}/admin/asset-source/test`)
+  },
+  testImageGeneration() {
+    return api.post(`${SERVER_URL}/admin/asset-source/test-image`)
   },
 }
 

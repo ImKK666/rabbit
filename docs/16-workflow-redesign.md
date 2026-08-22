@@ -1,7 +1,7 @@
 # R — 阶段化工作流重设计（策划稿 + 硬闸门 + 执行守卫）
 
 > 状态：**R-63 已实现并三绿提交**（策划稿层 / 闸门升级 / 守卫①② / prompt 六阶段 /
-> 前端方案卡片）；R-65（守卫③④ + pageIndex 寻址）与 R-66（方案可视化进度）见 §九。
+> 前端方案卡片）；R-66（守卫③④ + pageIndex 寻址）与 R-67（方案可视化进度）见 §九。
 > 来源：数据库调用日志实测（2026-08-21，会话 70 / 76）+ 两个参照项目
 > （`refs/skills/03-agent-frameworks/ppt-agent-workflow-san` 的
 > 「约束流程不约束实现」、`refs/skills/06-image-gen/GordenSuperPPTSkills` 的
@@ -230,14 +230,14 @@ id↔页码漂移由代码当场解决。
 8. 测试：`validatePlan` 判据组（含会话 76 那 5 组复制结构的负对照）+
    守卫①②负对照 + planTool 落库/发射 + lint ⑫ 漂移 + events fixtures 更新
 
-### R-65 · 执行纪律（第二阶段）
+### R-66 · 执行纪律（第二阶段）
 
 - 守卫③ 限流不自旋（ornamentTool / assetTools 限流路径）+ 任务级禁用状态
 - 守卫④ reflectRender 页级参数 + viewportClosed 短路（reflectTool / pendingRequests）
 - pageIndex 寻址（5 个页级工具）+ 解析结果回带页码
 - 测试 + 判据
 
-### R-66 · 可视化（第三阶段，可选）
+### R-67 · 可视化（第三阶段，可选）
 
 - 策划稿面板：段落折叠 + 每页卡片（pattern / 模块数 / keyMessage），
   执行进度按「已建 / 未建」打勾

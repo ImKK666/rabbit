@@ -2,6 +2,7 @@ import { Hono } from 'hono'
 import { zValidator } from '@hono/zod-validator'
 import { z } from 'zod'
 import { eq } from 'drizzle-orm'
+import { generateText } from 'ai'
 import { getJwtPayload } from '@server/auth/jwt'
 import { db } from '@server/db'
 import {
@@ -11,6 +12,9 @@ import {
 } from '@server/db/schema'
 import { createObjectStore, resolvePublicBase } from '@server/runtime/objectStore'
 import { searchImages, NEEDS_API_KEY } from '@server/runtime/imageSearch'
+import { resolveModelForConfig } from '@server/runtime/llm'
+import { generateImage, resolveImageApiFlavor } from '@server/runtime/imageGenerate'
+import { decodeImage, alphaStats, sniffFormat } from '@server/runtime/imageCodec'
 import {
   deleteProviderCascade, deleteModelConfigCascade, deleteUserCascade,
 } from '@server/db/cleanup'
@@ -216,6 +220,45 @@ admin.delete('/models/:id', async (c) => {
 
   const counts = deleteModelConfigCascade(db, id)
   return c.json({ ok: true, ...counts })
+})
+
+/**
+ * 单个模型的真实连通测试（R-64 续）：发一句两字的对话，量耗时。
+ *
+ * 直接按配置 id 建模型（`resolveModelForConfig`），**不要求 enabled** ——
+ * 管理员要测的常常就是刚关掉 / 还没启用的模型。
+ *
+ * 生图模型（supportsImages）对话测试可能本来就是不支持的，失败时附带一句
+ * 指路：「出图能力去素材来源用『生成一张』测」。
+ */
+admin.post('/models/:id/test', async (c) => {
+  const id = parseInt(c.req.param('id'))
+  const config = await db.select().from(modelConfigs).where(eq(modelConfigs.id, id)).get()
+  if (!config) return c.json({ error: '模型配置不存在' }, 404)
+
+  const started = Date.now()
+  try {
+    const resolved = await resolveModelForConfig(id)
+    const res = await generateText({
+      model: resolved.model,
+      prompt: '只回复两个字：正常',
+      maxTokens: 16,
+      abortSignal: AbortSignal.timeout(30_000),
+    })
+    return c.json({ ok: true, elapsed: Date.now() - started, text: res.text.slice(0, 100) })
+  }
+  catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    const timedOut = /timed out|timeout|aborted/i.test(msg)
+    return c.json({
+      ok: false,
+      elapsed: Date.now() - started,
+      error: timedOut ? `超时（30s）：${msg}` : msg,
+      ...(config.supportsImages
+        ? { hint: '该模型标了「支持生图」—— 对话测试可能本来就不支持，出图能力请到「素材来源」里用「生成一张」测' }
+        : {}),
+    })
+  }
 })
 
 // --- Role defaults ---
@@ -476,6 +519,89 @@ admin.post('/asset-source/test', async (c) => {
     },
     generate,
   })
+})
+
+/**
+ * 「生成一张」—— 用**已保存**的生图配置真实出一张图，专门测透明通道。
+ *
+ * 和搜图连通测试不同，这里真的花钱（image2 一张高档 ≈ $0.21），
+ * 所以它是独立按钮而不是挂在「测试」上。回一张 data URL 让管理员直接看，
+ * 并量化 alpha：openai 形状下「模型画了实底」是装饰层会判失败重抽的情形，
+ * 这里当场就能看到，不用跑一整份稿子。
+ */
+const IMAGE_TEST_PROMPT = [
+  'A minimal alpha-channel test, 16:9 composition: three thin elegant horizontal',
+  'lines and one small filled circle, dark teal (#0f766e), evenly spaced, nothing',
+  'else. The background must be FULLY TRANSPARENT (real alpha channel, PNG output),',
+  'absolutely no background color, no panel, no fill, no text.',
+].join(' ')
+
+admin.post('/asset-source/test-image', async (c) => {
+  const row = await loadAssetSource()
+  if (!row.imageModelConfigId) return c.json({ ok: false, error: '尚未选择生图模型' }, 400)
+
+  const config = await db.select().from(modelConfigs).where(eq(modelConfigs.id, row.imageModelConfigId)).get()
+  if (!config) return c.json({ ok: false, error: '选中的模型已被删除' }, 400)
+
+  const provider = await db.select().from(modelProviders).where(eq(modelProviders.id, config.providerId)).get()
+  if (!provider) return c.json({ ok: false, error: '模型的服务商不存在' }, 400)
+
+  const flavor = resolveImageApiFlavor(row.imageApi, config.modelName)
+  const outcome = await generateImage({
+    baseUrl: provider.baseUrl,
+    apiKey: provider.apiKey,
+    model: config.modelName,
+    prompt: IMAGE_TEST_PROMPT,
+    aspectRatio: '16:9',
+    flavor,
+    // 只有 openai 形状原生支持透明通道（background=transparent）；gemini 走绿幕路线
+    alpha: flavor === 'openai',
+  })
+
+  if (!outcome.ok || !outcome.bytes) {
+    return c.json({
+      ok: false,
+      error: outcome.error ?? '没有图',
+      elapsed: outcome.elapsedMs,
+      flavor,
+      rateLimited: outcome.rateLimited ?? false,
+    })
+  }
+
+  try {
+    const decoded = decodeImage(outcome.bytes)
+    const alpha = alphaStats(decoded.rgba)
+    const format = sniffFormat(outcome.bytes) ?? 'png'
+    return c.json({
+      ok: true,
+      elapsed: outcome.elapsedMs,
+      flavor,
+      model: config.modelName,
+      width: decoded.width,
+      height: decoded.height,
+      bytes: outcome.bytes.length,
+      dataUrl: `data:image/${format};base64,${Buffer.from(outcome.bytes).toString('base64')}`,
+      alpha: {
+        nativeSupported: flavor === 'openai',
+        transparentRatio: alpha.transparentRatio,
+        fullyOpaque: alpha.fullyOpaque,
+        empty: alpha.empty,
+      },
+      note: flavor !== 'openai'
+        ? 'Gemini 形状不原生支持透明通道（装饰层走绿幕抠图路线），上面是原始生成图'
+        : alpha.fullyOpaque
+          ? '⚠ 模型没有回透明通道 —— 整图不透明，装饰层会判失败重抽'
+          : '透明通道正常',
+    })
+  }
+  catch (err) {
+    return c.json({
+      ok: false,
+      error: `解码失败：${err instanceof Error ? err.message : String(err)}`,
+      elapsed: outcome.elapsedMs,
+      flavor,
+    })
+  }
 })
 
 export default admin

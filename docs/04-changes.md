@@ -3172,6 +3172,51 @@ lint 与 HEAD 严格对齐（改动的老文件问题数不变，新文件 0 问
 
 ---
 
+## R-65 · 模型逐条连通测试 + 生图「生成一张」透明通道实测
+
+决策者要两样：每个模型后面一个真实连通测试；素材来源里一个独立按钮
+真的生成一张来测 **image2 的透明通道**。
+
+### 单个模型测试（模型管理页，每行一个「测试」按钮）
+
+- `runtime/llm.ts` 抽出公共尾巴 `buildResolvedModel`，新增
+  `resolveModelForConfig(configId)`：按配置 id 直接建 SDK 模型实例，
+  **不要求 enabled**（管理员要测的常常就是刚关掉的模型）、不走角色解析链
+- `POST /admin/models/:id/test`：发一句两字对话量耗时，30 秒超时；
+  生图模型的对话测试本来就不一定支持，失败时附指路
+  「出图去素材来源用『生成一张』测」
+- 前端：每行「测试」按钮（一次只测一个），结果落在该行下面
+  （✓ 耗时+回文 / ✗ 错误+指路）
+
+### 「生成一张」（素材来源 · 生图卡片）
+
+- `POST /admin/asset-source/test-image`：用**已保存**的生图配置真实出一张
+  （16:9、openai 形状带 `background=transparent`），回 data URL +
+  **alpha 量化**（透明像素占比 / 是否实底 / 是否空图）
+- 判据抽成 `imageCodec.alphaStats` 纯函数（4 条新测试）：
+  半透明边缘计入「透明」，正好把原生 alpha 和绿幕实底区分开
+- 前端：按钮 + 棋盘格底渲染预览（透明处透出格子，一眼可见）+
+  形状 / 尺寸 / 体积 / 透明占比一行摘要；gemini 形状明说
+  「不原生支持透明通道，装饰层走绿幕路线」
+- 独立按钮而不是挂在「测试」上：一张 image2 高档图 ≈ $0.21，
+  不能每次点「测试」都花
+
+### 实测（真库 + 真中转站）
+
+- 端点链路已验证：gemini 形状真实生成一张 1376×768（15.3s）回传正常
+- **image2 透明通道当前被上游挡住**：qx 渠道回 400
+  「gpt-image-2 价格尚未由管理员配置」（需转站后台启用该模型），
+  921 渠道上游 500 `do request failed`。链路代码就绪，模型开通后
+  点「生成一张」即可完成透明通道实测
+
+### 判据
+
+`imageCodec.test.ts` 新增 4 条（实底 / 半透明 / 全透明 / 空数组负对照）。
+server `bun test` 1456、根 vitest 1875、双类型检查三绿；
+lint 与 HEAD 逐数对齐。
+
+---
+
 ## 待完成
 
 > 下面这张表是**当前**的权威清单。其中 agent 相关的多项已被
@@ -3199,7 +3244,7 @@ lint 与 HEAD 严格对齐（改动的老文件问题数不变，新文件 0 问
 | **edits 提取式剥层（image2 逆向）** | docs/15 §四-③：从渲染截图提取框架/图标层。官方总结说 edits 双侧支持 `background: transparent` + alpha `mask` —— 绿幕不再是必要条件，但「框架图承载结构 vs 质感」的红线边界仍需先定 | 低 |
 | **调研摄入** | 方案已定，见 [13-queue-reflect-ingest.md](./13-queue-reflect-ingest.md) §四§五。**摄入的验收标准是「几乎所有材料都能吃」**（pdf / txt / 图片 / word / md / json / 网页 url），按「解析在哪」分三档：浏览器侧（jszip 已在树里 + pdfjs）/ 服务端（URL 抓取）/ 模型（图片与扫描件）。搜索照抄 `imageSearch.ts` 那套：付费 provider 首选 + 一档免 key 兜底 | **高** |
 | ~~**`agent.confirm` 接上去**~~ | **R-61 已完成**：`askUser` 确认闸门全链路（后端工具 + ws + 面板「是/否」按钮 + 90 秒超时），prompt 有「确认闸门」节 | ✅ |
-| **R-65 · 执行纪律第二阶段** | [16-workflow-redesign.md](./16-workflow-redesign.md) §九：守卫③ 限流不自旋（拒绝后本回合禁用、配额耗尽本任务禁用，倒计时不再出现在结果里）+ 守卫④ reflectRender 页级参数 + 断线短路 + pageIndex 寻址 | 中 |
+| **R-66 · 执行纪律第二阶段** | [16-workflow-redesign.md](./16-workflow-redesign.md) §九：守卫③ 限流不自旋（拒绝后本回合禁用、配额耗尽本任务禁用，倒计时不再出现在结果里）+ 守卫④ reflectRender 页级参数 + 断线短路 + pageIndex 寻址 | 中 |
 | ~~渲染后反思~~ | 11 号 D3。**R-52 已完成**：`reflectRender` 工具 + 离屏测量 + 独立配置的视觉复核模型。判据与负对照见 13 号文档 §三 | ✅ |
 | ~~排队输入~~ | 11 号 C 期。**R-52 已完成**：`runtime/inputQueue.ts` + `runtime/taskGate.ts`，顺带修掉「被拒的输入在面板上显示成已受理」 | ✅ |
 | OAuth 登录 | GitHub / Google，目前只有账号密码 | 低 |

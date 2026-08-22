@@ -24,9 +24,11 @@
         <span class="col-img">生图</span>
         <span class="col-img">读图</span>
         <span class="col-rate">每分钟上限</span>
+        <span class="col-test">测试</span>
         <span class="col-del">删除</span>
       </div>
-      <div class="table-row" v-for="m in filteredModels" :key="m.id">
+      <template v-for="m in filteredModels" :key="m.id">
+      <div class="table-row">
         <span class="col-switch">
           <Switch :value="m.enabled" @update:value="v => handleToggle(m.id, v)" />
         </span>
@@ -63,10 +65,26 @@
             @blur="(e: Event) => handleRateLimit(m.id, (e.target as HTMLInputElement)?.value)"
           />
         </span>
+        <span class="col-test">
+          <Button size="small" class="test-btn" :disabled="testingId !== null" @click="handleTestModel(m)">
+            {{ testingId === m.id ? '测试中...' : '测试' }}
+          </Button>
+        </span>
         <span class="col-del">
           <Button size="small" class="del-btn" @click="handleDelete(m)">✕</Button>
         </span>
       </div>
+      <div class="row-result" v-if="testResults[m.id]">
+        <span :class="testResults[m.id].ok ? 'ok' : 'fail'">
+          {{ testResults[m.id].ok
+            ? `✓ ${testResults[m.id].elapsed}ms · ${testResults[m.id].text}`
+            : `✗ ${testResults[m.id].elapsed !== undefined ? testResults[m.id].elapsed + 'ms · ' : ''}${testResults[m.id].error}` }}
+        </span>
+        <span class="row-result-hint" v-if="!testResults[m.id].ok && testResults[m.id].hint">
+          {{ testResults[m.id].hint }}
+        </span>
+      </div>
+      </template>
     </div>
     <div class="empty-tip" v-else>
       {{ selectedProviderId ? '该服务商下暂无模型，点击「拉取模型」获取' : '请先选择服务商' }}
@@ -75,7 +93,7 @@
 </template>
 
 <script lang="ts" setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, reactive, computed, onMounted } from 'vue'
 import { adminApi } from '@/services'
 import Button from '@/components/Button.vue'
 import Input from '@/components/Input.vue'
@@ -218,6 +236,34 @@ const handleDelete = async (m: ModelConfig) => {
   }
 }
 
+/**
+ * 单个模型的真实连通测试：后端发一句两字对话并量耗时。
+ * 一次只测一个（testingId 非空时别的按钮都禁用），结果落在该行下面。
+ */
+const testingId = ref<number | null>(null)
+const testResults = reactive<Record<number, {
+  ok: boolean
+  elapsed?: number
+  text?: string
+  error?: string
+  hint?: string
+}>>({})
+
+const handleTestModel = async (m: ModelConfig) => {
+  if (testingId.value !== null) return
+  testingId.value = m.id
+  delete testResults[m.id]
+  try {
+    testResults[m.id] = await adminApi.testModel(m.id) as any
+  }
+  catch (err: any) {
+    testResults[m.id] = { ok: false, error: err?.response?.data?.error || '测试请求失败' }
+  }
+  finally {
+    testingId.value = null
+  }
+}
+
 onMounted(load)
 </script>
 
@@ -266,7 +312,23 @@ onMounted(load)
 .col-img { width: 60px; flex-shrink: 0; }
 .col-rate { width: 96px; flex-shrink: 0; }
 .rate-input { width: 88px; }
+.col-test { width: 76px; flex-shrink: 0; text-align: center; }
 .col-del { width: 48px; flex-shrink: 0; text-align: center; }
+.test-btn { color: $themeColor; }
+.row-result {
+  padding: 6px 16px 8px;
+  font-size: 12px;
+  border-bottom: 1px solid #f0f0f0;
+
+  .ok { color: #27ae60; }
+  .fail { color: #e74c3c; }
+}
+.row-result-hint {
+  display: block;
+  margin-top: 2px;
+  color: #999;
+  font-size: 11px;
+}
 .del-btn {
   color: #c0392b;
   border-color: transparent;
