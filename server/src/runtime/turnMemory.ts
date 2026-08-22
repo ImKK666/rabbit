@@ -79,11 +79,22 @@ export interface StoredImageBlock { type: 'image', src: string }
 /** 用户消息落库时的一块 */
 export type UserBlock = TextBlock | StoredImageBlock
 
+/** 已经取回来的一张图。字节由调用方预取，见 `ToModelMessagesOptions.loadImage` */
+export interface LoadedImage { bytes: Uint8Array, mimeType?: string }
+
 /**
- * 模型看到的一张图。AI SDK v4 的 image part 收 `URL`，
- * 和 `domains/deck/reflectTool.ts` 里视觉复核用的是同一种形状。
+ * 模型看到的一张图。
+ *
+ * **字节内联，不给 URL。** AI SDK 两种都收，但给 URL 就等于要求 provider
+ * 自己去下载那个地址 —— 中转站往往取不到（跨境、被墙、超时），
+ * 实测报的是 `Unable to download content from the provided URL before the
+ * timeout`，而画布上那张图好好的，看不出问题出在哪一端。
+ *
+ * 内联的代价是请求体变大（一张图几百 KB 的 base64），换来的是
+ * **不依赖 provider 的出网能力**。视觉复核（`reflectTool.ts`）走的是
+ * data URL，本质上也是内联，形状一致。
  */
-export interface ImagePart { type: 'image', image: URL }
+export interface ImagePart { type: 'image', image: Uint8Array, mimeType?: string }
 
 /** 模型看到的用户消息内容块 */
 export type UserContentPart = TextBlock | ImagePart
@@ -146,16 +157,17 @@ export const serializeBlocks = (
 /**
  * R-68 · 用户消息的 blocks → 模型看到的 content。
  *
- * `resolve` 把 `asset://<hash>` 变成可直接取的 URL。**取不到就把这张图丢掉**，
- * 而不是塞一个坏 URL 进去：坏 URL 会让整轮请求 4xx，丢一张图只是少一张图。
- * 丢弃会在 `toModelMessages` 的调用方留下痕迹吗？不会 —— 所以这条路径
- * 只在「没给 resolver」和「引用坏了」两种情况下走，两种都不该在正常运行时出现。
+ * `loadImage` 把 `asset://<hash>` 换成已经取回来的字节。**取不到就把这张图
+ * 丢掉**，而不是塞个空的进去：坏数据会让整轮请求 4xx，丢一张图只是少一张图。
+ *
+ * 字节要**预先取好**（调用方负责，见 `pipeline.ts`）—— 这个函数是同步的，
+ * 而它同步正是它能在 vitest 里裸跑的原因。
  *
  * 全是图没有文字时也返回数组（不退化成字符串）—— 只发图让模型描述是合理用法。
  */
 const userBlocksToContent = (
   blocks: UserBlock[],
-  resolve?: (src: string) => string,
+  loadImage?: (src: string) => LoadedImage | undefined,
 ): UserContentPart[] => {
   const parts: UserContentPart[] = []
 
@@ -164,16 +176,11 @@ const userBlocksToContent = (
       parts.push(b)
       continue
     }
-    if (b.type !== 'image' || !resolve) continue
+    if (b.type !== 'image' || !loadImage) continue
 
-    const url = resolve(b.src)
-    if (!url) continue
-    try {
-      parts.push({ type: 'image', image: new URL(url) })
-    }
-    catch {
-      // resolve 给了个不合法的 URL。同上：丢这一张，别让它炸掉整轮
-    }
+    const loaded = loadImage(b.src)
+    if (!loaded?.bytes.length) continue
+    parts.push({ type: 'image', image: loaded.bytes, mimeType: loaded.mimeType })
   }
 
   return parts
@@ -185,7 +192,7 @@ const userBlocksToContent = (
  */
 const rowToCarried = (
   row: StoredRow,
-  resolveAsset?: (src: string) => string,
+  loadImage?: (src: string) => LoadedImage | undefined,
 ): Carried | null => {
   const modelConfigId = row.modelConfigId ?? null
 
@@ -196,7 +203,7 @@ const rowToCarried = (
       // R-68：带图的用户消息。没有 blocksJson 的用户行走下面的纯文本路径，
       // 所以老会话完全不受影响
       if (row.role === 'user') {
-        const content = userBlocksToContent(blocks as UserBlock[], resolveAsset)
+        const content = userBlocksToContent(blocks as UserBlock[], loadImage)
         return content.length > 0
           ? { msg: { role: 'user', content }, modelConfigId }
           // 图全丢了、文字也没有 → 退回 content 列的纯文本，至少还剩一句话
@@ -275,13 +282,25 @@ const dropLeadingNonUser = (msgs: ModelMessage[]): ModelMessage[] => {
 /**
  * 这条消息占多少字符预算。
  *
- * 带图的用户消息按 `JSON.stringify` 算，于是一张图只记它的 URL 长度 ——
- * **这正是存 `asset://` 而不是 base64 的收益**：一张图在预算里约等于一行字，
- * 不会把整份历史挤掉。真实的 token 成本在模型那边（一张图几百到上千 token），
- * 这里的预算管的是「历史规模」，两者本来就不是一回事。
+ * **图片按固定权重记，不按字节数。** 直接 `JSON.stringify` 一个 Uint8Array
+ * 会得到 `{"0":137,"1":80,…}` 这种逐字节展开，一张图就是几百万字符 ——
+ * 预算瞬间爆掉，整份历史被丢光，只剩最后一轮。
+ *
+ * 这里的预算管的是「历史规模」，而真实的图片成本在模型那边按 token 算
+ * （一张图几百到上千 token），两者本来就不是一回事。给个略保守的常量，
+ * 让「带过图的会话」在预算上稍微重一点，够用。
  */
-const messageChars = (m: ModelMessage): number =>
-  typeof m.content === 'string' ? m.content.length : JSON.stringify(m.content).length
+const IMAGE_CHAR_WEIGHT = 1_000
+
+const messageChars = (m: ModelMessage): number => {
+  if (typeof m.content === 'string') return m.content.length
+  if (m.role !== 'user') return JSON.stringify(m.content).length
+
+  return (m.content as UserContentPart[]).reduce(
+    (n, p) => n + (p.type === 'image' ? IMAGE_CHAR_WEIGHT : p.text.length),
+    0,
+  )
+}
 
 /**
  * 按预算从旧往新丢 —— **丢整轮，不丢半轮**。
@@ -382,14 +401,16 @@ export interface ToModelMessagesOptions {
   modelConfigId: number | null
   charBudget?: number
   /**
-   * R-68 · `asset://<sha256>` → 可直接取的 URL。
+   * R-68 · `asset://<sha256>` → **已经取回来的图片字节**。
    *
-   * **不给的话带图的历史会丢掉图**（只留文字）。做成注入而不是在这里
-   * import `assetConfig`，是因为那个模块拉 `db/index.ts`（`bun:sqlite`），
-   * 一 import 本文件就再也不能在 vitest 里裸跑 —— 而"能裸跑"正是
-   * 这个文件所有判据的前提（见文件头）。
+   * 同步查表，字节由调用方预先取好（`pipeline.ts` 在读历史前批量下载）。
+   * 做成注入而不是在这里 import `assetConfig`，是因为那个模块拉
+   * `db/index.ts`（`bun:sqlite`），一 import 本文件就再也不能在 vitest 里裸跑
+   * —— 而"能裸跑"正是这个文件所有判据的前提（见文件头）。
+   *
+   * **不给的话带图的历史会丢掉图**（只留文字）。
    */
-  resolveAssetUrl?: (src: string) => string
+  loadImage?: (src: string) => LoadedImage | undefined
 }
 
 /**
@@ -400,10 +421,10 @@ export interface ToModelMessagesOptions {
  */
 export const toModelMessages = (
   rows: StoredRow[],
-  { modelConfigId, charBudget = HISTORY_CHAR_BUDGET, resolveAssetUrl }: ToModelMessagesOptions,
+  { modelConfigId, charBudget = HISTORY_CHAR_BUDGET, loadImage }: ToModelMessagesOptions,
 ): ModelMessage[] => {
   const carried = rows
-    .map(row => rowToCarried(row, resolveAssetUrl))
+    .map(row => rowToCarried(row, loadImage))
     .filter((c): c is Carried => c !== null)
 
   const msgs = stripForeignReasoning(carried, modelConfigId).map(c => c.msg)

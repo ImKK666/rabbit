@@ -1,13 +1,15 @@
 /**
  * R-68 · 带图的用户消息
  *
- * 图片走 `blocksJson`，和 assistant / tool 那两条一样。这里守两件事：
+ * 图片走 `blocksJson`，和 assistant / tool 那两条一样。这里守三件事：
  *
  * 1. **老会话零影响** —— 没有 `blocksJson` 的用户行必须逐字节还是老样子。
  *    这条比带图本身更重要：`turnMemory` 是所有会话的公共路径，
  *    改坏了炸的不只是带图的那些。
- * 2. **坏引用不能炸整轮** —— 解析不出来的图丢掉，宁可少一张图，
- *    也不能塞个坏 URL 让整轮请求 4xx。
+ * 2. **字节内联，不给 URL** —— 给 URL 等于要求 provider 自己去下载，
+ *    中转站往往取不到（实测 "Unable to download content from the provided
+ *    URL before the timeout"）。
+ * 3. **取不到的图丢掉，不炸整轮** —— 少一张图 ≪ 整轮请求失败。
  */
 
 import { describe, it, expect } from 'vitest'
@@ -16,16 +18,21 @@ import {
   serializeBlocks,
   type StoredRow,
   type UserBlock,
+  type LoadedImage,
 } from '../turnMemory'
 
 const CFG = 7
 const HASH_A = 'a'.repeat(64)
 const HASH_B = 'b'.repeat(64)
-const BASE = 'https://bucket.example.com/rabbit'
 
-/** 和生产一致：`asset://<hash>` → `{base}/{hash}`，其余原样透传 */
-const resolveAssetUrl = (src: string): string =>
-  src.startsWith('asset://') ? `${BASE}/${src.slice(8)}` : src
+const bytesFor = (seed: number) => new Uint8Array([0xff, 0xd8, 0xff, seed])
+
+/** 生产里的形状：预取好的字节表，同步查 */
+const loadImage = (src: string): LoadedImage | undefined => {
+  if (src === `asset://${HASH_A}`) return { bytes: bytesFor(1), mimeType: 'image/jpeg' }
+  if (src === `asset://${HASH_B}`) return { bytes: bytesFor(2), mimeType: 'image/png' }
+  return undefined
+}
 
 const userWithBlocks = (content: string, blocks: UserBlock[]): StoredRow => ({
   role: 'user',
@@ -33,23 +40,23 @@ const userWithBlocks = (content: string, blocks: UserBlock[]): StoredRow => ({
   blocksJson: serializeBlocks(blocks),
 })
 
-const run = (rows: StoredRow[], resolve: ((src: string) => string) | undefined = resolveAssetUrl) =>
-  toModelMessages(rows, { modelConfigId: CFG, resolveAssetUrl: resolve })
+const run = (
+  rows: StoredRow[],
+  load: ((src: string) => LoadedImage | undefined) = loadImage,
+) => toModelMessages(rows, { modelConfigId: CFG, loadImage: load })
 
 describe('带图的用户消息', () => {
-  it('图片解析成真实 URL 交给模型', () => {
+  // 内联字节而不是 URL 是这一版的核心决定：provider 不需要有出网能力
+  it('图片以字节内联，带上 mimeType', () => {
     const msgs = run([userWithBlocks('这张图里说了什么', [
       { type: 'text', text: '这张图里说了什么' },
       { type: 'image', src: `asset://${HASH_A}` },
     ])])
 
     expect(msgs).toHaveLength(1)
-    expect(msgs[0].role).toBe('user')
-    const content = msgs[0].content
-    expect(Array.isArray(content)).toBe(true)
-    expect(content).toEqual([
+    expect(msgs[0].content).toEqual([
       { type: 'text', text: '这张图里说了什么' },
-      { type: 'image', image: new URL(`${BASE}/${HASH_A}`) },
+      { type: 'image', image: bytesFor(1), mimeType: 'image/jpeg' },
     ])
   })
 
@@ -60,10 +67,10 @@ describe('带图的用户消息', () => {
       { type: 'image', src: `asset://${HASH_B}` },
     ])])
 
-    const content = msgs[0].content as Array<{ type: string, image?: URL }>
+    const content = msgs[0].content as Array<{ type: string, mimeType?: string }>
     expect(content.map(p => p.type)).toEqual(['text', 'image', 'image'])
-    expect(content[1].image?.href).toContain(HASH_A)
-    expect(content[2].image?.href).toContain(HASH_B)
+    expect(content[1].mimeType).toBe('image/jpeg')
+    expect(content[2].mimeType).toBe('image/png')
   })
 
   // 只发图不打字是合理用法，不该退化成「一条空消息」
@@ -77,8 +84,13 @@ describe('带图的用户消息', () => {
     expect(content.map(p => p.type)).toEqual(['image'])
   })
 
-  // 存 asset:// 而不是 base64 的收益就在这里：一张图只占一行字的预算
-  it('图片按 URL 长度记预算，不会把历史挤掉', () => {
+  /**
+   * 图片按固定权重记预算，**不按字节数**。
+   *
+   * 直接 JSON.stringify 一个 Uint8Array 会得到 `{"0":255,"1":216,…}` 这种
+   * 逐字节展开，一张图几百万字符，预算瞬间爆掉、整份历史被丢光。
+   */
+  it('十轮带图仍在预算内，不会把历史挤掉', () => {
     const rows: StoredRow[] = []
     for (let i = 0; i < 10; i++) {
       rows.push(userWithBlocks(`第 ${i} 轮`, [
@@ -86,35 +98,48 @@ describe('带图的用户消息', () => {
         { type: 'image', src: `asset://${HASH_A}` },
       ]))
     }
-    // 十轮带图仍在 5000 字符预算内 —— 换成 base64 早就爆了
-    const msgs = toModelMessages(rows, { modelConfigId: CFG, charBudget: 5000, resolveAssetUrl })
+    const msgs = toModelMessages(rows, { modelConfigId: CFG, charBudget: 20_000, loadImage })
     expect(msgs).toHaveLength(10)
+  })
+
+  it('预算很小时仍按整轮丢，不会丢半轮', () => {
+    const rows: StoredRow[] = []
+    for (let i = 0; i < 5; i++) {
+      rows.push(userWithBlocks(`第 ${i} 轮`, [
+        { type: 'image', src: `asset://${HASH_A}` },
+      ]))
+    }
+    const msgs = toModelMessages(rows, { modelConfigId: CFG, charBudget: 1, loadImage })
+    // 至少留最后一轮 + 一条交代被省略的提示
+    expect(msgs.length).toBeLessThan(5)
+    expect(msgs.every(m => m.role === 'user')).toBe(true)
   })
 })
 
-describe('坏引用与降级', () => {
-  it('解析不出的图丢掉，文字留下', () => {
+describe('取不到的图', () => {
+  it('取不到就丢掉那张，文字留下', () => {
     const msgs = run([userWithBlocks('看这个', [
       { type: 'text', text: '看这个' },
       { type: 'image', src: 'asset://pending/task1' },
-    ])], () => '')
+    ])])
 
     expect(msgs[0].content).toEqual([{ type: 'text', text: '看这个' }])
   })
 
-  it('resolver 给出非法 URL 时丢掉那张，不抛', () => {
-    const msgs = run([userWithBlocks('看这个', [
-      { type: 'text', text: '看这个' },
-      { type: 'image', src: `asset://${HASH_A}` },
-    ])], () => 'not a url')
+  it('取到 0 字节等同取不到', () => {
+    const msgs = run(
+      [userWithBlocks('看这个', [
+        { type: 'text', text: '看这个' },
+        { type: 'image', src: `asset://${HASH_A}` },
+      ])],
+      () => ({ bytes: new Uint8Array(0) }),
+    )
 
     expect(msgs[0].content).toEqual([{ type: 'text', text: '看这个' }])
   })
 
-  // 没给 resolver 时不能把 asset:// 原样塞给模型 —— 它取不到，只会让请求失败。
-  // **直接调 toModelMessages**：`run` 的默认参数对显式 undefined 同样生效，
-  // 走它的话这条断言根本测不到「没给 resolver」
-  it('没给 resolver 时丢图，退回 content 列的文本', () => {
+  // 没给 loadImage 时不能把引用原样塞给模型 —— 它不认识 asset://
+  it('没给 loadImage 时丢图，退回 content 列的文本', () => {
     const msgs = toModelMessages(
       [userWithBlocks('只有一张图', [{ type: 'image', src: `asset://${HASH_A}` }])],
       { modelConfigId: CFG },
@@ -124,9 +149,10 @@ describe('坏引用与降级', () => {
   })
 
   it('图全丢且没有文字块时退回 content 列', () => {
-    const msgs = run([userWithBlocks('[图片 1 张]', [
-      { type: 'image', src: `asset://${HASH_A}` },
-    ])], () => '')
+    const msgs = run(
+      [userWithBlocks('[图片 1 张]', [{ type: 'image', src: `asset://${HASH_A}` }])],
+      () => undefined,
+    )
 
     expect(msgs[0].content).toBe('[图片 1 张]')
   })
@@ -144,13 +170,13 @@ describe('老会话零影响', () => {
     expect(msgs).toEqual([{ role: 'user', content: '做一份海洋主题的 PPT' }])
   })
 
-  it('不带图时给不给 resolver 结果都一样', () => {
+  it('不带图时给不给 loadImage 结果都一样', () => {
     const rows: StoredRow[] = [
       { role: 'user', content: '第一句' },
       { role: 'user', content: '第二句' },
     ]
-    const withResolver = toModelMessages(rows, { modelConfigId: CFG, resolveAssetUrl })
+    const withLoader = toModelMessages(rows, { modelConfigId: CFG, loadImage })
     const without = toModelMessages(rows, { modelConfigId: CFG })
-    expect(JSON.stringify(withResolver)).toBe(JSON.stringify(without))
+    expect(JSON.stringify(withLoader)).toBe(JSON.stringify(without))
   })
 })

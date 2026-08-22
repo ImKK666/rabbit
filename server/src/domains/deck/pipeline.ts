@@ -45,7 +45,9 @@ import {
   type AssistantBlock,
   type ToolResultBlock,
   type UserBlock,
+  type LoadedImage,
 } from '@server/runtime/turnMemory'
+import { fetchImages, collectImageRefs } from '@server/runtime/imageFetch'
 import { resolveModelForRole, inspectRoleModel, type ResolvedModel } from '@server/runtime/llm'
 import { createReasoningRelay } from '@server/runtime/reasoningRelay'
 import { imageCapabilityAvailable, publicAssetBaseUrl } from '@server/runtime/assetConfig'
@@ -473,9 +475,29 @@ const runTurn = async ({
   }
 
   // 历史必须在拿到 configId **之后**读 —— 剥不剥思考块取决于它是不是同一个配置
-  const history = toModelMessages(await loadRows(conversationId), {
+  const rows = await loadRows(conversationId)
+
+  /**
+   * R-68 · 把历史里那些图的字节取回来。
+   *
+   * **必须内联给模型**，不能只给 URL：给 URL 等于要求 provider 自己去下载，
+   * 中转站往往取不到（实测报 "Unable to download content from the provided
+   * URL before the timeout"）。取不到的图会被跳过，不影响这一轮别的内容。
+   */
+  const imageRefs = resolveAssetUrl ? collectImageRefs(rows.map(r => r.blocksJson)) : []
+  let loadImage: ((src: string) => LoadedImage | undefined) | undefined
+  if (imageRefs.length && resolveAssetUrl) {
+    const { images, failures } = await fetchImages(imageRefs, resolveAssetUrl)
+    if (failures.length) {
+      console.warn(`[agent] ${failures.length} 张历史图片取不回来，本轮跳过：`, failures)
+    }
+    console.log(`[agent] 带 ${images.size} 张图进模型`)
+    loadImage = (src: string) => images.get(src)
+  }
+
+  const history = toModelMessages(rows, {
     modelConfigId: resolved.configId,
-    resolveAssetUrl,
+    loadImage,
   })
   // 先从还原出来的历史里学一遍 —— 上一轮那些思考也要跟着回传，
   // 否则「接着做完」这种续问又回到从零推导
