@@ -24,6 +24,7 @@
         <span class="col-img">生图</span>
         <span class="col-img">读图</span>
         <span class="col-rate">每分钟上限</span>
+        <span class="col-del">删除</span>
       </div>
       <div class="table-row" v-for="m in filteredModels" :key="m.id">
         <span class="col-switch">
@@ -61,6 +62,9 @@
             placeholder="不限"
             @blur="(e: Event) => handleRateLimit(m.id, (e.target as HTMLInputElement)?.value)"
           />
+        </span>
+        <span class="col-del">
+          <Button size="small" class="del-btn" @click="handleDelete(m)">✕</Button>
         </span>
       </div>
     </div>
@@ -193,6 +197,27 @@ const handleVision = async (id: number, val: boolean) => {
   if (m) m.supportsVision = val
 }
 
+/**
+ * 删模型 —— 之前有 API 没有按钮，模型只能越积越多。
+ * 后端会清掉引用（角色默认 / 用户偏好删行，生图选择置空），这里把结果说清楚。
+ */
+const handleDelete = async (m: ModelConfig) => {
+  if (!confirm(`确定删除模型「${m.displayName}」？\n\n引用它的角色默认 / 用户偏好会被清空，生图模型选择会被置空。`)) return
+  try {
+    const res = await adminApi.deleteModel(m.id) as any
+    await load()
+    if (res?.clearedRoleDefaults || res?.clearedUserPrefs || res?.clearedAssetSources) {
+      alert(
+        `已删除「${m.displayName}」：清空角色默认 ${res.clearedRoleDefaults ?? 0} 条、`
+        + `用户偏好 ${res.clearedUserPrefs ?? 0} 条、生图选择 ${res.clearedAssetSources ?? 0} 处`,
+      )
+    }
+  }
+  catch (err: any) {
+    alert(err?.response?.data?.error || '删除失败')
+  }
+}
+
 onMounted(load)
 </script>
 
@@ -241,6 +266,16 @@ onMounted(load)
 .col-img { width: 60px; flex-shrink: 0; }
 .col-rate { width: 96px; flex-shrink: 0; }
 .rate-input { width: 88px; }
+.col-del { width: 48px; flex-shrink: 0; text-align: center; }
+.del-btn {
+  color: #c0392b;
+  border-color: transparent;
+  background: transparent;
+
+  &:hover {
+    background: #fdf0ef;
+  }
+}
 .empty-tip {
   color: #999;
   text-align: center;

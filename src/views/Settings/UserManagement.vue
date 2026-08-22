@@ -120,10 +120,16 @@ const handleReset = async () => {
 }
 
 const handleDelete = async (id: number) => {
-  if (!confirm('确定删除该用户？')) return
+  if (!confirm('确定删除该用户？\n\n其所有演示文稿、会话记录和角色偏好会一并删除，不可恢复。')) return
   try {
-    await adminApi.deleteUser(id)
+    const res = await adminApi.deleteUser(id) as any
     users.value = users.value.filter(u => u.id !== id)
+    if (res?.deletedDecks !== undefined) {
+      alert(
+        `已删除用户：演示文稿 ${res.deletedDecks ?? 0} 份、会话 ${res.deletedConversations ?? 0} 条、`
+        + `消息 ${res.deletedMessages ?? 0} 条、角色偏好 ${res.clearedUserPrefs ?? 0} 条`,
+      )
+    }
   }
   catch (err: any) {
     alert(err?.response?.data?.error || '删除失败')

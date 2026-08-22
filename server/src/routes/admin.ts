@@ -11,6 +11,9 @@ import {
 } from '@server/db/schema'
 import { createObjectStore, resolvePublicBase } from '@server/runtime/objectStore'
 import { searchImages, NEEDS_API_KEY } from '@server/runtime/imageSearch'
+import {
+  deleteProviderCascade, deleteModelConfigCascade, deleteUserCascade,
+} from '@server/db/cleanup'
 
 const admin = new Hono()
 
@@ -22,13 +25,22 @@ admin.use('*', async (c, next) => {
 
 // --- Providers ---
 
-const providerSchema = z.object({
+/**
+ * 创建与更新拆两份 schema：**apiKey 只在创建时必填**。
+ *
+ * 更新时空缺 = 保持已存的密钥。原来用同一份 schema，
+ * 前端「编辑时密钥留空」会被 400 拒掉 —— 想改个名字都得把 key 重新贴一遍，
+ * 而且 storage 路由的注释还写着「和 provider 表的做法一致」
+ * （写那份注释时 provider 表并没有这么做）。
+ */
+const providerBase = {
   name: z.string().min(1),
   providerType: z.enum(['openai', 'anthropic', 'google', 'deepseek']),
   baseUrl: z.string().url(),
-  apiKey: z.string().min(1),
   remark: z.string().optional(),
-})
+}
+const providerSchema = z.object({ ...providerBase, apiKey: z.string().min(1) })
+const providerUpdateSchema = z.object({ ...providerBase, apiKey: z.string().optional() })
 
 admin.get('/providers', async (c) => {
   const providers = await db.select({
@@ -48,17 +60,35 @@ admin.post('/providers', zValidator('json', providerSchema), async (c) => {
   return c.json({ provider: result }, 201)
 })
 
-admin.put('/providers/:id', zValidator('json', providerSchema), async (c) => {
+admin.put('/providers/:id', zValidator('json', providerUpdateSchema), async (c) => {
   const id = parseInt(c.req.param('id'))
   const data = c.req.valid('json')
-  await db.update(modelProviders).set(data).where(eq(modelProviders.id, id))
+
+  const existing = await db.select({ id: modelProviders.id }).from(modelProviders)
+    .where(eq(modelProviders.id, id)).get()
+  if (!existing) return c.json({ error: '服务商不存在' }, 404)
+
+  const { apiKey, ...rest } = data
+  // 留空 = 不改动已存的密钥（和 storage 路由同一个约定，这次是真的）
+  await db.update(modelProviders)
+    .set({ ...rest, ...(apiKey ? { apiKey } : {}) })
+    .where(eq(modelProviders.id, id))
   return c.json({ ok: true })
 })
 
+/**
+ * 删服务商 = **级联删掉它名下的模型配置**，并清掉那些配置的引用
+ * （角色默认 / 用户偏好删行，生图选择置空）。见 `db/cleanup.ts` 头注释 ——
+ * 直接删会撞 `FOREIGN KEY constraint failed`，删除按钮一按一个 500。
+ */
 admin.delete('/providers/:id', async (c) => {
   const id = parseInt(c.req.param('id'))
-  await db.delete(modelProviders).where(eq(modelProviders.id, id))
-  return c.json({ ok: true })
+  const existing = await db.select({ id: modelProviders.id }).from(modelProviders)
+    .where(eq(modelProviders.id, id)).get()
+  if (!existing) return c.json({ error: '服务商不存在' }, 404)
+
+  const counts = deleteProviderCascade(db, id)
+  return c.json({ ok: true, ...counts })
 })
 
 admin.post('/providers/:id/fetch-models', async (c) => {
@@ -141,6 +171,11 @@ admin.get('/models', async (c) => {
 
 admin.post('/models', zValidator('json', modelConfigSchema), async (c) => {
   const data = c.req.valid('json')
+  // 不存在的 providerId 会撞外键 500 —— 这里先挡成人话
+  const provider = await db.select({ id: modelProviders.id }).from(modelProviders)
+    .where(eq(modelProviders.id, data.providerId)).get()
+  if (!provider) return c.json({ error: '服务商不存在' }, 400)
+
   const result = await db.insert(modelConfigs).values(data).returning().get()
   return c.json({ model: result }, 201)
 })
@@ -169,10 +204,18 @@ admin.patch('/models/:id', zValidator('json', modelPatchSchema), async (c) => {
   return c.json({ ok: true })
 })
 
+/**
+ * 删模型配置 = 清掉角色默认 / 用户偏好里的引用行，生图选择置空。
+ * 和删服务商同一套规则，见 `db/cleanup.ts`。
+ */
 admin.delete('/models/:id', async (c) => {
   const id = parseInt(c.req.param('id'))
-  await db.delete(modelConfigs).where(eq(modelConfigs.id, id))
-  return c.json({ ok: true })
+  const existing = await db.select({ id: modelConfigs.id }).from(modelConfigs)
+    .where(eq(modelConfigs.id, id)).get()
+  if (!existing) return c.json({ error: '模型配置不存在' }, 404)
+
+  const counts = deleteModelConfigCascade(db, id)
+  return c.json({ ok: true, ...counts })
 })
 
 // --- Role defaults ---
@@ -222,8 +265,14 @@ admin.delete('/users/:id', async (c) => {
   const payload = getJwtPayload(c)
   const id = parseInt(c.req.param('id'))
   if (id === payload.userId) return c.json({ error: '不能删除自己' }, 400)
-  await db.delete(users).where(eq(users.id, id))
-  return c.json({ ok: true })
+  const existing = await db.select({ id: users.id }).from(users)
+    .where(eq(users.id, id)).get()
+  if (!existing) return c.json({ error: '用户不存在' }, 404)
+
+  // 用过 agent 的用户名下挂着 deck / 会话 / 消息（外键链），直接删会 500 ——
+  // 自底向上级联清掉（见 db/cleanup.ts）
+  const counts = deleteUserCascade(db, id)
+  return c.json({ ok: true, ...counts })
 })
 
 admin.post('/users/:id/reset-password', zValidator('json', z.object({ newPassword: z.string().min(6).max(128) })), async (c) => {

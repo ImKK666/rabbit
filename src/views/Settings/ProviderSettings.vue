@@ -39,7 +39,10 @@
       </div>
       <div class="form-group">
         <label>API Key</label>
-        <Input v-model:value="form.apiKey" placeholder="sk-..." />
+        <Input
+          v-model:value="form.apiKey"
+          :placeholder="editingId ? '留空 = 保持原 Key' : 'sk-...'"
+        />
       </div>
       <div class="form-group">
         <label>备注</label>
@@ -188,10 +191,17 @@ const handleSave = async () => {
 }
 
 const handleDelete = async (id: number) => {
-  if (!confirm('确定删除该服务商？关联的模型配置也会失效。')) return
+  if (!confirm('确定删除该服务商？\n\n其下所有模型配置会一并删除：引用它们的角色默认 / 用户偏好会被清空，生图模型选择会被置空。')) return
   try {
-    await adminApi.deleteProvider(id)
+    const res = await adminApi.deleteProvider(id) as any
     await loadProviders()
+    if (res?.deletedModels) {
+      alert(
+        `已删除服务商，连带删除模型配置 ${res.deletedModels} 个：`
+        + `清空角色默认 ${res.clearedRoleDefaults ?? 0} 条、用户偏好 ${res.clearedUserPrefs ?? 0} 条、`
+        + `生图选择 ${res.clearedAssetSources ?? 0} 处`,
+      )
+    }
   }
   catch (err: any) {
     alert(err?.response?.data?.error || '删除失败')

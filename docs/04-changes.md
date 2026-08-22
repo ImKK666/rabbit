@@ -3127,6 +3127,51 @@ lint 与 HEAD 严格对齐（改动的老文件问题数不变，新文件 0 问
 
 ---
 
+## R-64 · 后台渠道 / 用户删除修复 + 编辑服务商密钥保留
+
+决策者报告后台「删除渠道有 bug」。实测复现：`PRAGMA foreign_keys = ON`
+之下，删除**有模型配置的服务商**、删除**被角色默认引用的模型**、删除
+**名下有权稿的用户**，都会撞 `FOREIGN KEY constraint failed` → 一按一个 500；
+另外编辑服务商时密钥留空会被 400（PUT 复用创建 schema，apiKey 必填，
+而 storage 路由的注释还写着「和 provider 表的做法一致」—— 写的时候并没有）。
+
+### 级联删除（`server/src/db/cleanup.ts`）
+
+自底向上清引用的纪律和 `routes/deck.ts` 删 deck 同一条：
+
+- 删**服务商** = 级联删名下模型配置；被删配置的角色默认 / 用户偏好**删行**
+  （回落到「未配置」，`llm.ts` 的 miss 路径会明说），生图选择**置空**
+  （生图能力关掉，不留死引用）。返回逐项计数
+- 删**模型** = 同规则清三种引用，返回计数；**模型管理页补上删除按钮**
+  （之前有 API 没 UI，模型只能越积越多）
+- 删**用户** = 消息 → 会话 → 文稿 → 角色偏好 → 本人，返回计数；
+  assets 表无外键（内容寻址的产物），刻意不碰
+- 顺带：POST /models 校验 providerId 存在（原来撞外键 500）；
+  PUT /providers 与 DELETE 三条路由补 404
+
+### 编辑服务商密钥保留
+
+`providerUpdateSchema`：apiKey 可选，留空 = 保持已存密钥；
+前端编辑框 placeholder 改为「留空 = 保持原 Key」。
+
+### 判据
+
+新增 7 条（`server/__tests__/cleanup.test.ts`，bun 专属 —— 它要加载
+`bun:sqlite`，node 的 vitest 跑不了，所以放在 src 之外的测试目录，
+根 vitest 的 include 扫不到它）：
+- 服务商级联：计数逐项对 + 别的渠道配置一个不动（负对照）
+- 直接删（不级联）撞外键的负对照 ×2 —— 证明清理器存在的理由
+- 用户级联：别人的文稿原样留下（负对照）
+- 空库全零计数
+
+另在**真库副本**上实测：删 DeepSeek 渠道 → 2 个配置 + 1 条 deck 角色默认
+清掉，Gemini 渠道与生图选择（config 18）原样保留。
+
+全量：server `bun test` **1452**（44 文件）+ 根 `npx vitest run` **1871**
+（57 文件）+ 双类型检查三绿。
+
+---
+
 ## 待完成
 
 > 下面这张表是**当前**的权威清单。其中 agent 相关的多项已被
@@ -3154,7 +3199,7 @@ lint 与 HEAD 严格对齐（改动的老文件问题数不变，新文件 0 问
 | **edits 提取式剥层（image2 逆向）** | docs/15 §四-③：从渲染截图提取框架/图标层。官方总结说 edits 双侧支持 `background: transparent` + alpha `mask` —— 绿幕不再是必要条件，但「框架图承载结构 vs 质感」的红线边界仍需先定 | 低 |
 | **调研摄入** | 方案已定，见 [13-queue-reflect-ingest.md](./13-queue-reflect-ingest.md) §四§五。**摄入的验收标准是「几乎所有材料都能吃」**（pdf / txt / 图片 / word / md / json / 网页 url），按「解析在哪」分三档：浏览器侧（jszip 已在树里 + pdfjs）/ 服务端（URL 抓取）/ 模型（图片与扫描件）。搜索照抄 `imageSearch.ts` 那套：付费 provider 首选 + 一档免 key 兜底 | **高** |
 | ~~**`agent.confirm` 接上去**~~ | **R-61 已完成**：`askUser` 确认闸门全链路（后端工具 + ws + 面板「是/否」按钮 + 90 秒超时），prompt 有「确认闸门」节 | ✅ |
-| **R-64 · 执行纪律第二阶段** | [16-workflow-redesign.md](./16-workflow-redesign.md) §九：守卫③ 限流不自旋（拒绝后本回合禁用、配额耗尽本任务禁用，倒计时不再出现在结果里）+ 守卫④ reflectRender 页级参数 + 断线短路 + pageIndex 寻址 | 中 |
+| **R-65 · 执行纪律第二阶段** | [16-workflow-redesign.md](./16-workflow-redesign.md) §九：守卫③ 限流不自旋（拒绝后本回合禁用、配额耗尽本任务禁用，倒计时不再出现在结果里）+ 守卫④ reflectRender 页级参数 + 断线短路 + pageIndex 寻址 | 中 |
 | ~~渲染后反思~~ | 11 号 D3。**R-52 已完成**：`reflectRender` 工具 + 离屏测量 + 独立配置的视觉复核模型。判据与负对照见 13 号文档 §三 | ✅ |
 | ~~排队输入~~ | 11 号 C 期。**R-52 已完成**：`runtime/inputQueue.ts` + `runtime/taskGate.ts`，顺带修掉「被拒的输入在面板上显示成已受理」 | ✅ |
 | OAuth 登录 | GitHub / Google，目前只有账号密码 | 低 |
