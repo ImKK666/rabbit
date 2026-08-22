@@ -455,12 +455,24 @@ const assetSrc = (src: string) => resolveAssetUrl(src)
  */
 const refreshCapabilities = async () => {
   try {
-    const res = await userApi.capabilities()
-    imageInputAllowed.value = !!res.data.imageInput
-    imageInputReason.value = res.data.reason || ''
+    // `as any` + 直接读字段是本仓库的既定写法：`services/index.ts` 引的是
+    // `./axios` 那个**会拆包**的实例（拦截器 return response.data），
+    // 拿到的就是响应体本身。**但类型没跟着改**，仍写着 AxiosResponse ——
+    // 于是 `res.data.xxx` 编译得过、运行时永远 undefined，
+    // 再被下面的 catch 吞掉，表现为「按钮永远置灰」。见 App.vue 的同款注释
+    const res = await userApi.capabilities() as any
+    imageInputAllowed.value = !!res?.imageInput
+    imageInputReason.value = res?.reason || ''
   }
-  catch {
-    // 问不到就当不支持：给一个点了没反应的按钮比置灰更让人困惑
+  catch (err) {
+    // 问不到就当不支持：给一个点了没反应的按钮比置灰更让人困惑。
+    //
+    // **但一定要留下真实错误。** 这个 catch 第一版是空的，于是它把一个
+    // `res.data.xxx` 的 TypeError 也说成「无法确认模型能力」——
+    // 模型明明勾了「能读图」，按钮却一直是灰的，控制台一行线索都没有。
+    // 网络失败和代码写错必须能分开，否则下次还是查不出来
+    // eslint-disable-next-line no-console
+    console.warn('[agent] 取模型能力失败：', err)
     imageInputAllowed.value = false
     imageInputReason.value = '无法确认模型能力，暂时不能传图'
   }
@@ -480,14 +492,19 @@ const releasePreview = (img: PendingImage) => URL.revokeObjectURL(img.preview)
 
 const uploadOne = async (img: PendingImage) => {
   try {
-    const res = await assetApi.upload(img.file)
-    img.src = res.data.src
+    // 同上：拿到的就是响应体，没有 .data 这一层
+    const res = await assetApi.upload(img.file) as any
+    if (!res?.src) throw new Error('服务端没有返回图片地址')
+    img.src = res.src
     img.state = 'done'
   }
   catch (err) {
     img.state = 'failed'
-    const detail = (err as { response?: { data?: { message?: string } } })?.response?.data?.message
-    img.error = detail || '上传失败'
+    // 错误拦截器把失败整形成 `{ message, status, data }`，其中 `message` 取的是
+    // 响应体的 `error` 字段（`unsupported_format` 这种机器码），
+    // 人话在 `data.message` 里 —— 要显示给用户的是后者
+    const e = err as { data?: { message?: string }, message?: string }
+    img.error = e?.data?.message || e?.message || '上传失败'
   }
 }
 
