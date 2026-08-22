@@ -66,16 +66,29 @@
           <template v-if="imageTest.ok">
             ✓ {{ imageTest.elapsed }}ms · {{ imageTest.model }}（{{ imageTest.flavor }} 形状）
             · {{ imageTest.width }}×{{ imageTest.height }} · {{ Math.round(imageTest.bytes / 1024) }}KB
-            · 透明像素 {{ Math.round((imageTest.alpha?.transparentRatio ?? 0) * 100) }}%
+            · {{ imageTest.flavor === 'gemini' ? '抠图后透明像素' : '透明像素' }}
+            {{ Math.round(((imageTest.flavor === 'gemini'
+              ? imageTest.cutout?.transparentRatio
+              : imageTest.alpha?.transparentRatio) ?? 0) * 100) }}%
           </template>
           <template v-else>
             ✗ {{ imageTest.error }}<span v-if="imageTest.elapsed !== undefined">（{{ imageTest.elapsed }}ms）</span>
           </template>
         </div>
         <div class="image-test-note" v-if="imageTest.note">{{ imageTest.note }}</div>
-        <div class="image-preview" v-if="imageTest.dataUrl">
-          <!-- 棋盘格底：透明通道一眼可见（棋盘透出来的地方就是透明） -->
-          <img class="transparent-bg" :src="imageTest.dataUrl" />
+        <div class="image-preview-grid" v-if="imageTest.beforeDataUrl || imageTest.dataUrl">
+          <div class="image-preview-item" v-if="imageTest.beforeDataUrl">
+            <div class="image-preview-label">抠图前（模型原图）</div>
+            <img :class="['transparent-bg', { 'keyed-preview': imageTest.flavor === 'gemini' }]" :src="imageTest.beforeDataUrl" />
+          </div>
+          <div class="image-preview-item" v-if="imageTest.afterDataUrl">
+            <div class="image-preview-label">抠图后（本地透明 PNG）</div>
+            <img class="transparent-bg" :src="imageTest.afterDataUrl" />
+          </div>
+          <div class="image-preview-item" v-else-if="imageTest.dataUrl">
+            <div class="image-preview-label">生成结果</div>
+            <img class="transparent-bg" :src="imageTest.dataUrl" />
+          </div>
         </div>
       </div>
 
@@ -229,6 +242,7 @@ const handleSave = async () => {
       searchEnabled: form.searchEnabled,
       imageModelConfigId: form.imageModelConfigId,
       generateEnabled: form.generateEnabled,
+      imageApi: form.imageApi,
       maxEdgePx: form.maxEdgePx,
     }
     if (form.searchApiKey) payload.searchApiKey = form.searchApiKey
@@ -382,6 +396,28 @@ onMounted(load)
   font-size: 12px;
   color: #999;
 }
+.image-preview-grid {
+  margin-top: 8px;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  max-width: 720px;
+}
+.image-preview-item {
+  min-width: 0;
+}
+.image-preview-label {
+  margin-bottom: 5px;
+  font-size: 12px;
+  color: #777;
+}
+.image-preview-item img {
+  display: block;
+  max-width: 100%;
+  width: 100%;
+  border-radius: 6px;
+  border: 1px solid $borderColor;
+}
 .image-preview {
   margin-top: 8px;
 
@@ -397,6 +433,13 @@ onMounted(load)
   background-image:
     conic-gradient(#e3e3e3 25%, #ffffff 0 50%, #e3e3e3 0 75%, #ffffff 0);
   background-size: 16px 16px;
+}
+.keyed-preview {
+  background-image: none;
+  background-color: #00ff00;
+}
+@media (max-width: 760px) {
+  .image-preview-grid { grid-template-columns: 1fr; }
 }
 .form-actions {
   display: flex;

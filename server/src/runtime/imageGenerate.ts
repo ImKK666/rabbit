@@ -14,7 +14,7 @@
  * | | gemini | openai |
  * |---|---|---|
  * | 端点 | `{base}/v1beta/models/{m}:generateContent?key=…` | `{base}/v1/images/generations` + Bearer |
- * | 比例 | `imageConfig.aspectRatio`（生效但不精确，实测 1376/768） | `aspect_ratio`（16:9 直出） |
+ * | 比例 | `imageConfig.aspectRatio`（生效但不精确，实测 1376/768） | `size`（有限预设，按比例映射） |
  * | 透明 | ❌ 无原生 alpha（装饰层走绿幕抠图） | ✅ `background: transparent` + `output_format: png` |
  * | 风格锁定 | ❌ | ✅ `seed`（同一份 deck 各页同 seed，跨页风格一致） |
  *
@@ -34,11 +34,11 @@
  *
  * `role: "user"` **不能省**，少了直接 400。
  *
- * openai 一侧的参数表以官方 Images API 为准（2026-08 决策者提供的
- * gpt-image-2 接口总结）：generations 支持 `model/prompt/aspect_ratio/
- * quality/size/background/output_format/n/seed/moderation`。
- * 这里只发我们用得到的：aspect_ratio（16:9 直出，下游仍按解码后的
- * 真实像素用，见下）、background/output_format（透明通道）、seed（风格锁定）。
+ * openai 一侧的参数表以官方 Images API 为准：generations 支持
+ * `model/prompt/quality/size/background/output_format/n/seed/moderation`。
+ * `size` 只能使用 `1024x1024`、`1536x1024`、`1024x1536` 或 `auto`，不能传
+ * 任意 `aspect_ratio`；这里按幻灯片比例映射到这三个预设。透明通道使用
+ * `background/output_format`，风格锁定使用 `seed`。
  *
  * ## 实测数字（gemini 一侧，本轮）
  *
@@ -76,6 +76,16 @@ export type ImageAspectRatio = typeof IMAGE_ASPECT_RATIOS[number]
 
 /** R-62：生图接口形状。`auto` 按模型名猜 */
 export type ImageApiFlavor = 'auto' | 'gemini' | 'openai'
+
+/** OpenAI Images 只接受有限的预设尺寸，不接受任意 `aspect_ratio`。 */
+export type OpenAiImageSize = '1024x1024' | '1536x1024' | '1024x1536' | 'auto'
+
+/** 把幻灯片常用比例映射到 OpenAI Images 支持的尺寸预设。 */
+export const openAiImageSize = (aspectRatio?: ImageAspectRatio): OpenAiImageSize => {
+  if (aspectRatio === '3:4' || aspectRatio === '9:16') return '1024x1536'
+  if (aspectRatio === '4:3' || aspectRatio === '16:9') return '1536x1024'
+  return '1024x1024'
+}
 
 /**
  * 把配置里的 flavor 落成确定的请求形状。
@@ -184,6 +194,8 @@ export interface GenerateInput {
   alpha?: boolean
   /** R-62：风格锁定种子。openai 形状才发 */
   seed?: number
+  /** OpenAI Images 的有限尺寸预设；Gemini 忽略此字段 */
+  size?: OpenAiImageSize
 }
 
 /** gemini 形状：解析 `candidates[0].content.parts[].inlineData` */
@@ -257,7 +269,7 @@ const callGemini = async (
 const callOpenAi = async (
   input: GenerateInput, started: number,
 ): Promise<GenerateOutcome> => {
-  const { baseUrl, apiKey, model, prompt, aspectRatio, alpha, seed } = input
+  const { baseUrl, apiKey, model, prompt, aspectRatio, alpha, seed, size } = input
   const res = await fetch(openAiImagesEndpoint(baseUrl), {
     method: 'POST',
     headers: {
@@ -268,8 +280,8 @@ const callOpenAi = async (
       model,
       prompt,
       n: 1,
-      // 比例直出（gpt-image-2 官方参数）。下游仍按解码后的真实像素用
-      ...(aspectRatio ? { aspect_ratio: aspectRatio } : {}),
+      // OpenAI Images 不接受 aspect_ratio；只能传有限的 size 预设。
+      size: size ?? openAiImageSize(aspectRatio),
       // 透明通道：官方是 background=transparent + png/webp 才真正带 alpha
       ...(alpha ? { background: 'transparent', output_format: 'png' } : {}),
       ...(seed !== undefined ? { seed } : {}),

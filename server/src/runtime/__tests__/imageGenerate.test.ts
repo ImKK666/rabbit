@@ -9,8 +9,25 @@
 import { describe, it, expect } from 'vitest'
 import {
   resolveImageApiFlavor, openAiImagesEndpoint, googleImageEndpoint, hashSeed,
-  effectiveImageRateLimit,
+  effectiveImageRateLimit, openAiImageSize,
 } from '../imageGenerate'
+
+describe('openAiImageSize · 映射到 Images API 支持的有限尺寸', () => {
+  it('横向比例使用 1536x1024', () => {
+    expect(openAiImageSize('16:9')).toBe('1536x1024')
+    expect(openAiImageSize('4:3')).toBe('1536x1024')
+  })
+
+  it('纵向比例使用 1024x1536', () => {
+    expect(openAiImageSize('9:16')).toBe('1024x1536')
+    expect(openAiImageSize('3:4')).toBe('1024x1536')
+  })
+
+  it('方形比例或缺省使用 1024x1024', () => {
+    expect(openAiImageSize('1:1')).toBe('1024x1024')
+    expect(openAiImageSize()).toBe('1024x1024')
+  })
+})
 
 describe('resolveImageApiFlavor · 按模型名猜，显式配置优先', () => {
   it('auto 下 gpt-image 系 → openai', () => {

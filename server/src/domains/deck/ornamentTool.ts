@@ -330,8 +330,9 @@ export const createOrnamentTools = (ctx: OrnamentToolContext) => ({
       '纹样的艺术流派跟着主题走：你在 setTheme 里写过的 artDirection 会被注入提示词，',
       '没写就按这一页的质感档位用默认流派。',
       '',
-      '返回每页一个 asset:// 地址。拿到之后用 addElement 加成图片元素，',
-      '位置铺满整页（left 0, top 0, width 1000, height 562.5），并放在最上层。',
+      '返回每页一个 asset:// 地址。拿到之后必须继续用 addElement 写回 deck，',
+      '传入完整图片元素：{ id: "唯一ID", type: "image", src, left: 0, top: 0,',
+      'width: 1000, height: 562.5, rotate: 0, fixedRatio: false }，并放在最上层。',
       '',
       '慢（每页约 15 秒）且有配额。某一页失败会说明原因并跳过，**不要重试**，整份稿子照常交付。',
     ].join('\n'),
@@ -364,7 +365,7 @@ export const createOrnamentTools = (ctx: OrnamentToolContext) => ({
         done: ok.map(r => ({ slideId: r.slideId, src: r.src, bytes: r.bytes })),
         failed: results.filter(r => !r.ok).map(r => ({ slideId: r.slideId, reason: r.reason })),
         hint: ok.length > 0
-          ? '用 addElement 把每个 src 加成铺满整页的图片元素（left 0, top 0, width 1000, height 562.5），放最上层。'
+          ? '必须继续用 addElement 写回每个 src：type=image，left 0，top 0，width 1000，height 562.5，rotate 0，fixedRatio false，并放最上层。'
           : '这次一页都没做成。按你自己的判断继续，不要重试。',
       })
     },

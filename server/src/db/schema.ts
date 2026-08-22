@@ -100,7 +100,7 @@ export type AssetSearchProvider = 'wikimedia' | 'pexels' | 'unsplash' | 'pixabay
  * - `gemini`：`/v1beta/models/{m}:generateContent`（Gemini wire 形状，
  *   第十七轮起在用的那套）
  * - `openai`：`/v1/images/generations`（OpenAI Images API 形状，
- *   gpt-image-2 系中转站；支持 background=transparent / aspect_ratio / seed）
+ *   gpt-image-2 系中转站；支持 background=transparent / size / seed）
  */
 export type ImageApiFlavor = 'auto' | 'gemini' | 'openai'
 

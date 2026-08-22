@@ -14,7 +14,8 @@ import { createObjectStore, resolvePublicBase } from '@server/runtime/objectStor
 import { searchImages, NEEDS_API_KEY } from '@server/runtime/imageSearch'
 import { resolveModelForConfig } from '@server/runtime/llm'
 import { generateImage, resolveImageApiFlavor } from '@server/runtime/imageGenerate'
-import { decodeImage, alphaStats, sniffFormat } from '@server/runtime/imageCodec'
+import { decodeImage, encodeRgbaPng, alphaStats, sniffFormat } from '@server/runtime/imageCodec'
+import { chromaKey, keyedLooksUsable, MIN_TRANSPARENT_RATIO } from '@server/runtime/chromaKey'
 import {
   deleteProviderCascade, deleteModelConfigCascade, deleteUserCascade,
 } from '@server/db/cleanup'
@@ -529,12 +530,20 @@ admin.post('/asset-source/test', async (c) => {
  * 并量化 alpha：openai 形状下「模型画了实底」是装饰层会判失败重抽的情形，
  * 这里当场就能看到，不用跑一整份稿子。
  */
-const IMAGE_TEST_PROMPT = [
-  'A minimal alpha-channel test, 16:9 composition: three thin elegant horizontal',
-  'lines and one small filled circle, dark teal (#0f766e), evenly spaced, nothing',
-  'else. The background must be FULLY TRANSPARENT (real alpha channel, PNG output),',
-  'absolutely no background color, no panel, no fill, no text.',
-].join(' ')
+const IMAGE_TEST_PROMPT = (flavor: 'gemini' | 'openai') => flavor === 'gemini'
+  ? [
+      'A minimal chroma-key test, 16:9 composition: three solid elegant horizontal',
+      'bars and one small filled circle, dark teal (#0f766e), evenly spaced, nothing',
+      'else. The entire background MUST be one perfectly flat, uniform pure green',
+      '(RGB 0,255,0 / #00FF00). No gradient, texture, vignette, checkerboard,',
+      'white, black, panel, fill, text, or any other background color.',
+    ].join(' ')
+  : [
+      'A minimal alpha-channel test, 16:9 composition: three solid elegant horizontal',
+      'bars and one small filled circle, dark teal (#0f766e), evenly spaced, nothing',
+      'else. The background must be FULLY TRANSPARENT (real alpha channel, PNG output),',
+      'absolutely no background color, no panel, no fill, no text.',
+    ].join(' ')
 
 admin.post('/asset-source/test-image', async (c) => {
   const row = await loadAssetSource()
@@ -551,7 +560,7 @@ admin.post('/asset-source/test-image', async (c) => {
     baseUrl: provider.baseUrl,
     apiKey: provider.apiKey,
     model: config.modelName,
-    prompt: IMAGE_TEST_PROMPT,
+    prompt: IMAGE_TEST_PROMPT(flavor),
     aspectRatio: '16:9',
     flavor,
     // 只有 openai 形状原生支持透明通道（background=transparent）；gemini 走绿幕路线
@@ -572,7 +581,8 @@ admin.post('/asset-source/test-image', async (c) => {
     const decoded = decodeImage(outcome.bytes)
     const alpha = alphaStats(decoded.rgba)
     const format = sniffFormat(outcome.bytes) ?? 'png'
-    return c.json({
+    const beforeDataUrl = `data:image/${format};base64,${Buffer.from(outcome.bytes).toString('base64')}`
+    const response: Record<string, unknown> = {
       ok: true,
       elapsed: outcome.elapsedMs,
       flavor,
@@ -580,18 +590,39 @@ admin.post('/asset-source/test-image', async (c) => {
       width: decoded.width,
       height: decoded.height,
       bytes: outcome.bytes.length,
-      dataUrl: `data:image/${format};base64,${Buffer.from(outcome.bytes).toString('base64')}`,
+      dataUrl: beforeDataUrl,
+      beforeDataUrl,
       alpha: {
         nativeSupported: flavor === 'openai',
         transparentRatio: alpha.transparentRatio,
         fullyOpaque: alpha.fullyOpaque,
         empty: alpha.empty,
       },
-      note: flavor !== 'openai'
-        ? 'Gemini 形状不原生支持透明通道（装饰层走绿幕抠图路线），上面是原始生成图'
-        : alpha.fullyOpaque
-          ? '⚠ 模型没有回透明通道 —— 整图不透明，装饰层会判失败重抽'
-          : '透明通道正常',
+    }
+
+    if (flavor === 'gemini') {
+      const keyed = chromaKey(decoded.rgba, decoded.width, decoded.height)
+      const afterBytes = encodeRgbaPng(keyed.rgba, keyed.width, keyed.height)
+      const afterStats = alphaStats(keyed.rgba)
+      response.afterDataUrl = `data:image/png;base64,${Buffer.from(afterBytes).toString('base64')}`
+      response.cutout = {
+        bytes: afterBytes.length,
+        transparentRatio: afterStats.transparentRatio,
+        usable: keyedLooksUsable(keyed),
+        requiredTransparentRatio: MIN_TRANSPARENT_RATIO,
+      }
+      response.dataUrl = response.afterDataUrl
+      response.note = keyedLooksUsable(keyed)
+        ? 'Gemini 原图已用 #00FF00 纯色底完成本地抠图，下面同时展示抠图前和抠图后。'
+        : `Gemini 未生成可用纯绿底，抠图后透明像素仅 ${(afterStats.transparentRatio * 100).toFixed(1)}%（要求 ≥${MIN_TRANSPARENT_RATIO * 100}%）`
+    }
+    else {
+      response.note = alpha.fullyOpaque
+        ? '⚠ 模型没有回透明通道 —— 整图不透明，装饰层会判失败重抽'
+        : '透明通道正常'
+    }
+    return c.json({
+      ...response,
     })
   }
   catch (err) {

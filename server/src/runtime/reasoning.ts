@@ -11,7 +11,7 @@
  * |---|---|---|
  * | deepseek | SSE delta 的 `reasoning_content` 字段 | 用 `@ai-sdk/deepseek`，它认这个字段 |
  * | google   | 默认思考但不回传 | `thinkingConfig.includeThoughts = true` |
- * | openai   | o 系列只在 Responses API 给摘要 | 不动；但兼容端点常用 `<think>` 标签，挂中间件兜住 |
+ * | openai   | o/gpt-5 系列走 Responses API | 关闭 strictSchemas 兼容可选工具字段；兼容端点常用 `<think>` 标签，挂中间件兜住 |
  * | anthropic| 需要显式开 extended thinking | **默认不开**，见下 |
  *
  * ## 为什么 openai 类型接不住 DeepSeek
@@ -121,6 +121,13 @@ export const reasoningProviderOptions = (
       // 1024 是 Anthropic 侧 budgetTokens 的下限，低于它请求直接被拒
       return { anthropic: { thinking: { type: 'enabled', budgetTokens: Math.floor(budget) } } }
     }
+
+    case 'openai':
+      // gpt-5/o 系列会被 @ai-sdk/openai 路由到 Responses API，而 SDK 默认给
+      // 每个函数加 strict:true。严格 schema 要求 properties 中每个字段都出现在
+      // required；本项目工具大量使用 Zod optional()，在兼容中转站上会直接被拒。
+      // 关闭的是 schema 严格校验，不影响工具参数的 JSON Schema 描述或运行时校验。
+      return { openai: { strictSchemas: false } }
 
     // deepseek 不需要任何参数，provider 认得 reasoning_content 就够了
     default:

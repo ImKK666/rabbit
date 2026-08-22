@@ -21,13 +21,15 @@ describe('providerOptions', () => {
   })
 
   // deepseek 的 reasoning_content 是无条件回传的，provider 认得就够了。
-  // 这里断言「不发参数」是为了防有人日后照着 google 抄一份多余的配置
+  // deepseek 仍然断言「不发参数」；OpenAI Responses 则需要显式关闭 strict schema
   it('deepseek 不需要任何参数', () => {
     expect(reasoningProviderOptions('deepseek', {})).toEqual({})
   })
 
-  it('openai 不发参数 —— o 系列的摘要要走 Responses API，兼容端点靠 <think> 标签', () => {
-    expect(reasoningProviderOptions('openai', {})).toEqual({})
+  it('openai 关闭 Responses strict schema —— 兼容端点允许 optional 工具字段', () => {
+    expect(reasoningProviderOptions('openai', {})).toEqual({
+      openai: { strictSchemas: false },
+    })
   })
 
   describe('anthropic 默认不开', () => {

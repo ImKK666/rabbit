@@ -222,7 +222,13 @@ const createModel = (
   switch (providerType) {
     case 'openai': {
       const provider = createOpenAI({ baseURL: baseUrl, apiKey, fetch: patchedFetch })
-      return provider(modelName)
+      // OpenAI SDK 会按模型名把 gpt-5/o 系列默认标成 supportsStructuredOutputs，
+      // 进而给 Chat Completions 的每个函数 schema 加 strict:true。项目工具使用
+      // optional() 参数（例如 getDeck.includeElements），而兼容中转站要求 strict
+      // schema 的 required 必须覆盖全部 properties，最终会在请求发送前拒绝。
+      // 关闭 structuredOutputs 只影响工具 schema 的 strict 标记，不影响普通 JSON
+      // Schema、工具运行时 Zod 校验或模型本身的推理能力。
+      return provider(modelName, { structuredOutputs: false })
     }
     // DeepSeek 的端点是 OpenAI 兼容的，配成 'openai' 也能跑 —— 但思考会丢：
     // reasoning_content 不在 @ai-sdk/openai 的 SSE schema 里，解析时直接被剥掉。

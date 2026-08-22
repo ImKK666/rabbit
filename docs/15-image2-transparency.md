@@ -85,7 +85,7 @@ id 稳定；`layoutImage.test.ts` 的图片位表同步更新。
 
 | 模型 | 透明通道 | 说明 |
 |---|---|---|
-| **`gpt-image-2`** | ✅ **generations 与 edits 都支持 `background: transparent`** | 最新旗舰；`aspect_ratio` 直出（16:9/21:9…）、`seed` 固定风格、`mask` alpha 局部重绘、`stream` 中间帧；1024² high ≈ $0.211 |
+| **`gpt-image-2`** | ✅ **generations 与 edits 都支持 `background: transparent`** | 最新旗舰；`size` 仅支持 `1024x1024`、`1536x1024`、`1024x1536`、`auto`，`seed` 固定风格、`mask` alpha 局部重绘、`stream` 中间帧；1024² high ≈ $0.211 |
 | `gpt-image-1.5` | ✅ `background: transparent` + `output_format: png/webp` | `input_fidelity` 可切；1024² high ≈ $0.133/张 |
 | `gpt-image-1` / `gpt-image-1-mini` | 见 API 文档 | 旧档 / 轻量档 |
 
